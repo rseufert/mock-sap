@@ -16,7 +16,9 @@ an SAP licence, or a VPN tunnel to someone's sandbox.
 - **Failure modes on demand.** Latency, 500s, locked documents, "no work process available",
   expired CSRF tokens — per request, or as programmable rules.
 
-MIT licensed. Not affiliated with SAP SE.
+MIT licensed. SAP, S/4HANA, ABAP, NetWeaver, BAPI and IDoc are trademarks of SAP SE;
+this project is not affiliated with, endorsed by, or connected to SAP SE, and imitates
+publicly documented wire formats for testing purposes only.
 
 ---
 
