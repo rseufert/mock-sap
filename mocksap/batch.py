@@ -1,4 +1,4 @@
-"""$batch support: multipart/mixed parsing, changesets and response assembly.
+"""$batch support: multipart/mixed for V2, JSON for V4.
 
 Changesets are atomic.  Before a changeset runs, the database is snapshotted
 with SQLite's online backup API; if any request inside the changeset fails,
@@ -6,6 +6,7 @@ the snapshot is restored, matching SAP's all-or-nothing changeset semantics.
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import uuid
@@ -193,3 +194,82 @@ def _run_changeset(ctx: Context, part: Part, service_path: str, resp_boundary: s
         + ("Content-Type: multipart/mixed; boundary=%s" % cs_boundary).encode() + CRLF
         + CRLF + inner
     )
+
+
+# --------------------------------------------------------------------------
+# JSON batch (OData V4)
+# --------------------------------------------------------------------------
+
+
+def handle_json_batch(ctx: Context, body: bytes, service_path: str) -> Response:
+    """V4 sends a batch as JSON: {"requests": [...]} in, {"responses": [...]} out.
+
+    Requests that share an `atomicityGroup` are the V4 spelling of a changeset,
+    and are rolled back together if any of them fails.
+    """
+    try:
+        payload = json.loads(body.decode("utf-8")) if body.strip() else {}
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise SapError("The $batch body is not valid JSON: %s" % exc, 400)
+    requests = payload.get("requests")
+    if not isinstance(requests, list):
+        raise SapError('The $batch body must hold a "requests" array', 400)
+
+    responses = []
+    index = 0
+    while index < len(requests):
+        group = requests[index].get("atomicityGroup")
+        if not group:
+            responses.append(_run_json_request(ctx, requests[index], service_path))
+            index += 1
+            continue
+        members = []
+        while index < len(requests) and requests[index].get("atomicityGroup") == group:
+            members.append(requests[index])
+            index += 1
+        responses.extend(_run_json_group(ctx, members, service_path))
+    return Response(200, body={"responses": responses},
+                    headers={"OData-Version": "4.0"})
+
+
+def _run_json_request(ctx: Context, request: dict, service_path: str) -> dict:
+    method = str(request.get("method", "GET")).upper()
+    url = str(request.get("url", ""))
+    if not url.startswith("/"):
+        url = service_path.rstrip("/") + "/" + url.lstrip("/")
+    path, _, query = url.partition("?")
+    headers = {str(k).lower(): str(v) for k, v in (request.get("headers") or {}).items()}
+    raw_body = request.get("body")
+    if raw_body is None:
+        encoded = b""
+    elif isinstance(raw_body, (dict, list)):
+        encoded = json.dumps(raw_body).encode("utf-8")
+    else:
+        encoded = str(raw_body).encode("utf-8")
+
+    response = dispatch(ctx, method, path, query, headers, encoded)
+    out = {
+        "id": request.get("id"),
+        "status": response.status,
+        "headers": {k.lower(): v for k, v in response.headers.items()},
+    }
+    if request.get("atomicityGroup"):
+        out["atomicityGroup"] = request["atomicityGroup"]
+    if response.body:
+        try:
+            out["body"] = json.loads(response.body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            out["body"] = response.body.decode("utf-8", "replace")
+    return out
+
+
+def _run_json_group(ctx: Context, members: list, service_path: str) -> list:
+    snapshot = _snapshot(ctx.conn)
+    done = []
+    for member in members:
+        result = _run_json_request(ctx, member, service_path)
+        done.append(result)
+        if result["status"] >= 400:
+            _restore(ctx.conn, snapshot)
+            return [result]          # the group failed as a whole
+    return done

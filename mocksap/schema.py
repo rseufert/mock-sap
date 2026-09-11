@@ -160,9 +160,14 @@ class Service:
     title: str
     sets: Dict[str, str]  # EntitySet name -> EntityType name
     prefix: str = "sap"   # the segment before the service name in the URL
+    version: int = 2      # the OData version this service speaks
 
     @property
     def path(self) -> str:
+        if self.version >= 4:
+            # S/4HANA serves its V4 services from a longer, versioned path
+            return "/sap/opu/odata4/%s/%s/srvd_a2x/sap/%s/0001" % (
+                self.prefix, self.name, self.name)
         return "/sap/opu/odata/%s/%s" % (self.prefix, self.name)
 
 
@@ -682,6 +687,31 @@ for _svc in [
             "A_PurchaseOrder": "A_PurchaseOrder",
             "A_PurchaseOrderItem": "A_PurchaseOrderItem",
         },
+    ),
+    # The same sales order data, served again in OData V4. S/4HANA exposes
+    # its V4 APIs beside the V2 ones like this, and a client of either sees
+    # the same documents in the shapes of its own dialect.
+    Service(
+        "api_salesorder",
+        "com.sap.gateway.srvd_a2x.api_salesorder.v0001",
+        "Sales Order (A2X, OData V4)",
+        {
+            "SalesOrder": "A_SalesOrder",
+            "SalesOrderItem": "A_SalesOrderItem",
+            "SalesOrderHeaderPartner": "A_SalesOrderHeaderPartner",
+        },
+        version=4,
+    ),
+    Service(
+        "api_businesspartner",
+        "com.sap.gateway.srvd_a2x.api_businesspartner.v0001",
+        "Business Partner (A2X, OData V4)",
+        {
+            "BusinessPartner": "A_BusinessPartner",
+            "BusinessPartnerAddress": "A_BusinessPartnerAddress",
+            "BusinessPartnerRole": "A_BusinessPartnerRole",
+        },
+        version=4,
     ),
 ]:
     SERVICES[_svc.name] = _svc

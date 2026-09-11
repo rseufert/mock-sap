@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlparse
 
-from . import metadata, store
+from . import metadata, metadata4, odata4, store
 from .odata import (SapError, build_orderby, build_where, collection_envelope,
                     entity_envelope, entity_uri, error_payload, etag_for,
                     etag_matches, key_predicate, parse_key_predicate,
@@ -20,11 +20,13 @@ from .schema import ENTITY_TYPES, SERVICES, EntityType, Service, service_for_pat
 JSON_CT = "application/json;charset=utf-8"
 XML_CT = "application/xml;charset=utf-8"
 
-SUPPORTED_OPTIONS = {
-    "$filter", "$select", "$expand", "$orderby", "$top", "$skip",
-    "$inlinecount", "$format", "$count", "$search", "$skiptoken", "$links",
-    "sap-client", "sap-language", "saml2", "$callback",
+_SHARED_OPTIONS = {
+    "$filter", "$select", "$expand", "$orderby", "$top", "$skip", "$format",
+    "$search", "$skiptoken", "sap-client", "sap-language", "saml2", "$callback",
 }
+# $count is a path segment in V2 (/A_SalesOrder/$count), not a query option
+SUPPORTED_OPTIONS = _SHARED_OPTIONS | {"$inlinecount", "$links"}
+SUPPORTED_OPTIONS_V4 = _SHARED_OPTIONS | {"$count", "$ref", "$apply"}
 
 _SEGMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\(.*\))?$")
 
@@ -42,7 +44,9 @@ class Response:
         self.body = body
 
     @classmethod
-    def error(cls, err: SapError, fmt: str = "json"):
+    def error(cls, err: SapError, fmt: str = "json", version: int = 2):
+        if version >= 4:
+            return cls(err.status, body=odata4.error_payload(err))
         if fmt == "xml":
             from xml.sax.saxutils import escape
             body = (
@@ -89,27 +93,77 @@ def _wants_xml(opts: Dict[str, str], headers: Dict[str, str]) -> bool:
     return "application/json" not in accept and ("xml" in accept or "atom" in accept)
 
 
-def _check_options(opts: Dict[str, str]) -> None:
+def _check_options(opts: Dict[str, str], version: int = 2) -> None:
+    allowed = SUPPORTED_OPTIONS_V4 if version >= 4 else SUPPORTED_OPTIONS
     for key in opts:
-        if key.startswith("$") and key not in SUPPORTED_OPTIONS:
+        if not key.startswith("$"):
+            continue
+        if key not in allowed:
+            if key in SUPPORTED_OPTIONS or key in SUPPORTED_OPTIONS_V4:
+                raise SapError(
+                    "Query option '%s' belongs to OData V%d, and this service "
+                    "speaks V%d" % (key, 2 if version >= 4 else 4, version), 400)
             raise SapError("Query option '%s' is not supported" % key, 400)
 
 
-def _parse_expand(expr: str, et: EntityType) -> Dict[str, dict]:
+def _split_options(text: str, separator: str) -> List[str]:
+    """Split on `separator` at the top level, ignoring nested parentheses."""
+    parts, buf, depth, in_str = [], "", 0, False
+    for ch in text:
+        if ch == "'":
+            in_str = not in_str
+        elif not in_str and ch == "(":
+            depth += 1
+        elif not in_str and ch == ")":
+            depth -= 1
+        if ch == separator and depth == 0 and not in_str:
+            parts.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        parts.append(buf)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _parse_expand(expr: str, et: EntityType, version: int = 2) -> Dict[str, dict]:
+    """Parse $expand into a tree of {"options": …, "expand": …} nodes.
+
+    V2 expands by path (`to_Item/to_SalesOrder`); V4 nests options inside
+    parentheses (`to_Item($select=Material;$top=5)`), which real V4 clients
+    lean on heavily.
+    """
     tree: Dict[str, dict] = {}
-    for path in expr.split(","):
-        path = path.strip()
-        if not path:
-            continue
+    for item in _split_options(expr, ","):
+        options: Dict[str, str] = {}
+        if item.endswith(")") and "(" in item:
+            path, _, raw = item.partition("(")
+            if version < 4:
+                raise SapError(
+                    "Options inside $expand are OData V4 syntax, and this "
+                    "service speaks V2", 400, target=path.strip())
+            for option in _split_options(raw[:-1], ";"):
+                key, _, value = option.partition("=")
+                key = key.strip()
+                if key not in ("$select", "$filter", "$orderby", "$top", "$skip", "$count"):
+                    raise SapError(
+                        "Option '%s' is not supported inside $expand" % key, 400)
+                options[key] = value.strip()
+            item = path.strip()
+
         node, current_type = tree, et
-        for segment in path.split("/"):
+        segments = item.split("/")
+        for index, segment in enumerate(segments):
             nav = current_type.nav(segment)
             if nav is None:
                 raise SapError(
                     "Navigation property '%s' not found in type '%s'"
                     % (segment, current_type.name), 400, target=segment)
-            node = node.setdefault(segment, {})
+            node = node.setdefault(segment, {"options": {}, "expand": {}})
+            if index == len(segments) - 1:
+                node["options"].update(options)
             current_type = ENTITY_TYPES[nav.target]
+            node = node["expand"]
     return tree
 
 
@@ -127,22 +181,40 @@ def _int_option(opts, name) -> Optional[int]:
 
 def _render(ctx: Context, row, et: EntityType, svc: Service,
             select: Optional[List[str]], expand: Dict[str, dict]) -> dict:
+    v4 = svc.version >= 4
     expanded: Dict[str, Any] = {}
-    for nav_name, subtree in expand.items():
+    for nav_name, node in expand.items():
         nav = et.nav(nav_name)
         target = ENTITY_TYPES[nav.target]
         target_svc = _service_of(target.name, svc)
+        options, subtree = node["options"], node["expand"]
         if nav.multiplicity == "*":
-            kids = store.children(ctx.conn, row, et, nav)
-            expanded[nav_name] = {
-                "results": [_render(ctx, k, target, target_svc, None, subtree) for k in kids]
-            }
+            where = " AND ".join('"%s" = ?' % remote for _l, remote in nav.join)
+            params = [row[local] for local, _r in nav.join]
+            if options.get("$filter"):
+                extra, extra_params = build_where(options["$filter"], target)
+                where, params = _merge_where(where, params, extra, extra_params)
+            order = build_orderby(options["$orderby"], target) if options.get("$orderby") else ""
+            kids = store.query(ctx.conn, target, where, params, order,
+                               _int_option(options, "$top"), _int_option(options, "$skip"))
+            child_select = _select_list(options, target) if options.get("$select") else None
+            rendered = [_render(ctx, k, target, target_svc, child_select, subtree)
+                        for k in kids]
+            if (options.get("$count") or "").lower() == "true":
+                expanded[nav_name + "@odata.count"] = store.count(
+                    ctx.conn, target, where, params)
+            # V4 expands to a bare array; V2 wraps it in a results object
+            expanded[nav_name] = rendered if v4 else {"results": rendered}
         else:
             keys = {remote: row[local] for local, remote in nav.join}
             parent = store.get(ctx.conn, target, keys)
+            child_select = _select_list(options, target) if options.get("$select") else None
             expanded[nav_name] = (
-                _render(ctx, parent, target, target_svc, None, subtree) if parent else None
-            )
+                _render(ctx, parent, target, target_svc, child_select, subtree)
+                if parent else None)
+    if v4:
+        return odata4.serialize_entity(row, et, svc, ctx.base_url, select, expanded,
+                                       etag=etag_for(et, row))
     return serialize_entity(row, et, svc, ctx.base_url, select, expanded)
 
 
@@ -153,6 +225,18 @@ def _service_of(type_name: str, fallback: Service) -> Service:
         if type_name in svc.sets.values():
             return svc
     return fallback
+
+
+def _context_for(ctx: Context, svc: Service, set_name: str, opts,
+                 single: bool = False) -> str:
+    """The @odata.context a V4 response carries."""
+    fragment = set_name
+    select = (opts.get("$select") or "").strip()
+    if select and select != "*":
+        fragment += "(%s)" % ",".join(part.strip() for part in select.split(","))
+    if single:
+        fragment += "/$entity"
+    return odata4.context_url(ctx.base_url, svc, fragment)
 
 
 def _select_list(opts, et: EntityType) -> Optional[List[str]]:
@@ -191,11 +275,11 @@ def dispatch(ctx: Context, method: str, path: str, query: str,
     if svc is None:
         raise SapError("Resource not found for the segment '%s'" % path.strip("/"), 404)
     opts = parse_query(query)
-    xml = _wants_xml(opts, headers)
+    xml = _wants_xml(opts, headers) and svc.version < 4
     try:
         return _dispatch(ctx, svc, rest, method.upper(), opts, headers, body, xml)
     except SapError as err:
-        return Response.error(err, "xml" if xml else "json")
+        return Response.error(err, "xml" if xml else "json", svc.version)
 
 
 def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
@@ -204,6 +288,8 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
     if rest in ("", "/"):
         if method != "GET":
             raise SapError("Method %s is not allowed on the service document" % method, 405)
+        if svc.version >= 4:
+            return Response(body=odata4.service_document(svc, ctx.base_url))
         if xml:
             return Response(body=metadata.service_document_xml(svc, ctx.base_url),
                             content_type="application/atomsvc+xml;charset=utf-8")
@@ -212,10 +298,19 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
     if rest == "$metadata":
         if method != "GET":
             raise SapError("Method %s is not allowed on $metadata" % method, 405)
+        if svc.version >= 4:
+            # V4 metadata negotiates: CSDL JSON when JSON is asked for
+            accept = (headers.get("accept") or "").lower()
+            if (opts.get("$format") or "").lower() == "json" or (
+                    "json" in accept and "xml" not in accept):
+                return Response(body=metadata4.metadata_json(svc),
+                                headers={"OData-Version": "4.0"})
+            return Response(body=metadata4.metadata_document(svc), content_type=XML_CT,
+                            headers={"OData-Version": "4.0"})
         return Response(body=metadata.metadata_document(svc), content_type=XML_CT,
                         headers={"DataServiceVersion": "2.0"})
 
-    _check_options(opts)
+    _check_options(opts, svc.version)
     segments = _split_path(rest)
     first = segments[0]
     m = _SEGMENT_RE.match(first)
@@ -256,9 +351,14 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
             if etag and etag_matches(headers.get("if-none-match"), etag):
                 return Response(304, headers={"ETag": etag}, body=b"", content_type=None)
             select = _select_list(opts, et)
-            expand = _parse_expand(opts.get("$expand", ""), et) if opts.get("$expand") else {}
-            response = Response(body=entity_envelope(
-                _render(ctx, row, et, svc, select, expand)))
+            expand = _parse_expand(opts.get("$expand", ""), et, svc.version) if opts.get("$expand") else {}
+            entity = _render(ctx, row, et, svc, select, expand)
+            if svc.version >= 4:
+                body = odata4.entity_envelope(
+                    entity, _context_for(ctx, svc, set_name, opts, single=True))
+                response = Response(body=body, headers={"OData-Version": "4.0"})
+            else:
+                response = Response(body=entity_envelope(entity))
             if etag:
                 response.headers["ETag"] = etag
             return response
@@ -279,9 +379,11 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
     if row is None:
         raise SapError(_not_found(et, keys), 404)
 
-    # ---- association links -----------------------------------------------
-    if tail[0] == "$links":
+    # ---- association links ($links in V2, $ref in V4) ---------------------
+    if tail[0] == "$links" and svc.version < 4:
         return _links(ctx, svc, et, row, tail[1:], method, opts, body)
+    if svc.version >= 4 and tail[-1] == "$ref" and len(tail) >= 2:
+        return _links(ctx, svc, et, row, tail[:-1], method, opts, body)
 
     # ---- property value --------------------------------------------------
     if len(tail) >= 1 and et.prop(tail[0]) is not None:
@@ -319,7 +421,7 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
             raise SapError(_not_found(target, child_keys), 404)
         if method == "GET":
             select = _select_list(opts, target)
-            expand = _parse_expand(opts.get("$expand", ""), target) if opts.get("$expand") else {}
+            expand = _parse_expand(opts.get("$expand", ""), target, target_svc.version) if opts.get("$expand") else {}
             return Response(body=entity_envelope(
                 _render(ctx, child, target, target_svc, select, expand)))
         raise SapError("Method %s is not allowed on this resource" % method, 405)
@@ -390,19 +492,40 @@ def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=
     top = _int_option(opts, "$top")
     skip = _int_option(opts, "$skip")
     select = _select_list(opts, et)
-    expand = _parse_expand(opts.get("$expand", ""), et) if opts.get("$expand") else {}
+    expand = _parse_expand(opts.get("$expand", ""), et, svc.version) if opts.get("$expand") else {}
 
     rows = store.query(ctx.conn, et, where, params, order, top, skip)
-    total = None
-    inline = (opts.get("$inlinecount") or "").lower()
-    if inline == "allpages":
+    total = _wants_count(opts, svc)
+    if total:
         total = store.count(ctx.conn, et, where, params)
-    elif inline not in ("", "none"):
-        raise SapError("Invalid value '%s' for $inlinecount" % opts["$inlinecount"], 400)
+    else:
+        total = None
 
     entities = [_render(ctx, r, et, svc, select, expand) for r in rows]
+    if svc.version >= 4:
+        return Response(
+            body=odata4.collection_envelope(
+                entities, _context_for(ctx, svc, set_name, opts), total),
+            headers={"OData-Version": "4.0"})
     return Response(body=collection_envelope(entities, total),
                     headers={"DataServiceVersion": "2.0"})
+
+
+def _wants_count(opts, svc) -> bool:
+    """V4 asks with $count=true, V2 with $inlinecount=allpages."""
+    if svc.version >= 4:
+        raw = (opts.get("$count") or "").lower()
+        if raw in ("", "false"):
+            return False
+        if raw == "true":
+            return True
+        raise SapError("Invalid value '%s' for $count" % opts["$count"], 400)
+    inline = (opts.get("$inlinecount") or "").lower()
+    if inline == "allpages":
+        return True
+    if inline not in ("", "none"):
+        raise SapError("Invalid value '%s' for $inlinecount" % opts["$inlinecount"], 400)
+    return False
 
 
 def _check_if_match(ctx: Context, et: EntityType, keys: Dict[str, Any],
@@ -484,7 +607,10 @@ def _links(ctx, svc, et: EntityType, row, tail: List[str], method: str,
             raise SapError(
                 "Use PUT to set the link '%s', which refers to a single entity" % nav.name,
                 405)
-        other = _resolve_link_uri(ctx, target_svc, target, _json_body(body).get("uri"))
+        payload = _json_body(body)
+        other = _resolve_link_uri(
+            ctx, target_svc, target,
+            payload.get("@odata.id") if svc.version >= 4 else payload.get("uri"))
         _write_link(ctx, et, row, nav, target, other)
         return Response(204, body=b"", content_type=None)
 
@@ -507,27 +633,35 @@ def _links(ctx, svc, et: EntityType, row, tail: List[str], method: str,
 
 def _read_links(ctx, target_svc, target: EntityType, nav, row, opts,
                 join_where, join_params) -> Response:
+    v4 = target_svc.version >= 4
     if nav.multiplicity == "1":
         keys = {remote: row[local] for local, remote in nav.join}
         other = store.get(ctx.conn, target, keys)
         if other is None:
             raise SapError(_not_found(target, keys), 404)
-        return Response(body={"d": {"uri": entity_uri(
-            ctx.base_url, target_svc, target, other)}})
+        uri = entity_uri(ctx.base_url, target_svc, target, other)
+        if v4:
+            return Response(body={
+                "@odata.context": odata4.context_url(
+                    ctx.base_url, target_svc, "$ref"),
+                "@odata.id": uri}, headers={"OData-Version": "4.0"})
+        return Response(body={"d": {"uri": uri}})
 
     where, params = _where_from(opts, target)
     where, params = _merge_where(join_where, join_params, where, params)
     order = build_orderby(opts["$orderby"], target) if opts.get("$orderby") else ""
     rows = store.query(ctx.conn, target, where, params, order,
                        _int_option(opts, "$top"), _int_option(opts, "$skip"))
-    links = [{"uri": entity_uri(ctx.base_url, target_svc, target, r)} for r in rows]
+    key = "@odata.id" if v4 else "uri"
+    links = [{key: entity_uri(ctx.base_url, target_svc, target, r)} for r in rows]
 
-    total = None
-    inline = (opts.get("$inlinecount") or "").lower()
-    if inline == "allpages":
-        total = store.count(ctx.conn, target, where, params)
-    elif inline not in ("", "none"):
-        raise SapError("Invalid value '%s' for $inlinecount" % opts["$inlinecount"], 400)
+    total = store.count(ctx.conn, target, where, params) \
+        if _wants_count(opts, target_svc) else None
+    if v4:
+        return Response(
+            body=odata4.collection_envelope(
+                links, odata4.context_url(ctx.base_url, target_svc, "$ref"), total),
+            headers={"OData-Version": "4.0"})
     return Response(body=collection_envelope(links, total),
                     headers={"DataServiceVersion": "2.0"})
 
@@ -537,7 +671,8 @@ def _resolve_link_uri(ctx, target_svc, target: EntityType, uri):
     if not uri or not isinstance(uri, str):
         raise SapError(
             "The request body must be a JSON object holding the URI of the "
-            'entity to link, as in {"uri": "…"}', 400, target="uri")
+            'entity to link, as in {"uri": "…"} (V2) or {"@odata.id": "…"} (V4)',
+            400, target="uri")
     path = urlparse(uri).path or uri
     segment = unquote(path.rstrip("/").rsplit("/", 1)[-1])
     match = _SEGMENT_RE.match(segment)
@@ -594,11 +729,17 @@ def _create(ctx, svc, et, set_name, opts, body, parent_keys=None) -> Response:
     payload = _json_body(body)
     keys = store.insert(ctx.conn, et, payload, user=ctx.user, parent_keys=parent_keys)
     row = store.get(ctx.conn, et, keys)
-    expand = _parse_expand(opts.get("$expand", ""), et) if opts.get("$expand") else {}
+    expand = _parse_expand(opts.get("$expand", ""), et, svc.version) if opts.get("$expand") else {}
     entity = _render(ctx, row, et, svc, None, expand)
     location = entity_uri(ctx.base_url, svc, et, row)
-    response_headers = {"Location": location, "DataServiceVersion": "2.0"}
     etag = etag_for(et, row)
+    if svc.version >= 4:
+        response_headers = {"Location": location, "OData-Version": "4.0"}
+        if etag:
+            response_headers["ETag"] = etag
+        return Response(201, headers=response_headers, body=odata4.entity_envelope(
+            entity, _context_for(ctx, svc, set_name, opts, single=True)))
+    response_headers = {"Location": location, "DataServiceVersion": "2.0"}
     if etag:
         response_headers["ETag"] = etag
     return Response(201, body=entity_envelope(entity), headers=response_headers)

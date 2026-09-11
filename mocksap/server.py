@@ -274,7 +274,10 @@ class Handler(BaseHTTPRequestHandler):
             if (rest or "").strip("/") == "$batch":
                 if method != "POST":
                     raise SapError("$batch requires POST", 405)
-                return batch.handle_batch(ctx, headers.get("content-type", ""), body, svc.path)
+                content_type = headers.get("content-type", "")
+                if svc.version >= 4 and "json" in content_type.lower():
+                    return batch.handle_json_batch(ctx, body, svc.path)
+                return batch.handle_batch(ctx, content_type, body, svc.path)
             return dispatch(ctx, method, path, query, headers, body)
 
         raise SapError("Resource not found for the segment '%s'" % path.strip("/"), 404)
@@ -503,7 +506,8 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "services":
             base = self._base_url({k.lower(): v for k, v in self.headers.items()})
             return Response(body={"services": [{
-                "name": s.name, "title": s.title, "url": base + s.path,
+                "name": s.name, "title": s.title, "odataVersion": s.version,
+                "url": base + s.path,
                 "metadata": base + s.path + "/$metadata",
                 "entitySets": list(s.sets),
             } for s in SERVICES.values()],
@@ -549,9 +553,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def _index_html(base_url: str) -> str:
     rows = "".join(
-        '<tr><td><code>%s</code></td><td>%s</td>'
+        '<tr><td><code>%s</code></td><td>V%d</td><td>%s</td>'
         '<td><a href="%s%s/$metadata">$metadata</a></td></tr>'
-        % (svc.name, svc.title, base_url, svc.path) for svc in SERVICES.values())
+        % (svc.name, svc.version, svc.title, base_url, svc.path)
+        for svc in SERVICES.values())
     functions = ", ".join("<code>%s</code>" % f for f in sorted(bapi.FUNCTIONS))
     return """<!doctype html><meta charset="utf-8"><title>Mock SAP system %s</title>
 <style>body{font:15px/1.5 system-ui,sans-serif;margin:2rem auto;max-width:52rem;padding:0 1rem}
@@ -559,7 +564,8 @@ table{border-collapse:collapse;width:100%%}td,th{border-bottom:1px solid #ddd;pa
 code{background:#f3f4f6;padding:.1rem .3rem;border-radius:3px}</style>
 <h1>Mock SAP system %s / client 100</h1>
 <p>A black-box SAP endpoint: it speaks the shapes, it does not do the ERP.</p>
-<h2>OData V2 services</h2><table><tr><th>Service</th><th>Title</th><th>Metadata</th></tr>%s</table>
+<h2>OData services</h2><table>
+<tr><th>Service</th><th>OData</th><th>Title</th><th>Metadata</th></tr>%s</table>
 <h2>Other endpoints</h2>
 <ul>
 <li><code>POST /sap/bc/rfc/&lt;FUNCTION&gt;</code> - BAPI over JSON: %s</li>

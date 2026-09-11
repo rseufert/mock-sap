@@ -148,6 +148,23 @@ document numbers, `_next_item_number` numbers items, `_recalculate_totals` keeps
 header consistent, `DOCUMENT_DEFAULTS` sets statuses the system would set, and
 `_initial()` returns ABAP initial values. Anything the wire cannot reveal is absent.
 
+### Two dialects, one implementation
+
+A V4 service is not a second mock. `Service.version` picks the dialect, and
+everything below the wire - the schema, the store, the `$filter` compiler, ETags,
+the fault injection - is the same code serving the same rows, which is why a sales
+order written through the V2 service reads back through the V4 one.
+
+What differs is shaping, and that lives in two modules that mirror each other:
+`odata.py`/`metadata.py` for V2, `odata4.py`/`metadata4.py` for V4. The dispatcher
+branches at the few points where a response is constructed rather than forking, so
+a new URL shape or query option is implemented once.
+
+The dialects are kept apart deliberately: `$inlinecount` on a V4 service and
+`$count=true` on a V2 one are both errors that name the dialect the option belongs
+to, because a mock that quietly accepted either would let a client ship code that a
+real system rejects.
+
 ### Structured properties are flat underneath
 
 SAP nests structured properties on the wire - `Address` is a `CT_Address` with its
@@ -243,10 +260,9 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 ## Where fidelity stops
 
-Known gaps, each with an issue: OData V4 ([#1]), OAuth and SAML ([#5]). Beyond those, the mock
+Known gaps: OAuth and SAML ([#5]). Beyond those, the mock
 has no concept of authorizations, no ABAP, no background jobs, no transactional
 boundary spanning more than a changeset, and no attempt at SAP's performance
 characteristics. It is a wire-shape simulator, and it should stay one.
 
-[#1]: https://github.com/rseufert/mock-sap/issues/1
 [#5]: https://github.com/rseufert/mock-sap/issues/5
