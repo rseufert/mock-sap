@@ -42,7 +42,7 @@ ADMIN_DEFAULTS = {
 }
 
 
-def _initial(prop):
+def initial_value(prop):
     """The ABAP initial value for a property's type."""
     if prop.type == "Edm.DateTime":
         return None
@@ -179,7 +179,7 @@ def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
     # SAP hands back initial values, not nulls: '' for characters, 0 for numbers.
     for p in et.props:
         if row.get(p.name) is None:
-            row[p.name] = _initial(p)
+            row[p.name] = initial_value(p)
 
     keys = {p.name: row[p.name] for p in et.keys}
     if get(conn, et, keys) is not None:
@@ -249,7 +249,7 @@ def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
     if not merge:  # PUT replaces: unspecified, non-key properties are reset
         for p in et.props:
             if not p.key and p.name not in values and p.updatable:
-                values[p.name] = _initial(p)
+                values[p.name] = initial_value(p)
     if et.prop("LastChangeDate") is not None:
         values["LastChangeDate"] = ctx["now"]
     if et.prop("LastChangedByUser") is not None:

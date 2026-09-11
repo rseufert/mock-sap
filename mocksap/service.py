@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qsl, unquote
+from urllib.parse import parse_qsl, unquote, urlparse
 
 from . import metadata, store
 from .odata import (SapError, build_orderby, build_where, collection_envelope,
@@ -253,6 +253,10 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
     if row is None:
         raise SapError(_not_found(et, keys), 404)
 
+    # ---- association links -----------------------------------------------
+    if tail[0] == "$links":
+        return _links(ctx, svc, et, row, tail[1:], method, opts, body)
+
     # ---- property value --------------------------------------------------
     if len(tail) >= 1 and et.prop(tail[0]) is not None:
         prop = et.prop(tail[0])
@@ -373,6 +377,148 @@ def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=
     entities = [_render(ctx, r, et, svc, select, expand) for r in rows]
     return Response(body=collection_envelope(entities, total),
                     headers={"DataServiceVersion": "2.0"})
+
+
+def _links(ctx, svc, et: EntityType, row, tail: List[str], method: str,
+           opts: Dict[str, str], body: bytes) -> Response:
+    """Serve `…/$links/<nav>`, the addressable form of an association.
+
+    Reads answer with bare URIs instead of entities.  Writes re-point the
+    foreign key columns named in `Nav.join`; where those columns are part of
+    the dependent's key - which is the case for every composition, a sales
+    order and its items for instance - repointing them would be a key change,
+    and SAP rejects that.  `store.update` already draws exactly that line, so
+    the write paths go through it rather than reimplementing the rule.
+    """
+    if not tail:
+        raise SapError("The $links segment must be followed by a navigation property", 400)
+
+    match = _SEGMENT_RE.match(tail[0])
+    nav = et.nav(match.group(1)) if match else None
+    if nav is None:
+        raise SapError("Resource not found for the segment '%s'" % tail[0], 404)
+    target = ENTITY_TYPES[nav.target]
+    target_svc = _service_of(target.name, svc)
+    predicate = match.group(2)
+    rest = tail[1:]
+
+    join_where = " AND ".join('"%s" = ?' % remote for _l, remote in nav.join)
+    join_params = [row[local] for local, _r in nav.join]
+
+    if rest == ["$count"]:
+        if method != "GET":
+            raise SapError("Method %s is not allowed on $count" % method, 405)
+        where, params = _where_from(opts, target)
+        combined, all_params = _merge_where(join_where, join_params, where, params)
+        return Response(body=str(store.count(ctx.conn, target, combined, all_params)),
+                        content_type="text/plain;charset=utf-8")
+    if rest:
+        raise SapError("Resource not found for the segment '%s'" % rest[0], 404)
+
+    if method == "GET":
+        if predicate:
+            raise SapError("A key predicate is not allowed when reading $links", 400)
+        return _read_links(ctx, target_svc, target, nav, row, opts,
+                           join_where, join_params)
+
+    if method in ("POST", "PUT", "MERGE", "PATCH"):
+        if nav.multiplicity == "*" and method != "POST":
+            raise SapError(
+                "Use POST to add a link to the collection '%s'" % nav.name, 405)
+        if nav.multiplicity == "1" and method == "POST":
+            raise SapError(
+                "Use PUT to set the link '%s', which refers to a single entity" % nav.name,
+                405)
+        other = _resolve_link_uri(ctx, target_svc, target, _json_body(body).get("uri"))
+        _write_link(ctx, et, row, nav, target, other)
+        return Response(204, body=b"", content_type=None)
+
+    if method == "DELETE":
+        other = None
+        if predicate:
+            other_keys = parse_key_predicate(predicate, target)
+            other = store.get(ctx.conn, target, other_keys)
+            if other is None:
+                raise SapError(_not_found(target, other_keys), 404)
+        elif nav.multiplicity == "*":
+            raise SapError(
+                "Deleting a link in the collection '%s' needs the key of the entity "
+                "to unlink, as in $links/%s(...)" % (nav.name, nav.name), 400)
+        _write_link(ctx, et, row, nav, target, other, clear=True)
+        return Response(204, body=b"", content_type=None)
+
+    raise SapError("Method %s is not allowed on $links" % method, 405)
+
+
+def _read_links(ctx, target_svc, target: EntityType, nav, row, opts,
+                join_where, join_params) -> Response:
+    if nav.multiplicity == "1":
+        keys = {remote: row[local] for local, remote in nav.join}
+        other = store.get(ctx.conn, target, keys)
+        if other is None:
+            raise SapError(_not_found(target, keys), 404)
+        return Response(body={"d": {"uri": entity_uri(
+            ctx.base_url, target_svc, target, other)}})
+
+    where, params = _where_from(opts, target)
+    where, params = _merge_where(join_where, join_params, where, params)
+    order = build_orderby(opts["$orderby"], target) if opts.get("$orderby") else ""
+    rows = store.query(ctx.conn, target, where, params, order,
+                       _int_option(opts, "$top"), _int_option(opts, "$skip"))
+    links = [{"uri": entity_uri(ctx.base_url, target_svc, target, r)} for r in rows]
+
+    total = None
+    inline = (opts.get("$inlinecount") or "").lower()
+    if inline == "allpages":
+        total = store.count(ctx.conn, target, where, params)
+    elif inline not in ("", "none"):
+        raise SapError("Invalid value '%s' for $inlinecount" % opts["$inlinecount"], 400)
+    return Response(body=collection_envelope(links, total),
+                    headers={"DataServiceVersion": "2.0"})
+
+
+def _resolve_link_uri(ctx, target_svc, target: EntityType, uri):
+    """Turn the `{"uri": …}` payload of a link write into the row it names."""
+    if not uri or not isinstance(uri, str):
+        raise SapError(
+            "The request body must be a JSON object holding the URI of the "
+            'entity to link, as in {"uri": "…"}', 400, target="uri")
+    path = urlparse(uri).path or uri
+    segment = unquote(path.rstrip("/").rsplit("/", 1)[-1])
+    match = _SEGMENT_RE.match(segment)
+    if not match or not match.group(2):
+        raise SapError("'%s' does not address an entity" % uri, 400, target="uri")
+    set_name = match.group(1)
+    expected = _set_name(target_svc, target.name)
+    if set_name != expected:
+        raise SapError(
+            "The link must refer to an entity of '%s', but '%s' was given"
+            % (expected, set_name), 400, target="uri")
+    keys = parse_key_predicate(match.group(2), target)
+    other = store.get(ctx.conn, target, keys)
+    if other is None:
+        raise SapError(_not_found(target, keys), 404)
+    return other
+
+
+def _write_link(ctx, et: EntityType, row, nav, target: EntityType, other,
+                clear: bool = False) -> None:
+    """Point a link at `other`, or clear it.
+
+    For a to-many navigation the dependent carries the foreign key, so the
+    *other* row is updated; for a to-one navigation this row carries it.
+    """
+    if nav.multiplicity == "*":
+        subject, subject_type = other, target
+        values = {remote: (None if clear else row[local]) for local, remote in nav.join}
+    else:
+        subject, subject_type = row, et
+        values = {local: (None if clear else other[remote]) for local, remote in nav.join}
+    for name, value in list(values.items()):
+        if value is None:
+            values[name] = store.initial_value(subject_type.prop(name))
+    keys = {p.name: subject[p.name] for p in subject_type.keys}
+    store.update(ctx.conn, subject_type, keys, values, merge=True, user=ctx.user)
 
 
 def _json_body(body: bytes) -> dict:

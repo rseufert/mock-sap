@@ -148,6 +148,17 @@ document numbers, `_next_item_number` numbers items, `_recalculate_totals` keeps
 header consistent, `DOCUMENT_DEFAULTS` sets statuses the system would set, and
 `_initial()` returns ABAP initial values. Anything the wire cannot reveal is absent.
 
+### Links are a surface of their own
+
+`$links` addresses an association rather than the entities behind it, so a read
+answers with bare URIs and a write carries only `{"uri": …}`. The writes do not get
+their own rule: `_write_link` works out which row owns the foreign key - the
+dependent for a to-many navigation, this row for a to-one - and hands the change to
+`store.update`, which already refuses to rewrite a key property. Every association
+in the current schema is a composition (a sales order item's key contains its
+order), so in practice re-pointing one is refused, exactly as SAP refuses it, while
+setting a link to the target it already has succeeds.
+
 ### Errors are shapes too
 
 A mock that returns a bare 400 teaches a client nothing. `odata.SapError` carries an
@@ -197,14 +208,13 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 ## Where fidelity stops
 
-Known gaps, each with an issue: OData V4 ([#1]), complex types ([#2]), `$links`
-([#3]), ETags and `If-Match` ([#4]), OAuth and SAML ([#5]). Beyond those, the mock
+Known gaps, each with an issue: OData V4 ([#1]), complex types ([#2]), ETags and
+`If-Match` ([#4]), OAuth and SAML ([#5]). Beyond those, the mock
 has no concept of authorizations, no ABAP, no background jobs, no transactional
 boundary spanning more than a changeset, and no attempt at SAP's performance
 characteristics. It is a wire-shape simulator, and it should stay one.
 
 [#1]: https://github.com/rseufert/mock-sap/issues/1
 [#2]: https://github.com/rseufert/mock-sap/issues/2
-[#3]: https://github.com/rseufert/mock-sap/issues/3
 [#4]: https://github.com/rseufert/mock-sap/issues/4
 [#5]: https://github.com/rseufert/mock-sap/issues/5
