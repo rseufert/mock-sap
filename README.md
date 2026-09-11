@@ -442,11 +442,18 @@ authorization objects, workflow or any other real SAP logic. What it is good for
 developing and testing integrations, contract tests in CI, demos, and load-testing
 your side of the wire.
 
-The first roadmap - V4, complex types, `$links`, ETags, OAuth - is done. Ideas
-that would extend the mock further: more function modules, more IDoc types
-(`INVOIC02`, `DELVRY07`), the remaining services in V4, `$apply` aggregations,
-delta tokens, `sap-message` headers, and the CDS/UI vocabulary annotations that
-Fiori elements reads. Open an issue if you need one of them, or something else.
+The first roadmap - OData V4, complex types, `$links`, ETags, OAuth - is done.
+What would extend the mock further, each with an issue sketching the work:
+
+- [#11 More function modules in the RFC layer](https://github.com/rseufert/mock-sap/issues/11) - a good first issue
+- [#12 More IDoc types: `INVOIC02` and `DELVRY07`](https://github.com/rseufert/mock-sap/issues/12)
+- [#13 The remaining services in OData V4](https://github.com/rseufert/mock-sap/issues/13) - a good first issue
+- [#14 `$apply` aggregations](https://github.com/rseufert/mock-sap/issues/14)
+- [#15 Delta tokens](https://github.com/rseufert/mock-sap/issues/15)
+- [#16 `sap-message` warnings that do not fail the request](https://github.com/rseufert/mock-sap/issues/16) - a good first issue
+- [#17 CDS and UI annotations for Fiori elements](https://github.com/rseufert/mock-sap/issues/17)
+
+Open an issue if you need something else.
 
 Pull requests are welcome. Adding an entity set is usually a single declaration in
 `mocksap/schema.py`; everything else - tables, `$metadata`, payload shapes - follows

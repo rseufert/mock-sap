@@ -276,8 +276,18 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 ## Where fidelity stops
 
-The first roadmap - V4, complex types, `$links`, ETags, OAuth - is complete. Beyond those, the mock
-has no concept of authorizations, no ABAP, no background jobs, no transactional
-boundary spanning more than a changeset, and no attempt at SAP's performance
-characteristics. It is a wire-shape simulator, and it should stay one.
+The first roadmap - V4, complex types, `$links`, ETags, OAuth - is complete. What
+is still absent is tracked as issues, and worth knowing before you go looking for
+it: aggregation ([#14]), delta handling ([#15]), warnings that do not fail a
+request ([#16]), and the UI vocabulary annotations a Fiori elements app reads
+([#17]).
 
+Beyond those, the mock has no concept of authorizations, no ABAP, no background
+jobs, no transactional boundary spanning more than a changeset, and no attempt at
+SAP's performance characteristics. It is a wire-shape simulator, and it should
+stay one.
+
+[#14]: https://github.com/rseufert/mock-sap/issues/14
+[#15]: https://github.com/rseufert/mock-sap/issues/15
+[#16]: https://github.com/rseufert/mock-sap/issues/16
+[#17]: https://github.com/rseufert/mock-sap/issues/17
