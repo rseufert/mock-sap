@@ -219,10 +219,18 @@ def _render(ctx: Context, row, et: EntityType, svc: Service,
 
 
 def _service_of(type_name: str, fallback: Service) -> Service:
+    """Which service should describe `type_name` in this response.
+
+    The service handling the request wins, and after that only a service of
+    the same dialect: an entity type now lives in a V2 and a V4 service at
+    once, and answering a V4 request with V2 URLs - or V2 shapes - for an
+    expanded entity would be worse than answering with an awkward URL.
+    """
     if type_name in fallback.sets.values():
         return fallback
-    for svc in SERVICES.values():
-        if type_name in svc.sets.values():
+    candidates = [svc for svc in SERVICES.values() if type_name in svc.sets.values()]
+    for svc in candidates:
+        if svc.version == fallback.version:
             return svc
     return fallback
 

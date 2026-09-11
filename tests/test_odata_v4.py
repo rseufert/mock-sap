@@ -219,11 +219,90 @@ class TestV4BusinessPartner(V4Case):
         self.assertIsInstance(partner["to_BusinessPartnerAddress"], list)
         self.assertIsInstance(partner["BusinessPartnerIsBlocked"], bool)
 
-    def test_it_is_listed_with_its_version(self):
+    def test_v4_services_are_listed_with_their_version(self):
         _, _, services = self.get("/_mock/services")
         v4 = {s["name"]: s for s in services["services"] if s["odataVersion"] == 4}
-        self.assertEqual(set(v4), {"api_salesorder", "api_businesspartner"})
-        self.assertIn("/sap/opu/odata4/", v4["api_salesorder"]["url"])
+        self.assertTrue({"api_salesorder", "api_businesspartner"} <= set(v4), v4)
+        for service in v4.values():
+            self.assertIn("/sap/opu/odata4/", service["url"])
+            self.assertTrue(service["entitySets"])
+
+
+class TestEveryV4Service(V4Case):
+    """The V4 services are declarations over the same types the V2 ones serve."""
+
+    SERVICES = {
+        "api_salesorder": ("SalesOrder", "/sap/opu/odata/sap/API_SALES_ORDER_SRV",
+                           "A_SalesOrder"),
+        "api_businesspartner": ("BusinessPartner",
+                                "/sap/opu/odata/sap/API_BUSINESS_PARTNER_SRV",
+                                "A_BusinessPartner"),
+        "api_product": ("Product", "/sap/opu/odata/sap/API_PRODUCT_SRV", "A_Product"),
+        "api_purchaseorder": ("PurchaseOrder",
+                              "/sap/opu/odata/sap/API_PURCHASEORDER_PROCESS_SRV",
+                              "A_PurchaseOrder"),
+    }
+
+    def path_of(self, name):
+        return "/sap/opu/odata4/sap/%s/srvd_a2x/sap/%s/0001" % (name, name)
+
+    def test_each_service_answers_in_v4(self):
+        for name, (entity_set, _v2_path, _type) in self.SERVICES.items():
+            base = self.path_of(name)
+            status, headers, body = self.get("%s/%s?$top=1&$count=true" % (base, entity_set))
+            self.assertEqual(status, 200, name)
+            self.assertEqual(headers.get("OData-Version"), "4.0", name)
+            self.assertIn("@odata.context", body, name)
+            self.assertGreater(body["@odata.count"], 0, name)
+
+    def test_each_service_has_valid_csdl(self):
+        for name in self.SERVICES:
+            status, _, raw = self.get(self.path_of(name) + "/$metadata", raw=True)
+            self.assertEqual(status, 200, name)
+            root = ET.fromstring(raw)
+            self.assertEqual(root.get("Version"), "4.0", name)
+            self.assertNotIn("<Association", raw.decode(), name)
+
+    def test_the_same_rows_underlie_both_dialects(self):
+        for name, (entity_set, v2_path, v2_set) in self.SERVICES.items():
+            _, _, v4 = self.get("%s/%s/$count" % (self.path_of(name), entity_set), raw=True)
+            _, _, v2 = self.get("%s/%s/$count" % (v2_path, v2_set), raw=True)
+            self.assertEqual(int(v4), int(v2), name)
+
+    def test_expansion_stays_inside_the_dialect(self):
+        base = self.path_of("api_product")
+        status, _, body = self.get(base + "/Product?$top=1&$expand=to_Description,to_Plant")
+        self.assertEqual(status, 200)
+        product = body["value"][0]
+        self.assertIsInstance(product["to_Description"], list)
+        self.assertNotIn("__metadata", product["to_Description"][0],
+                         "an expanded entity must not fall back to V2 shapes")
+
+        # the same navigation through the V2 service keeps its own shape
+        _, _, v2 = self.get("/sap/opu/odata/sap/API_PRODUCT_SRV/A_Product"
+                            "?$top=1&$expand=to_Description&$format=json")
+        self.assertIn("results", v2["d"]["results"][0]["to_Description"])
+
+    def test_purchase_order_items_expand(self):
+        base = self.path_of("api_purchaseorder")
+        _, _, body = self.get(base + "/PurchaseOrder?$top=1&$expand=to_PurchaseOrderItem")
+        order = body["value"][0]
+        self.assertTrue(order["to_PurchaseOrderItem"])
+        item = order["to_PurchaseOrderItem"][0]
+        self.assertEqual(item["PurchaseOrder"], order["PurchaseOrder"])
+        self.assertIsInstance(item["OrderQuantity"], float)
+        self.assertIsInstance(item["IsCompletelyDelivered"], bool)
+
+    def test_writes_reach_the_same_rows(self):
+        base = self.path_of("api_product")
+        headers = self.csrf_token()
+        status, _, _ = self.request(
+            "PATCH", base + "/Product('TG11')",
+            body={"ProductGroup": "L099"}, headers=dict(headers, **{"If-Match": "*"}))
+        self.assertEqual(status, 204)
+        _, _, v2 = self.get(
+            "/sap/opu/odata/sap/API_PRODUCT_SRV/A_Product('TG11')?$format=json")
+        self.assertEqual(v2["d"]["ProductGroup"], "L099")
 
 
 if __name__ == "__main__":

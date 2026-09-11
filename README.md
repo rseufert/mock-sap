@@ -87,6 +87,8 @@ bash examples/demo.sh
 | GWSAMPLE_BASIC (the classic demo service) | `/sap/opu/odata/IWBEP/GWSAMPLE_BASIC` |
 | Sales Order, **OData V4** | `/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001` |
 | Business Partner, **OData V4** | `/sap/opu/odata4/sap/api_businesspartner/srvd_a2x/sap/api_businesspartner/0001` |
+| Product, **OData V4** | `/sap/opu/odata4/sap/api_product/srvd_a2x/sap/api_product/0001` |
+| Purchase Order, **OData V4** | `/sap/opu/odata4/sap/api_purchaseorder/srvd_a2x/sap/api_purchaseorder/0001` |
 | BAPI over JSON | `POST /sap/bc/rfc/<FUNCTION_MODULE>` |
 | BAPI over SOAP | `POST /sap/bc/srt/rfc/sap/<service>/<client>/<name>/<binding>` |
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
@@ -107,8 +109,8 @@ Entity sets carry the S/4HANA field names — `A_SalesOrder` with `SoldToParty`,
 
 ## OData V4
 
-Two services are served in V4 as well, over the same rows: what you write through
-the V2 sales order service you read back through the V4 one. The dialects are kept
+Every A2X service is served in V4 as well, over the same rows: what you write
+through the V2 sales order service you read back through the V4 one. The dialects are kept
 honestly apart - a V2 option on a V4 service is an error, and the other way round.
 
 | | V2 | V4 |
@@ -373,7 +375,7 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-97 tests, every one of them over real HTTP against a running mock, split by
+103 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
 `test_oauth`, `test_operations` and `test_auth`, over the shared harness in
@@ -447,7 +449,6 @@ What would extend the mock further, each with an issue sketching the work:
 
 - [#11 More function modules in the RFC layer](https://github.com/rseufert/mock-sap/issues/11) - a good first issue
 - [#12 More IDoc types: `INVOIC02` and `DELVRY07`](https://github.com/rseufert/mock-sap/issues/12)
-- [#13 The remaining services in OData V4](https://github.com/rseufert/mock-sap/issues/13) - a good first issue
 - [#14 `$apply` aggregations](https://github.com/rseufert/mock-sap/issues/14)
 - [#15 Delta tokens](https://github.com/rseufert/mock-sap/issues/15)
 - [#16 `sap-message` warnings that do not fail the request](https://github.com/rseufert/mock-sap/issues/16) - a good first issue

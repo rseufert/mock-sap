@@ -160,6 +160,11 @@ What differs is shaping, and that lives in two modules that mirror each other:
 branches at the few points where a response is constructed rather than forking, so
 a new URL shape or query option is implemented once.
 
+An entity type can belong to a V2 and a V4 service at once - all four A2X APIs do -
+so `_service_of()` resolves an expanded type to the service handling the request
+first, and after that only to one of the same dialect. Falling through to the other
+dialect would put V2 URLs, and V2 shapes, inside a V4 response.
+
 The dialects are kept apart deliberately: `$inlinecount` on a V4 service and
 `$count=true` on a V2 one are both errors that name the dialect the option belongs
 to, because a mock that quietly accepted either would let a client ship code that a
