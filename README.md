@@ -126,6 +126,7 @@ honestly apart - a V2 option on a V4 service is an error, and the other way roun
 | Nested options | - | `$expand=to_Item($select=Material;$top=2;$count=true)` |
 | Aggregation | - | `$apply=groupby((SoldToParty),aggregate($count as Orders))` |
 | Delta | `__delta`, `!deltatoken='…'` | `@odata.deltaLink`, `$deltatoken=…` |
+| Annotations | `sap:` attributes | UI and Capabilities vocabularies |
 | Metadata | EDMX 1.0 | CSDL 4.0, XML or JSON |
 | Batch | multipart/mixed | JSON, with `atomicityGroup` |
 | Errors | `message: {lang, value}` | `message` as a string |
@@ -133,6 +134,34 @@ honestly apart - a V2 option on a V4 service is an error, and the other way roun
 ```bash
 curl "http://127.0.0.1:8000/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001/SalesOrder?\$top=1&\$count=true"
 ```
+
+### Annotations for Fiori elements
+
+`$metadata` describes structure; a Fiori elements app needs to be told what to
+draw. The V4 services carry the handful of vocabulary terms it reads:
+
+| Term | What it decides |
+| --- | --- |
+| `UI.HeaderInfo` | the title and subtitle of an object page |
+| `UI.LineItem` | the columns of a list report |
+| `UI.SelectionFields` | the filter bar |
+| `UI.Identification` | the fields on the object page |
+| `Common.Label` | the label of every property |
+| `Capabilities.Insert/Update/DeleteRestrictions` | which buttons appear |
+
+Each vocabulary is referenced by its published URL, so the terms resolve rather
+than dangling, and the same content is served in CSDL JSON for clients that ask
+for it. What a list report would draw is visible directly:
+
+```bash
+curl "$V4/\$metadata?\$format=json" | jq '."com.sap.gateway.srvd_a2x.api_salesorder.v0001".SalesOrderType."@UI.LineItem"'
+```
+
+The annotations live beside the entity types in `mocksap/schema.py`, so a column
+added to a list report is a line in the same file that defines the property.
+
+The V2 services keep their `sap:` attributes, which is what the V2 smart controls
+read; the vocabulary route is V4's, and mixing them would misrepresent both.
 
 ### Aggregation
 
@@ -491,9 +520,9 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-160 tests, every one of them over real HTTP against a running mock, split by
+168 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
-`test_apply`, `test_delta`,
+`test_apply`, `test_delta`, `test_annotations`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
 `test_oauth`, `test_messages`, `test_operations` and `test_auth`, over the shared
 harness in `tests/support.py`.
@@ -566,8 +595,6 @@ your side of the wire.
 
 The first roadmap - OData V4, complex types, `$links`, ETags, OAuth - is done.
 What would extend the mock further, each with an issue sketching the work:
-
-- [#17 CDS and UI annotations for Fiori elements](https://github.com/rseufert/mock-sap/issues/17)
 
 Open an issue if you need something else.
 

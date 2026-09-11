@@ -271,6 +271,25 @@ in the table's columns, only the ABAP comparison operators are accepted, and eve
 literal is bound. Nothing from the caller reaches SQL as text, and a caller who
 tries gets `FIELD_NOT_VALID` rather than a surprise.
 
+### Annotations are declarations, not markup
+
+A Fiori elements app is built almost entirely out of annotations, and the
+temptation is to hand-write the XML. The mock does not: `EntityType.ui` holds what
+a list report shows, what the filter bar offers and what the object page carries,
+and `metadata4.py` renders that into CSDL - twice, once as XML and once as JSON,
+from the one declaration. A column added to a list report is a line in the same
+file that defines the property it names.
+
+Two things keep the annotations honest. Every vocabulary used is referenced by its
+published URL, because a term that cannot be resolved is worse than no term at
+all. And a test walks every annotated path and asserts it is a real property of
+the type - an annotation pointing at a property that does not exist renders an
+empty column in a Fiori app and explains nothing about why.
+
+The V2 services were left alone. They carry `sap:` attributes, which is what the
+V2 smart controls read; the vocabulary route is V4's, and serving both from one
+declaration would have misrepresented both.
+
 ### A deletion has to be remembered
 
 Everything else a delta reader needs was already there: `LastChangeDate` is
@@ -350,13 +369,12 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 ## Where fidelity stops
 
-The first roadmap - V4, complex types, `$links`, ETags, OAuth - is complete. What
-is still absent is tracked as issues, and worth knowing before you go looking for
-it: the UI vocabulary annotations a Fiori elements app reads ([#17]).
+Both roadmaps are complete: V4, complex types, `$links`, ETags, OAuth, then more
+function modules, more IDoc types, `$apply`, delta handling, `sap-message` and the
+UI annotations. What is absent now is absent by choice.
 
-Beyond those, the mock has no concept of authorizations, no ABAP, no background
-jobs, no transactional boundary spanning more than a changeset, and no attempt at
-SAP's performance characteristics. It is a wire-shape simulator, and it should
+The mock has no concept of authorizations, no ABAP, no background jobs, no
+transactional boundary spanning more than a changeset, and no attempt at SAP's
+performance characteristics. It is a wire-shape simulator, and it should
 stay one.
 
-[#17]: https://github.com/rseufert/mock-sap/issues/17

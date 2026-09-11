@@ -85,6 +85,26 @@ class Nav:
 
 
 @dataclass
+class UI:
+    """What a Fiori elements app needs to know to draw this entity type.
+
+    A small, deliberate subset of SAP's UI vocabulary: enough for a list
+    report and an object page to render without hand-editing a manifest.
+    """
+
+    type_name: str = ""
+    type_name_plural: str = ""
+    title: str = ""               # property shown as the heading
+    description: str = ""         # property shown beneath it
+    line_items: List[str] = field(default_factory=list)      # list report columns
+    selection_fields: List[str] = field(default_factory=list)  # filter bar
+    identification: List[str] = field(default_factory=list)  # object page fields
+    insertable: bool = True
+    updatable: bool = True
+    deletable: bool = True
+
+
+@dataclass
 class EntityType:
     name: str
     props: List[Prop]
@@ -93,6 +113,7 @@ class EntityType:
     # The S/4 A2X APIs name the EDM type A_SalesOrderType; the classic
     # Gateway services name it plainly, BusinessPartner.
     edm_suffix: str = "Type"
+    ui: Optional["UI"] = None
 
     def columns(self) -> List[Tuple[str, Prop]]:
         """Every stored column: (column name, the property behind it).
@@ -627,6 +648,79 @@ _register(
             Nav("ToProduct", "Product", "1", [("ProductID", "ProductID")]),
         ],
     )
+)
+
+# --------------------------------------------------------------------------
+# UI annotations
+#
+# Structure alone does not make an app.  These say which columns a list report
+# shows, what the filter bar offers and what the object page holds - the
+# handful of terms Fiori elements actually reads.
+# --------------------------------------------------------------------------
+
+ENTITY_TYPES["A_SalesOrder"].ui = UI(
+    type_name="Sales Order",
+    type_name_plural="Sales Orders",
+    title="SalesOrder",
+    description="PurchaseOrderByCustomer",
+    line_items=["SalesOrder", "SoldToParty", "SalesOrderType", "TotalNetAmount",
+                "TransactionCurrency", "OverallSDProcessStatus"],
+    selection_fields=["SalesOrganization", "SoldToParty", "OverallSDProcessStatus",
+                      "SalesOrderDate"],
+    identification=["SalesOrder", "SalesOrderType", "SalesOrganization",
+                    "DistributionChannel", "SoldToParty", "PurchaseOrderByCustomer",
+                    "TotalNetAmount", "RequestedDeliveryDate"],
+    deletable=True,
+)
+
+ENTITY_TYPES["A_SalesOrderItem"].ui = UI(
+    type_name="Sales Order Item",
+    type_name_plural="Sales Order Items",
+    title="SalesOrderItem",
+    description="SalesOrderItemText",
+    line_items=["SalesOrderItem", "Material", "SalesOrderItemText",
+                "RequestedQuantity", "RequestedQuantityUnit", "NetAmount"],
+    selection_fields=["Material", "Plant"],
+    identification=["SalesOrderItem", "Material", "SalesOrderItemText",
+                    "RequestedQuantity", "NetAmount", "Plant"],
+)
+
+ENTITY_TYPES["A_BusinessPartner"].ui = UI(
+    type_name="Business Partner",
+    type_name_plural="Business Partners",
+    title="BusinessPartnerFullName",
+    description="BusinessPartner",
+    line_items=["BusinessPartner", "BusinessPartnerFullName", "BusinessPartnerCategory",
+                "Customer", "Supplier"],
+    selection_fields=["BusinessPartnerCategory", "BusinessPartnerGrouping", "Industry"],
+    identification=["BusinessPartner", "BusinessPartnerFullName", "FirstName",
+                    "LastName", "SearchTerm1", "Industry"],
+    deletable=False,
+)
+
+ENTITY_TYPES["A_Product"].ui = UI(
+    type_name="Product",
+    type_name_plural="Products",
+    title="Product",
+    description="ProductGroup",
+    line_items=["Product", "ProductType", "ProductGroup", "BaseUnit", "GrossWeight",
+                "WeightUnit"],
+    selection_fields=["ProductType", "ProductGroup", "Division"],
+    identification=["Product", "ProductType", "ProductGroup", "BaseUnit",
+                    "NetWeight", "GrossWeight", "WeightUnit"],
+    deletable=False,
+)
+
+ENTITY_TYPES["A_PurchaseOrder"].ui = UI(
+    type_name="Purchase Order",
+    type_name_plural="Purchase Orders",
+    title="PurchaseOrder",
+    description="Supplier",
+    line_items=["PurchaseOrder", "PurchaseOrderType", "Supplier", "CompanyCode",
+                "DocumentCurrency", "PurchasingProcessingStatus"],
+    selection_fields=["CompanyCode", "PurchasingOrganization", "Supplier"],
+    identification=["PurchaseOrder", "PurchaseOrderType", "CompanyCode",
+                    "PurchasingOrganization", "Supplier", "PaymentTerms"],
 )
 
 # --------------------------------------------------------------------------
