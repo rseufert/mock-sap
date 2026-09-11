@@ -59,6 +59,7 @@ Useful while working:
 ```bash
 python3 tests/test_batch.py           # one surface
 python3 tools/check_docs.py           # the docs coverage check CI runs
+python3 tools/check_changelog.py      # and the changelog check
 bash examples/demo.sh                 # the curl tour, against a running mock
 ```
 
@@ -92,6 +93,14 @@ file. Read the first before a change of any size.
   tracked file has no row in `docs/FILES.md`, if a row names a file that is gone,
   or if a module is missing from the README's layout block. It checks coverage,
   not prose - keeping the prose true is on you.
+- **A line in the changelog.** `tools/check_changelog.py` fails a pull request
+  that touches `mocksap/` without adding an entry under `## [Unreleased]` - an
+  entry, not merely a changed file, because the merge that lost one still
+  touched the changelog. It is what a user of the published package reads. The
+  same check holds released sections to being history and refuses to let an
+  entry waiting for a release disappear. A change that genuinely needs no entry
+  - a comment, a rename, a pure refactor - can carry the `no changelog` label,
+  which lifts that one rule and leaves the others standing.
 - **No new dependencies.** See above.
 - **A commit message that says what changed and why.** The why is the part a
   reader cannot reconstruct. Wrap at 72 characters.

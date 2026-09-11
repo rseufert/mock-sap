@@ -19,7 +19,11 @@ Nothing can prove a resolution kept the right prose. What *can* be checked:
    `mocksap/` adds at least one bullet under `## [Unreleased]`, or moves the
    existing ones into a new release section - which is what cutting a release
    does. A resolution that drops the branch's own entry leaves it with none,
-   and this is what says so.
+   and this is what says so. Note that "touched the changelog" would not: the
+   merge that lost the entry touched it, adding a link reference and dropping
+   the prose. A change that genuinely needs no entry - a comment, a rename, a
+   pure refactor - carries the `no changelog` label, which lifts this rule and
+   leaves the other two standing.
 
 (2) and (3) need something to compare against, so they run only when `--base`
 names a revision this checkout has; CI passes the pull request's base. Run it
@@ -39,6 +43,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHANGELOG = "CHANGELOG.md"
 PYPROJECT = "pyproject.toml"
+PACKAGE = "mocksap/"
+ESCAPE_HATCH = "no changelog"
 
 HEADING = re.compile(r"^## \[([^\]]+)\](?: - (\d{4}-\d{2}-\d{2}))?\s*$")
 LINK = re.compile(r"^\[([^\]]+)\]:\s*(\S+)\s*$")
@@ -100,19 +106,28 @@ def _version_key(version: str):
     return tuple(int(part) for part in version.split("."))
 
 
-def _touches_package(base: str) -> bool:
+def _changed_in_package(base: str):
     changed = subprocess.check_output(
         ["git", "diff", "--name-only", "%s...HEAD" % base], cwd=ROOT).decode("utf-8")
-    return any(name.startswith("mocksap/") for name in changed.split())
+    return sorted(name for name in changed.split() if name.startswith(PACKAGE))
 
 
 def _resolve(base: str) -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--verify", "--quiet", base + "^{commit}"],
-            cwd=ROOT, stderr=subprocess.DEVNULL).decode().strip()
-    except subprocess.CalledProcessError:
-        return ""
+    """The base commit, fetching it first if this is a shallow or partial clone."""
+    for attempt in (0, 1):
+        try:
+            return subprocess.check_output(
+                ["git", "rev-parse", "--verify", "--quiet", base + "^{commit}"],
+                cwd=ROOT, stderr=subprocess.DEVNULL).decode().strip()
+        except subprocess.CalledProcessError:
+            if attempt:
+                return ""
+            branch = base.rsplit("/", 1)[-1]
+            subprocess.call(
+                ["git", "fetch", "--no-tags", "--quiet", "origin",
+                 "%s:refs/remotes/origin/%s" % (branch, branch)],
+                cwd=ROOT, stderr=subprocess.DEVNULL)
+    return ""
 
 
 def check_structure(text: str, pyproject: str):
@@ -154,7 +169,7 @@ def check_structure(text: str, pyproject: str):
     return problems
 
 
-def check_against_base(text: str, before: str, base: str):
+def check_against_base(text: str, before: str, base: str, labels=()):
     problems = []
     now = {v: body for v, _, body in sections(text)}
     then = sections(before)
@@ -179,13 +194,18 @@ def check_against_base(text: str, before: str, base: str):
         if entry not in everywhere:
             problems.append("an entry under [Unreleased] is gone: %s" % _short(entry))
 
-    if _touches_package(base):
+    package = _changed_in_package(base)
+    if package and ESCAPE_HATCH not in labels:
         added = [e for e in bullets(now.get("Unreleased", "")) if e not in bullets(dict((v, b) for v, _, b in then).get("Unreleased", ""))]
         moved = [v for v in now if v != "Unreleased" and v not in {x for x, _, _ in then}]
         if not added and not moved:
             problems.append(
-                "this changes mocksap/ but adds no entry under [Unreleased]. If a merge "
-                "resolution dropped one, this is that entry asking to come back")
+                "%s changed without an entry under [Unreleased]:\n%s\n    Say what changed "
+                "and, where it is not obvious, why - it is what a user of the published "
+                "package reads. If a merge resolution dropped the entry, this is it asking "
+                "to come back. If the change genuinely needs none - a comment, a rename, a "
+                "pure refactor - label the pull request `%s`."
+                % (PACKAGE.rstrip("/"), "\n".join("      %s" % name for name in package), ESCAPE_HATCH))
     return problems
 
 
@@ -196,7 +216,9 @@ def _short(entry: str, width: int = 70) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", default="", help="revision to compare against, e.g. origin/main")
+    parser.add_argument("--labels", default="", help="comma-separated pull request labels; `%s` lifts the entry rule" % ESCAPE_HATCH)
     args = parser.parse_args()
+    labels = [label.strip() for label in args.labels.split(",") if label.strip()]
 
     text = _read(CHANGELOG)
     problems = check_structure(text, _read(PYPROJECT))
@@ -207,7 +229,7 @@ def main() -> int:
         if not compared:
             print("note: %s is not in this checkout, so only the structure was checked." % args.base)
         else:
-            problems += check_against_base(text, _read(CHANGELOG, compared), compared)
+            problems += check_against_base(text, _read(CHANGELOG, compared), compared, labels)
 
     if problems:
         print("CHANGELOG.md needs attention:\n")

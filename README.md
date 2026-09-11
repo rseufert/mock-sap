@@ -577,7 +577,8 @@ and that every file in the repository is accounted for in
 [docs/FILES.md](docs/FILES.md):
 
 ```bash
-python3 tools/check_docs.py
+python3 tools/check_docs.py        # every file is documented
+python3 tools/check_changelog.py   # the changelog is intact and says what changed
 ```
 
 ## Releasing
