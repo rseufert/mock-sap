@@ -177,6 +177,24 @@ def _ui_annotations(ns: str, type_name: str, et: EntityType) -> str:
         out.append('<Annotation Term="UI.Identification"><Collection>%s</Collection>'
                    "</Annotation>"
                    % "".join(_data_field(path) for path in ui.identification))
+
+    for group in ui.field_groups:
+        out.append('<Annotation Term="UI.FieldGroup"%s>'
+                   '<Record Type="UI.FieldGroupType">'
+                   '<PropertyValue Property="Label"%s/>'
+                   '<PropertyValue Property="Data"><Collection>%s</Collection>'
+                   "</PropertyValue></Record></Annotation>"
+                   % (_a("Qualifier", group.qualifier), _a("String", group.label),
+                      "".join(_data_field(path) for path in group.fields)))
+
+    if ui.facets:
+        out.append('<Annotation Term="UI.Facets"><Collection>%s</Collection></Annotation>'
+                   % "".join(
+                       '<Record Type="UI.ReferenceFacet">'
+                       '<PropertyValue Property="Label"%s/>'
+                       '<PropertyValue Property="Target"%s/></Record>'
+                       % (_a("String", facet.label), _a("AnnotationPath", facet.target))
+                       for facet in ui.facets))
     out.append("</Annotations>")
     return "".join(out)
 
@@ -293,6 +311,17 @@ def _ui_annotations_json(et: EntityType) -> dict:
                                       for path in ui.selection_fields]
     if ui.identification:
         out["@UI.Identification"] = [_data_field_json(path) for path in ui.identification]
+    for group in ui.field_groups:
+        out["@UI.FieldGroup#" + group.qualifier] = {
+            "$Type": "UI.FieldGroupType",
+            "Label": group.label,
+            "Data": [_data_field_json(path) for path in group.fields],
+        }
+    if ui.facets:
+        out["@UI.Facets"] = [
+            {"$Type": "UI.ReferenceFacet", "Label": facet.label,
+             "Target": {"$AnnotationPath": facet.target}}
+            for facet in ui.facets]
     return out
 
 

@@ -282,9 +282,12 @@ file that defines the property it names.
 
 Two things keep the annotations honest. Every vocabulary used is referenced by its
 published URL, because a term that cannot be resolved is worse than no term at
-all. And a test walks every annotated path and asserts it is a real property of
-the type - an annotation pointing at a property that does not exist renders an
-empty column in a Fiori app and explains nothing about why.
+all. And the tests walk every path the annotations name: a data field must be a
+real property of the type, and a facet must point either at a field group the type
+declares or through a navigation property at a type that has line items to show.
+An annotation naming something that does not exist renders a blank column or an
+empty section in a Fiori app and explains nothing about why - the failure lands in
+someone else's UI, never here.
 
 The V2 services were left alone. They carry `sap:` attributes, which is what the
 V2 smart controls read; the vocabulary route is V4's, and serving both from one
