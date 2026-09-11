@@ -33,6 +33,7 @@ Roughly in dependency order: `schema` sits at the bottom and depends on nothing,
 | `batch.py` | `$batch` in both dialects: multipart/mixed with changesets for V2, JSON with atomicity groups for V4, and the snapshot that makes either roll back as a unit. | Changing batch semantics. |
 | `bapi.py` | The RFC layer: the function-module registry, the BAPIRET2 helper, the eleven implemented BAPIs, and the SOAP transport (envelope parsing, response rendering, faults). | Adding a BAPI or changing RFC error shapes. |
 | `idoc.py` | IDoc inbox and outbox: XML and EDI_DC40 flat-file parsing, status records, and ORDERS05 generation from a stored sales order. | Adding an IDoc type or segment. |
+| `oauth.py` | The mock authorization server: the token store, the grants (client credentials, password, SAML bearer, refresh), bearer validation and revocation. Opaque tokens held in memory - there is no cryptography here, by design. |
 | `server.py` | The HTTP front end: routing, CSRF tokens, basic auth, `sap-client` validation, latency and fault injection, the request log, the `/_mock` control plane and the human-readable index page. | Adding an endpoint, a failure scenario or a cross-cutting header. |
 | `__init__.py` | Re-exports `Config` and `make_server`, and derives `__version__` from the installed package metadata (falling back to `pyproject.toml` in a source checkout, where it reports `…+source`). | Rarely. |
 | `__main__.py` | The `mock-sap` / `python -m mocksap` command line: argument parsing and the startup banner. | Adding a CLI flag. |
@@ -56,6 +57,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_batch.py` | A mixed batch of a GET and a changeset, and the rollback of a changeset whose second request fails. |
 | `test_rfc.py` | BAPI create over JSON, the error `RETURN` table, unknown function modules, and the same functions over SOAP including a fault. |
 | `test_idoc.py` | ORDERS05 generation, posting it back in, reading it, setting a status, and a flat-file IDoc. |
+| `test_oauth.py` | The token endpoint and its failure modes, bearer validation across OData and RFC, the principal a SAML token carries into `CreatedByUser`, expiry and refresh-token rotation, revocation, and OAuth beside basic auth. |
 | `test_operations.py` | Failure scenarios, fault rules and their `count`, `sap-client` rejection, the `/_mock` endpoints, and reset. |
 | `test_auth.py` | Basic authentication, against a server started with `--auth` and CSRF disabled. |
 

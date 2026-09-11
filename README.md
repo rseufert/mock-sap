@@ -91,7 +91,8 @@ bash examples/demo.sh
 | BAPI over SOAP | `POST /sap/bc/srt/rfc/sap/<service>/<client>/<name>/<binding>` |
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
 | IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05 |
-| Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs`, `/_mock/faults`, `POST /_mock/reset` |
+| OAuth token endpoint | `POST /sap/bc/sec/oauth2/token`, `POST /sap/bc/sec/oauth2/revoke` |
+| Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs`, `/_mock/tokens`, `/_mock/faults`, `POST /_mock/reset` |
 
 The four `API_*` services carry the S/4HANA field names; `GWSAMPLE_BASIC` is the
 classic Gateway demo service every SAP OData tutorial uses, with its structured
@@ -232,6 +233,44 @@ curl -X PUT http://127.0.0.1:8000/sap/bc/idoc/<DOCNUM>/status \
   -H "X-CSRF-Token: $TOKEN" -d '{"status":"51"}'
 ```
 
+## Authentication
+
+By default the mock is open. Two mechanisms can be switched on, and with both on a
+request passes if it satisfies either.
+
+```bash
+mock-sap --auth sapuser:secret                        # HTTP basic, NetWeaver realm
+mock-sap --oauth SAP_CLIENT:s3cret --token-ttl 60     # OAuth 2.0 bearer tokens
+```
+
+With `--oauth`, the flow an S/4HANA Cloud client has to implement works end to end:
+
+```bash
+TOKEN=$(curl -s -u SAP_CLIENT:s3cret -X POST \
+  http://127.0.0.1:8000/sap/bc/sec/oauth2/token \
+  -d 'grant_type=client_credentials' | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8000/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder?\$top=1&\$format=json"
+```
+
+| Grant | Notes |
+| --- | --- |
+| `client_credentials` | client id and secret, in the body or as HTTP basic |
+| `password` | the `username` becomes the principal |
+| `urn:ietf:params:oauth:grant-type:saml2-bearer` | the assertion's `NameID` becomes the principal |
+| `refresh_token` | rotates: the old refresh token is spent |
+
+The principal follows the token: a document created with a SAML-derived token has
+that user in `CreatedByUser`. `--token-ttl 60` makes tokens expire quickly so a
+client's refresh path can actually be exercised, `POST /sap/bc/sec/oauth2/revoke`
+ends one early, and `GET /_mock/tokens` shows what is outstanding.
+
+**None of this is cryptography.** Tokens are opaque strings the mock remembers in
+memory, and a SAML assertion is read for its `NameID` and otherwise believed - no
+signature is checked, no issuer is verified. It exists so a client can exercise
+fetch, use, expire, refresh and retry, not to stand in for an authorization server.
+
 ## Simulating a bad day
 
 Per request, with a header or a query parameter:
@@ -249,6 +288,7 @@ curl -H 'sap-mock-scenario: busy' http://127.0.0.1:8000/sap/opu/odata/sap/API_SA
 | `auth` / `forbidden` | 401 with a NetWeaver realm / 403 missing authorization |
 | `lock` | 423, document locked by another user |
 | `precondition` | 412, as when the entity was changed after it was read |
+| `expired-token` | 401 `invalid_token`, as when a bearer token has run out |
 | `csrf` | 403 with `x-csrf-token: Required` |
 | `notfound` | 404 |
 
@@ -286,7 +326,8 @@ mock-sap [--host 127.0.0.1] [--port 8000] [--db :memory:|path.db] [--client 100]
 ```
 
 `--db mock.db` keeps data across restarts; the default in-memory system starts fresh
-every time. `--auth` turns on HTTP basic authentication with a NetWeaver realm.
+every time. `--auth` turns on HTTP basic authentication with a NetWeaver realm, and
+`--oauth` turns on bearer tokens.
 `--require-if-match` makes the mock refuse to modify a concurrency-controlled entity
 that arrives without a validator, the way newer Gateway services do.
 
@@ -332,10 +373,11 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-79 tests, every one of them over real HTTP against a running mock, split by
+97 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
-`test_operations` and `test_auth`, over the shared harness in `tests/support.py`.
+`test_oauth`, `test_operations` and `test_auth`, over the shared harness in
+`tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work,
@@ -379,6 +421,7 @@ mocksap/service.py    OData request dispatcher
 mocksap/batch.py      $batch multipart and atomic changesets
 mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
+mocksap/oauth.py      the token store: grants, bearer validation, refresh
 mocksap/server.py     HTTP front end, CSRF, auth, fault injection, /_mock API
 
 tests/                one module per surface, all driven over real HTTP
@@ -399,10 +442,11 @@ authorization objects, workflow or any other real SAP logic. What it is good for
 developing and testing integrations, contract tests in CI, demos, and load-testing
 your side of the wire.
 
-Not implemented yet, and the obvious next contributions - each one has an issue
-with a sketch of the work involved:
-
-- [#5 OAuth 2.0 and SAML bearer authentication](https://github.com/rseufert/mock-sap/issues/5)
+The first roadmap - V4, complex types, `$links`, ETags, OAuth - is done. Ideas
+that would extend the mock further: more function modules, more IDoc types
+(`INVOIC02`, `DELVRY07`), the remaining services in V4, `$apply` aggregations,
+delta tokens, `sap-message` headers, and the CDS/UI vocabulary annotations that
+Fiori elements reads. Open an issue if you need one of them, or something else.
 
 Pull requests are welcome. Adding an entity set is usually a single declaration in
 `mocksap/schema.py`; everything else - tables, `$metadata`, payload shapes - follows

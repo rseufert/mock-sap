@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote, urlparse
 
-from . import bapi, batch, db, idoc, metadata
+from . import bapi, batch, db, idoc, metadata, oauth
 from .odata import SapError, error_payload
 from .schema import SERVICES, service_for_path
 from .service import JSON_CT, Context, Response, dispatch, parse_query
@@ -31,6 +31,7 @@ SCENARIOS = {
     "forbidden": "403, missing authorization object",
     "lock": "423, document locked by another user",
     "precondition": "412, as when the entity was changed after it was read",
+    "expired-token": "401 invalid_token, as when a bearer token has run out",
     "notfound": "404 resource not found",
     "csrf": "403 CSRF token validation failed",
 }
@@ -44,6 +45,8 @@ class Config:
         self.client = kw.get("client", "100")
         self.user = kw.get("user", "MOCKUSER")
         self.basic_auth = kw.get("basic_auth")  # "user:password" or None
+        self.oauth = kw.get("oauth")            # "client_id:client_secret" or None
+        self.token_ttl = kw.get("token_ttl", 3600)
         self.csrf = kw.get("csrf", True)
         self.require_if_match = kw.get("require_if_match", False)
         self.latency_ms = kw.get("latency_ms", 0)
@@ -103,13 +106,26 @@ class MockSap:
         if db.counts(self.conn)["A_BusinessPartner"] == 0:
             db.seed(self.conn, config.seed_value)
         self.tokens = set()
+        self.oauth = None
+        if config.oauth:
+            client_id, _, client_secret = config.oauth.partition(":")
+            self.oauth = oauth.TokenStore(client_id, client_secret,
+                                          config.token_ttl, config.user)
         self.faults = Faults()
         self.started = _dt.datetime.utcnow()
         self.rnd = random.Random(config.seed_value)
 
-    def context(self, base_url: str, client: str) -> Context:
-        return Context(self.conn, base_url, self.config.user, client,
+    def context(self, base_url: str, client: str, user: Optional[str] = None) -> Context:
+        return Context(self.conn, base_url, user or self.config.user, client,
                        require_if_match=self.config.require_if_match)
+
+    def close(self) -> None:
+        """Release the database connection; used when a test shuts a mock down."""
+        try:
+            db.forget(self.conn)
+            self.conn.close()
+        except Exception:  # pragma: no cover - nothing useful to do here
+            pass
 
     def new_token(self) -> str:
         token = secrets.token_urlsafe(18)
@@ -166,6 +182,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle(self, method: str):
         started = time.time()
         self._issue_token = None
+        self._principal = None
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         query = parsed.query
@@ -233,6 +250,12 @@ class Handler(BaseHTTPRequestHandler):
         if injected is not None:
             return injected
 
+        # The OAuth endpoints sit in front of authentication - they are how a
+        # client gets the credentials the rest of the surface demands - and in
+        # front of CSRF, which a token request cannot have fetched yet.
+        if path.startswith("/sap/bc/sec/oauth2/"):
+            return self._oauth(method, path, headers, body)
+
         auth = self._check_auth(headers)
         if auth is not None:
             return auth
@@ -255,7 +278,7 @@ class Handler(BaseHTTPRequestHandler):
             return csrf
 
         base_url = self._base_url(headers)
-        ctx = self.mock.context(base_url, client)
+        ctx = self.mock.context(base_url, client, self._principal)
 
         if path in ("/", "/index.html", "/sap", "/sap/"):
             return Response(body=_index_html(base_url), content_type="text/html;charset=utf-8")
@@ -288,23 +311,54 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- cross cutting ----------------------------------------------------
     def _check_auth(self, headers) -> Optional[Response]:
-        expected = self.mock.config.basic_auth
-        if not expected:
-            return None
+        """Basic, bearer, or both.  A request passes if it satisfies one of
+        the mechanisms that are switched on; with none configured, the mock
+        is open, as it has always been."""
+        config = self.mock.config
         supplied = headers.get("authorization", "")
-        if supplied.lower().startswith("basic "):
-            try:
-                decoded = base64.b64decode(supplied.split(" ", 1)[1]).decode("utf-8")
-            except Exception:
-                decoded = ""
-            if decoded == expected:
-                return None
-        return Response(
-            401,
-            headers={"WWW-Authenticate": 'Basic realm="SAP NetWeaver Application Server [%s/%s]"'
-                                         % (SYSTEM_ID, self.mock.config.client)},
-            body=error_payload(SapError("Authentication failed", 401)),
-        )
+        store = self.mock.oauth
+
+        if store is not None:
+            token = oauth.bearer_token(supplied)
+            if token is not None:
+                try:
+                    self._principal = store.validate(token).user
+                    return None
+                except oauth.OAuthError as err:
+                    return self._bearer_challenge(err)
+            if not config.basic_auth:
+                return self._bearer_challenge(None)
+
+        if config.basic_auth:
+            if supplied.lower().startswith("basic "):
+                try:
+                    decoded = base64.b64decode(supplied.split(" ", 1)[1]).decode("utf-8")
+                except Exception:
+                    decoded = ""
+                if decoded == config.basic_auth:
+                    self._principal = config.basic_auth.split(":", 1)[0].upper()
+                    return None
+            return Response(
+                401,
+                headers={"WWW-Authenticate":
+                         'Basic realm="SAP NetWeaver Application Server [%s/%s]"'
+                         % (SYSTEM_ID, config.client)},
+                body=error_payload(SapError("Authentication failed", 401)),
+            )
+        return None
+
+    def _bearer_challenge(self, err) -> Response:
+        """RFC 6750: name the problem in WWW-Authenticate, or just the realm
+        when no credentials were presented at all."""
+        realm = 'Bearer realm="SAP NetWeaver Application Server [%s/%s]"' % (
+            SYSTEM_ID, self.mock.config.client)
+        if err is None:
+            message = "No bearer token was presented"
+        else:
+            realm += ', error="%s", error_description="%s"' % (err.error, err.description)
+            message = err.description or err.error
+        return Response(401, headers={"WWW-Authenticate": realm},
+                        body=error_payload(SapError(message, 401)))
 
     def _check_csrf(self, method, path, headers) -> Optional[Response]:
         if not self.mock.config.csrf or not path.startswith("/sap/"):
@@ -364,6 +418,13 @@ class Handler(BaseHTTPRequestHandler):
             return Response(412, body=error_payload(SapError(
                 "The entity was changed by another user after it was read",
                 412, code="/IWBEP/CX_MGW_BUSI_EXCEPTION")))
+        if scenario == "expired-token":
+            return Response(401, headers={
+                "WWW-Authenticate": 'Bearer realm="SAP NetWeaver Application Server '
+                                    '[%s/%s]", error="invalid_token", '
+                                    'error_description="The access token expired"'
+                                    % (SYSTEM_ID, cfg.client)},
+                body=error_payload(SapError("The access token expired", 401)))
         if scenario == "lock":
             return Response(423, body=error_payload(SapError(
                 "Document is locked by user MOCKUSER", 423,
@@ -398,6 +459,32 @@ class Handler(BaseHTTPRequestHandler):
                 "UpdatedDate": "/Date(%d)/" % int(time.time() * 1000),
             })
         return Response(body={"d": {"results": results, "__count": str(len(results))}})
+
+    def _oauth(self, method, path, headers, body) -> Response:
+        store = self.mock.oauth
+        rest = path[len("/sap/bc/sec/oauth2/"):].strip("/")
+        if store is None:
+            raise SapError(
+                "OAuth is not switched on in this mock; start it with "
+                "--oauth CLIENT_ID:CLIENT_SECRET", 404)
+        if method != "POST":
+            raise SapError("The OAuth endpoints require POST", 405)
+        try:
+            form = oauth.parse_form(body)
+            basic = oauth.basic_credentials(headers.get("authorization", ""))
+            if rest == "token":
+                token = store.grant(form, basic)
+                return Response(body=token.response(), headers={
+                    "Cache-Control": "no-store", "Pragma": "no-cache"})
+            if rest == "revoke":
+                store.revoke(form.get("token", ""))
+                return Response(200, body={}, content_type=None)  # RFC 7009: always 200
+        except oauth.OAuthError as err:
+            headers_out = {"Cache-Control": "no-store"}
+            if err.status == 401:
+                headers_out["WWW-Authenticate"] = 'Basic realm="oauth2"'
+            return Response(err.status, body=err.payload(), headers=headers_out)
+        raise SapError("Unknown OAuth endpoint '%s'" % rest, 404)
 
     def _rfc_json(self, ctx, method, path, body) -> Response:
         if method != "POST":
@@ -498,6 +585,7 @@ class Handler(BaseHTTPRequestHandler):
                 "csrf": mock.config.csrf,
                 "requireIfMatch": mock.config.require_if_match,
                 "auth": bool(mock.config.basic_auth),
+                "oauth": bool(mock.oauth),
                 "started": mock.started.isoformat() + "Z",
                 "uptime_s": round((_dt.datetime.utcnow() - mock.started).total_seconds(), 1),
             })
@@ -539,6 +627,14 @@ class Handler(BaseHTTPRequestHandler):
             ctx = mock.context(self._base_url({}), mock.config.client)
             return Response(body={"results": idoc.listing(
                 ctx, int(opts.get("limit", 50)), opts.get("mestyp", ""))})
+        if rest == "tokens":
+            if mock.oauth is None:
+                raise SapError("OAuth is not switched on in this mock", 404)
+            if method == "GET":
+                return Response(body={"results": mock.oauth.listing()})
+            if method == "DELETE":
+                return Response(body={"revoked": mock.oauth.revoke_all()})
+            raise SapError("Method %s is not allowed on /_mock/tokens" % method, 405)
         if rest == "faults":
             if method == "GET":
                 return Response(body={"results": mock.faults.rules,

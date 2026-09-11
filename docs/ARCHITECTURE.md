@@ -211,6 +211,22 @@ classic Gateway services accept the write, newer ones refuse it with 428.
 `--require-if-match` picks, and the default is the lenient one so that existing
 clients keep working.
 
+### Authentication is a flow, not a secret
+
+`--oauth` puts a mock authorization server in front of the mock: a token endpoint,
+bearer validation, refresh with rotation, revocation. What it does not do is
+cryptography. Tokens are opaque strings held in memory and a SAML assertion is read
+for its `NameID` and otherwise believed - no signature, no issuer, no clock skew.
+The thing worth testing on the client side is the *flow* - fetch, use, notice a 401,
+refresh, retry - and that is what the mock makes exercisable, with `--token-ttl`
+turning "eventually" into "in one second".
+
+Two ordering details carry weight. The token endpoint sits in front of the auth
+check and in front of CSRF, because a client cannot present the credential it is
+asking for; getting this wrong makes the whole flow unusable, and it did, once.
+And the principal rides along: the user a token carries becomes `ctx.user`, so a
+document created with a SAML-derived token names that user in `CreatedByUser`.
+
 ### Errors are shapes too
 
 A mock that returns a bare 400 teaches a client nothing. `odata.SapError` carries an
@@ -260,9 +276,8 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 ## Where fidelity stops
 
-Known gaps: OAuth and SAML ([#5]). Beyond those, the mock
+The first roadmap - V4, complex types, `$links`, ETags, OAuth - is complete. Beyond those, the mock
 has no concept of authorizations, no ABAP, no background jobs, no transactional
 boundary spanning more than a changeset, and no attempt at SAP's performance
 characteristics. It is a wire-shape simulator, and it should stay one.
 
-[#5]: https://github.com/rseufert/mock-sap/issues/5
