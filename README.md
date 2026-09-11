@@ -595,8 +595,14 @@ authorization objects, workflow or any other real SAP logic. What it is good for
 developing and testing integrations, contract tests in CI, demos, and load-testing
 your side of the wire.
 
-The first roadmap - OData V4, complex types, `$links`, ETags, OAuth - is done.
-What would extend the mock further, each with an issue sketching the work:
+Two roadmaps are done: OData V4, complex types, `$links`, ETags and OAuth, then
+more function modules, more IDoc types, `$apply`, delta handling, `sap-message`
+and the UI annotations. What would extend the mock further, each with an issue
+sketching the work:
+
+- [#27 Deliveries and accounting documents](https://github.com/rseufert/mock-sap/issues/27) - the documents the mock hands out numbers for but cannot show
+- [#28 `UI.FieldGroup` and `UI.Facets`](https://github.com/rseufert/mock-sap/issues/28) - an object page with sections and an items table - a good first issue
+- [#29 A V2 annotation document](https://github.com/rseufert/mock-sap/issues/29) - so the classic smart controls can be pointed at GWSAMPLE_BASIC
 
 Open an issue if you need something else.
 
