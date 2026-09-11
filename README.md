@@ -3,6 +3,7 @@
 [![CI](https://github.com/rseufert/mock-sap/actions/workflows/ci.yml/badge.svg)](https://github.com/rseufert/mock-sap/actions/workflows/ci.yml)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/mock-sap)](https://pypi.org/project/mock-sap/)
 
 A **black-box mock SAP endpoint**. It does not implement any SAP business logic —
 it speaks the shapes: SAP Gateway **OData V2** services, **BAPI/RFC** calls over JSON
@@ -29,7 +30,8 @@ publicly documented wire formats for testing purposes only.
 ## Quick start
 
 ```bash
-python3 -m mocksap --port 8000
+pip install mock-sap
+mock-sap --port 8000
 ```
 
 ```bash
@@ -60,10 +62,10 @@ curl "http://127.0.0.1:8000/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder?\
 }
 ```
 
-Install it if you prefer a command on your PATH, or run it in a container:
+Or run it straight from a checkout, with no install at all, or in a container:
 
 ```bash
-pip install .          # provides the `mock-sap` command
+python3 -m mocksap --port 8000
 docker build -t mock-sap . && docker run -p 8000:8000 mock-sap
 ```
 
