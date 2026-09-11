@@ -191,7 +191,9 @@ The default database is in-memory and disappears on exit. `--db mock.db` keeps i
 | A failure scenario | `server.py`, `SCENARIOS` and `_inject_faults` | Add the documentation string too; `/_mock/services` serves the list. |
 | An IDoc type | `idoc.py` | `_seg()` builds segments; follow `generate_orders05`. |
 
-Each of these should come with a test in the matching `tests/test_*.py` module.
+Each of these should come with a test in the matching `tests/test_*.py` module. A
+new *file* also needs a row in [FILES.md](FILES.md) - `tools/check_docs.py` fails
+the build otherwise, so the index cannot quietly fall behind the code.
 
 ## Where fidelity stops
 

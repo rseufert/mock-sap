@@ -60,11 +60,17 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `demo.sh` | A guided tour of every endpoint in curl - catalog, metadata, filters, expand, CSRF, deep insert, BAPI over JSON and SOAP, IDoc out and back in, fault injection, request log. CI runs it on every push so the documented commands cannot rot. |
 | `client.py` | A dependency-free client showing the flow a real SAP OData client needs: fetch a CSRF token, keep the session cookie, read with query options, write a deep insert. |
 
+## `tools/`
+
+| File | What it is |
+| --- | --- |
+| `check_docs.py` | Guards this index against drift: fails if a tracked file is not documented here, if a row names a file that no longer exists, or if a module is missing from the README's layout block. It checks coverage, not prose. Run it with `python3 tools/check_docs.py`; CI runs it on every push. |
+
 ## `.github/workflows/`
 
 | File | What it is |
 | --- | --- |
-| `ci.yml` | Four jobs: the suite on Python 3.8-3.13 (Linux) plus 3.12 on macOS and Windows; a smoke job running `demo.sh` and `client.py` against a live mock; a package job that builds, `twine check`s, installs the wheel and asserts the version agrees with `pyproject.toml`; and a job that builds and runs the Docker image. |
+| `ci.yml` | Five jobs: the suite on Python 3.8-3.13 (Linux) plus 3.12 on macOS and Windows; a docs job running `tools/check_docs.py`; a smoke job running `demo.sh` and `client.py` against a live mock; a package job that builds, `twine check`s, installs the wheel and asserts the version agrees with `pyproject.toml`; and a job that builds and runs the Docker image. |
 | `publish.yml` | Releases to PyPI via Trusted Publishing (OIDC, no stored token). A published GitHub Release goes to PyPI; a manual run goes to TestPyPI. Both build from a green test run and refuse a tag that disagrees with the built package. |
 
 ## `docs/`

@@ -299,7 +299,13 @@ surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_batch`,
 harness in `tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
-checks that `examples/demo.sh`, the packaged wheel and the Docker image still work.
+checks that `examples/demo.sh`, the packaged wheel and the Docker image still work,
+and that every file in the repository is accounted for in
+[docs/FILES.md](docs/FILES.md):
+
+```bash
+python3 tools/check_docs.py
+```
 
 ## Releasing
 
