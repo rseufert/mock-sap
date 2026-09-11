@@ -10,6 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
+from . import annotations as sap_annotations
 from . import apply as odata_apply
 from . import delta as odata_delta
 from . import messages as sap_messages, metadata, metadata4, odata4, store
@@ -305,6 +306,19 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
             return Response(body=metadata.service_document_xml(svc, ctx.base_url),
                             content_type="application/atomsvc+xml;charset=utf-8")
         return Response(body=metadata.service_document_json(svc, ctx.base_url))
+
+    if rest == "annotations":
+        if method != "GET":
+            raise SapError(
+                "Method %s is not allowed on the annotation document" % method, 405)
+        if not sap_annotations.has_annotations(svc):
+            raise SapError(
+                "This service publishes no annotation document. The V4 services "
+                "carry their annotations inside $metadata, and the A2X APIs "
+                "publish none, as SAP's own do not.", 404)
+        return Response(body=sap_annotations.annotations_document(svc),
+                        content_type=XML_CT,
+                        headers={"DataServiceVersion": "2.0"})
 
     if rest == "$metadata":
         if method != "GET":

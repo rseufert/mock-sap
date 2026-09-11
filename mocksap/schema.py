@@ -206,6 +206,9 @@ class Service:
     sets: Dict[str, str]  # EntitySet name -> EntityType name
     prefix: str = "sap"   # the segment before the service name in the URL
     version: int = 2      # the OData version this service speaks
+    # V2 services publish UI intent in a document of their own, and the A2X
+    # integration APIs do not publish any: only a UI service opts in.
+    annotations: bool = False
 
     @property
     def path(self) -> str:
@@ -1015,6 +1018,106 @@ ENTITY_TYPES["A_PurchaseOrderItem"].ui = UI(
 )
 
 
+# The demo service's own UI intent, published as a V2 annotation document
+# rather than inside $metadata - see mocksap/annotations.py.
+
+ENTITY_TYPES["BusinessPartner"].ui = UI(
+    type_name="Business Partner",
+    type_name_plural="Business Partners",
+    title="CompanyName",
+    description="BusinessPartnerID",
+    line_items=["BusinessPartnerID", "CompanyName", "BusinessPartnerRole",
+                "EmailAddress", "PhoneNumber", "CurrencyCode"],
+    selection_fields=["BusinessPartnerRole", "CompanyName", "LegalForm"],
+    identification=["BusinessPartnerID", "CompanyName", "LegalForm",
+                    "EmailAddress", "PhoneNumber", "WebAddress", "CurrencyCode"],
+    field_groups=[
+        FieldGroup("General", "General Information",
+                   ["BusinessPartnerID", "CompanyName", "LegalForm",
+                    "BusinessPartnerRole", "CurrencyCode"]),
+        FieldGroup("Contact", "Contact",
+                   ["EmailAddress", "PhoneNumber", "FaxNumber", "WebAddress"]),
+    ],
+    facets=[
+        Facet("General Information", "@UI.FieldGroup#General"),
+        Facet("Contact", "@UI.FieldGroup#Contact"),
+        Facet("Sales Orders", "ToSalesOrders/@UI.LineItem"),
+        Facet("Contacts", "ToContacts/@UI.LineItem"),
+    ],
+    deletable=False,
+)
+
+ENTITY_TYPES["SalesOrder"].ui = UI(
+    type_name="Sales Order",
+    type_name_plural="Sales Orders",
+    title="SalesOrderID",
+    description="CustomerName",
+    line_items=["SalesOrderID", "CustomerName", "GrossAmount", "CurrencyCode",
+                "LifecycleStatusDescription", "DeliveryStatusDescription"],
+    selection_fields=["CustomerName", "LifecycleStatus", "BillingStatus"],
+    identification=["SalesOrderID", "CustomerID", "CustomerName", "Note",
+                    "NetAmount", "TaxAmount", "GrossAmount", "CurrencyCode"],
+    field_groups=[
+        FieldGroup("General", "General Information",
+                   ["SalesOrderID", "CustomerID", "CustomerName", "Note"]),
+        FieldGroup("Amounts", "Amounts",
+                   ["NetAmount", "TaxAmount", "GrossAmount", "CurrencyCode"]),
+        FieldGroup("Status", "Status",
+                   ["LifecycleStatusDescription", "BillingStatusDescription",
+                    "DeliveryStatusDescription"]),
+    ],
+    facets=[
+        Facet("General Information", "@UI.FieldGroup#General"),
+        Facet("Amounts", "@UI.FieldGroup#Amounts"),
+        Facet("Status", "@UI.FieldGroup#Status"),
+        Facet("Items", "ToLineItems/@UI.LineItem"),
+    ],
+)
+
+ENTITY_TYPES["SalesOrderLineItem"].ui = UI(
+    type_name="Sales Order Item",
+    type_name_plural="Sales Order Items",
+    title="ItemPosition",
+    description="Note",
+    line_items=["ItemPosition", "ProductID", "Note", "Quantity", "QuantityUnit",
+                "GrossAmount", "CurrencyCode"],
+    identification=["ItemPosition", "ProductID", "Note", "Quantity",
+                    "NetAmount", "TaxAmount", "GrossAmount", "DeliveryDate"],
+)
+
+ENTITY_TYPES["Product"].ui = UI(
+    type_name="Product",
+    type_name_plural="Products",
+    title="Name",
+    description="ProductID",
+    line_items=["ProductID", "Name", "Category", "SupplierName", "Price",
+                "CurrencyCode"],
+    selection_fields=["Category", "SupplierName", "TypeCode"],
+    identification=["ProductID", "Name", "Description", "Category", "TypeCode",
+                    "Price", "CurrencyCode", "MeasureUnit"],
+    field_groups=[
+        FieldGroup("General", "General Information",
+                   ["ProductID", "Name", "Description", "Category", "TypeCode"]),
+        FieldGroup("Dimensions", "Dimensions and Weight",
+                   ["Width", "Depth", "Height", "DimUnit", "WeightMeasure",
+                    "WeightUnit"]),
+    ],
+    facets=[
+        Facet("General Information", "@UI.FieldGroup#General"),
+        Facet("Dimensions and Weight", "@UI.FieldGroup#Dimensions"),
+    ],
+)
+
+ENTITY_TYPES["Contact"].ui = UI(
+    type_name="Contact",
+    type_name_plural="Contacts",
+    title="LastName",
+    description="EmailAddress",
+    line_items=["Title", "FirstName", "LastName", "EmailAddress", "PhoneNumber"],
+    identification=["Title", "FirstName", "MiddleName", "LastName", "Sex",
+                    "EmailAddress", "PhoneNumber", "DateOfBirth"],
+)
+
 # --------------------------------------------------------------------------
 # Services
 # --------------------------------------------------------------------------
@@ -1068,6 +1171,7 @@ for _svc in [
             "SalesOrderLineItemSet": "SalesOrderLineItem",
         },
         prefix="IWBEP",
+        annotations=True,
     ),
     Service(
         "API_PURCHASEORDER_PROCESS_SRV",

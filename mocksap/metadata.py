@@ -174,6 +174,14 @@ def service_document_xml(svc: Service, base_url: str) -> str:
         'xmlns:atom="%s" xmlns:sap="%s">'
         % (quoteattr(base_url + svc.path + "/"), ATOM_NS, SAP_NS)
     )
+    from . import annotations as sap_annotations
+
+    if sap_annotations.has_annotations(svc):
+        # Not a protocol SAP defines: a SAPUI5 app normally names the annotation
+        # URL in its manifest. The link is here so the document is discoverable.
+        out.append('<atom:link%s%s/>' % (
+            _a("rel", sap_annotations.LINK_RELATION),
+            _a("href", base_url + sap_annotations.path_for(svc))))
     out.append('<app:workspace><atom:title type="text">Data</atom:title>')
     for set_name in svc.sets:
         out.append(
@@ -186,8 +194,9 @@ def service_document_xml(svc: Service, base_url: str) -> str:
 
 
 def service_document_json(svc: Service, base_url: str) -> dict:
-    return {
-        "d": {
-            "EntitySets": list(svc.sets.keys()),
-        }
-    }
+    from . import annotations as sap_annotations
+
+    body = {"EntitySets": list(svc.sets.keys())}
+    if sap_annotations.has_annotations(svc):
+        body["__annotations"] = base_url + sap_annotations.path_for(svc)
+    return {"d": body}
