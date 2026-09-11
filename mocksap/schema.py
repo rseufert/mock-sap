@@ -703,6 +703,27 @@ for _svc in [
         version=4,
     ),
     Service(
+        "api_product",
+        "com.sap.gateway.srvd_a2x.api_product.v0001",
+        "Product (A2X, OData V4)",
+        {
+            "Product": "A_Product",
+            "ProductDescription": "A_ProductDescription",
+            "ProductPlant": "A_ProductPlant",
+        },
+        version=4,
+    ),
+    Service(
+        "api_purchaseorder",
+        "com.sap.gateway.srvd_a2x.api_purchaseorder.v0001",
+        "Purchase Order (A2X, OData V4)",
+        {
+            "PurchaseOrder": "A_PurchaseOrder",
+            "PurchaseOrderItem": "A_PurchaseOrderItem",
+        },
+        version=4,
+    ),
+    Service(
         "api_businesspartner",
         "com.sap.gateway.srvd_a2x.api_businesspartner.v0001",
         "Business Partner (A2X, OData V4)",
