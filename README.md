@@ -289,12 +289,14 @@ Seed data for it goes in `mocksap/db.py`, a BAPI wrapper (if you need one) in
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v   # everything
+python3 tests/test_batch.py                # one surface
 ```
 
-31 tests, every one of them over real HTTP against a running mock: metadata,
-query options, error envelopes, CSRF, deep insert, `$batch` rollback, BAPI JSON and
-SOAP, IDoc round-trip, fault injection and authentication.
+31 tests, every one of them over real HTTP against a running mock, split by
+surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_batch`,
+`test_rfc`, `test_idoc`, `test_operations` and `test_auth`, over the shared
+harness in `tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work.
@@ -332,10 +334,15 @@ mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
 mocksap/server.py     HTTP front end, CSRF, auth, fault injection, /_mock API
 
-tests/                the whole suite, driven over real HTTP
+tests/                one module per surface, all driven over real HTTP
 examples/             the curl tour and a dependency-free Python client
+docs/                 ARCHITECTURE.md and FILES.md
 .github/workflows/    ci.yml (tests, examples, wheel, image) and publish.yml
 ```
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how a request flows through
+the mock and why the layering is the way it is;
+[docs/FILES.md](docs/FILES.md) walks through every file in the repository.
 
 ## Scope
 
