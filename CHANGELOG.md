@@ -10,6 +10,27 @@ says so where it does.
 
 Nothing yet.
 
+## [0.9.1] - 2026-09-11
+
+Tooling only: the published package is unchanged from 0.9.0.
+
+### Added
+
+- `tools/check_changelog.py`, run by CI beside the docs check ([#36], [#37]).
+  Two pull requests that each add a bullet under `## [Unreleased]` conflict on
+  the same lines, and resolving that by hand is one keystroke from keeping one
+  side and dropping the other - which is how the entry for the V2 annotation
+  document went missing between 0.8.0 and 0.9.0 and came back by luck. The
+  check holds released sections to being history, refuses to let an entry
+  waiting for a release disappear, and asks a change to `mocksap/` to bring an
+  entry with it. An *entry*, not merely a changed file: the merge that lost one
+  did touch the changelog, adding a link reference while dropping the prose. A
+  pull request labelled `no changelog` lifts that last rule - the right answer
+  for a comment, a rename or a pure refactor - and leaves the other two
+  standing. It also checks what a release is most likely to forget: that the
+  `[Unreleased]` compare link names the newest version and that
+  `pyproject.toml` agrees with it.
+
 ## [0.9.0] - 2026-09-11
 
 The documents a sales order turns into, and the annotation document a V2 app
@@ -219,7 +240,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/rseufert/mock-sap/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/rseufert/mock-sap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rseufert/mock-sap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rseufert/mock-sap/compare/v0.6.0...v0.7.0
@@ -244,3 +266,5 @@ First release.
 [#27]: https://github.com/rseufert/mock-sap/issues/27
 [#28]: https://github.com/rseufert/mock-sap/issues/28
 [#29]: https://github.com/rseufert/mock-sap/issues/29
+[#36]: https://github.com/rseufert/mock-sap/pull/36
+[#37]: https://github.com/rseufert/mock-sap/pull/37
