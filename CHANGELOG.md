@@ -8,6 +8,13 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.9.0] - 2026-09-11
+
+The documents a sales order turns into, and the annotation document a V2 app
+fetches.
+
 ### Added
 
 - Deliveries, billing documents and journal entries ([#27]) - the documents a
@@ -212,7 +219,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/rseufert/mock-sap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rseufert/mock-sap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rseufert/mock-sap/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rseufert/mock-sap/compare/v0.5.0...v0.6.0
