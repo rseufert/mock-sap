@@ -417,7 +417,7 @@ _register(
         label="Sales Order Item",
         props=[
             S("SalesOrder", key=True, nullable=False, max_length=10),
-            S("SalesOrderItem", key=True, nullable=False, max_length=6),
+            S("SalesOrderItem", key=True, nullable=False, max_length=6, creatable=False),
             S("HigherLevelItem", max_length=6),
             S("Material", max_length=40, label="Material"),
             S("MaterialByCustomer", max_length=35),
@@ -535,8 +535,8 @@ _register(
         label="Sales Order Header Pricing Element",
         props=[
             S("SalesOrder", key=True, nullable=False, max_length=10),
-            S("PricingProcedureStep", key=True, nullable=False, max_length=3),
-            S("PricingProcedureCounter", key=True, nullable=False, max_length=3),
+            S("PricingProcedureStep", key=True, nullable=False, max_length=3, creatable=False),
+            S("PricingProcedureCounter", key=True, nullable=False, max_length=3, creatable=False),
             S("ConditionType", max_length=4, label="Condition Type"),
             DEC("ConditionRateValue", precision=16, scale=3, label="Amount"),
             S("ConditionCurrency", max_length=5),
@@ -560,8 +560,8 @@ _register(
         props=[
             S("SalesOrder", key=True, nullable=False, max_length=10),
             S("SalesOrderItem", key=True, nullable=False, max_length=6),
-            S("PricingProcedureStep", key=True, nullable=False, max_length=3),
-            S("PricingProcedureCounter", key=True, nullable=False, max_length=3),
+            S("PricingProcedureStep", key=True, nullable=False, max_length=3, creatable=False),
+            S("PricingProcedureCounter", key=True, nullable=False, max_length=3, creatable=False),
             S("ConditionType", max_length=4, label="Condition Type"),
             DEC("ConditionRateValue", precision=16, scale=3, label="Amount"),
             S("ConditionCurrency", max_length=5),
@@ -617,7 +617,7 @@ _register(
         label="Purchase Order Item",
         props=[
             S("PurchaseOrder", key=True, nullable=False, max_length=10),
-            S("PurchaseOrderItem", key=True, nullable=False, max_length=5),
+            S("PurchaseOrderItem", key=True, nullable=False, max_length=5, creatable=False),
             S("PurchaseOrderItemText", max_length=40),
             S("Material", max_length=40),
             S("MaterialGroup", max_length=9),
