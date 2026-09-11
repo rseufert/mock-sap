@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
@@ -311,10 +312,25 @@ def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
     _recalculate_totals(conn, et, merged)
 
 
+def record_deletion(conn, et: EntityType, row) -> None:
+    """Remember that a row was here.
+
+    A deleted row leaves nothing behind, so a delta reader would never learn
+    of it. This is the only place that knowledge can be kept.
+    """
+    keys = {p.name: row[p.name] for p in et.keys}
+    # milliseconds, like every other timestamp here: a delta token carries them,
+    # and comparing a second-precision stamp against one drops the deletion
+    conn.execute(
+        "INSERT INTO deleted_entity(entity_type,keys,deleted_at) VALUES(?,?,?)",
+        (et.name, json.dumps(keys, sort_keys=True), _context("")["now"]))
+
+
 def delete(conn, et: EntityType, keys: Dict[str, Any]) -> None:
     existing = get(conn, et, keys)
     if existing is None:
         raise SapError("Resource not found for the segment '%s'" % et.name, 404)
+    record_deletion(conn, et, existing)
     clause, params = where_keys(et, keys)
     conn.execute('DELETE FROM "%s" WHERE %s' % (et.name, clause), params)
     # cascade along to-many navigations, as deleting a document does in SAP
@@ -323,7 +339,10 @@ def delete(conn, et: EntityType, keys: Dict[str, Any]) -> None:
             continue
         target = ENTITY_TYPES[nav.target]
         cclause = " AND ".join("%s = ?" % _quote(remote) for _l, remote in nav.join)
-        conn.execute('DELETE FROM "%s" WHERE %s' % (target.name, cclause),
-                     [existing[local] for local, _r in nav.join])
+        cparams = [existing[local] for local, _r in nav.join]
+        for child in conn.execute(
+                'SELECT * FROM "%s" WHERE %s' % (target.name, cclause), cparams).fetchall():
+            record_deletion(conn, target, child)
+        conn.execute('DELETE FROM "%s" WHERE %s' % (target.name, cclause), cparams)
     conn.commit()
     _recalculate_totals(conn, et, dict(existing))

@@ -105,6 +105,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )"""
     )
     cur.execute(
+        """CREATE TABLE IF NOT EXISTS deleted_entity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            keys TEXT NOT NULL,
+            deleted_at TEXT NOT NULL
+        )"""
+    )
+    cur.execute(
         """CREATE TABLE IF NOT EXISTS rfc_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL,
@@ -121,7 +129,7 @@ def reset(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     for et in ENTITY_TYPES.values():
         cur.execute('DELETE FROM "%s"' % et.name)
-    for t in ("number_range", "idoc", "rfc_log"):
+    for t in ("number_range", "idoc", "rfc_log", "deleted_entity"):
         cur.execute("DELETE FROM %s" % t)
     conn.commit()
 

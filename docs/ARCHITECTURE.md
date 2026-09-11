@@ -271,6 +271,22 @@ in the table's columns, only the ABAP comparison operators are accepted, and eve
 literal is bound. Nothing from the caller reaches SQL as text, and a caller who
 tries gets `FIELD_NOT_VALID` rather than a surprise.
 
+### A deletion has to be remembered
+
+Everything else a delta reader needs was already there: `LastChangeDate` is
+maintained and strictly monotonic because the ETag work made it so, which makes
+"changed since" a `WHERE`. Deletions are the hard half - a deleted row leaves
+nothing behind - so `store.delete()` writes a note to `deleted_entity` first,
+cascades included, and a delta read merges those into its answer as removed
+entries.
+
+The token is a timestamp, written so nobody is tempted to parse it, and the
+timestamps on both sides are kept at the same precision. They were not at first:
+deletions were stamped to the second while tokens carried milliseconds, and a
+string comparison silently dropped every deletion in the token's own second. A
+delta reader that misses deletions looks like it is working, which is the worst
+way for this to fail.
+
 ### A warning is not a failure
 
 A mock that only ever succeeds or errors teaches a client nothing about the third
@@ -336,13 +352,11 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 The first roadmap - V4, complex types, `$links`, ETags, OAuth - is complete. What
 is still absent is tracked as issues, and worth knowing before you go looking for
-it: delta handling ([#15]) and the UI vocabulary annotations a Fiori elements app
-reads ([#17]).
+it: the UI vocabulary annotations a Fiori elements app reads ([#17]).
 
 Beyond those, the mock has no concept of authorizations, no ABAP, no background
 jobs, no transactional boundary spanning more than a changeset, and no attempt at
 SAP's performance characteristics. It is a wire-shape simulator, and it should
 stay one.
 
-[#15]: https://github.com/rseufert/mock-sap/issues/15
 [#17]: https://github.com/rseufert/mock-sap/issues/17
