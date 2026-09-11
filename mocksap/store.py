@@ -203,8 +203,11 @@ def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
 
     for p in et.keys:
         if not row.get(p.name):
-            if p.name in ("SalesOrderItem", "PurchaseOrderItem"):
-                row[p.name] = _next_item_number(conn, et, row, p)
+            # A key the server assigns is declared creatable=False: the client
+            # does not send an item number or a pricing step, SAP hands them
+            # out. Any other missing key is the client's mistake.
+            if not p.creatable:
+                row[p.name] = _next_child_number(conn, et, row, p)
                 continue
             raise SapError(
                 "Key property '%s' is missing in the payload" % p.name,
@@ -246,15 +249,23 @@ def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
     return keys
 
 
-def _next_item_number(conn, et: EntityType, row: Dict[str, Any], p) -> str:
-    """Items are numbered 10, 20, 30 ... within their document, as in SAP."""
-    parent = "SalesOrder" if p.name == "SalesOrderItem" else "PurchaseOrder"
-    width = 6 if p.name == "SalesOrderItem" else 5
+def _next_child_number(conn, et: EntityType, row: Dict[str, Any], p) -> str:
+    """The next number for a key the server assigns.
+
+    Items are numbered 10, 20, 30 ... within their document, as in SAP; the
+    other server-assigned keys - a pricing element's step and counter - simply
+    count up. Either way the number is scoped to the keys the client *did*
+    send, so two items' pricing elements are numbered independently.
+    """
+    step = 10 if p.name.endswith("Item") else 1
+    width = p.max_length or 6
+    scope = [k for k in et.keys if k.name != p.name and row.get(k.name) is not None]
+    where = " AND ".join('"%s" = ?' % k.name for k in scope) or "1=1"
     cur = conn.execute(
-        'SELECT MAX(CAST("%s" AS INTEGER)) m FROM "%s" WHERE "%s" = ?'
-        % (p.name, et.name, parent), (row.get(parent),)).fetchone()
+        'SELECT MAX(CAST("%s" AS INTEGER)) m FROM "%s" WHERE %s'
+        % (p.name, et.name, where), [row.get(k.name) for k in scope]).fetchone()
     highest = cur["m"] or 0
-    return str(highest + 10).zfill(width)
+    return str(highest + step).zfill(width)
 
 
 def _recalculate_totals(conn, et: EntityType, row: Dict[str, Any]) -> None:

@@ -8,6 +8,17 @@ says so where it does.
 
 ## [Unreleased]
 
+### Fixed
+
+- A key the server assigns is declared rather than named. `SalesOrderItem` and
+  `PurchaseOrderItem` were filled in by a check against those two literal names,
+  so the pricing elements added in 0.8.0 asked the client for a
+  `PricingProcedureStep` that SAP hands out itself, and a complete
+  `A_SalesOrder` deep insert was refused. Such keys now carry
+  `creatable=False`, and any missing one is numbered within the keys the client
+  did send - so two items' pricing elements are numbered independently. A key
+  the client does owe, like a text's `LongTextID`, is still required.
+
 ## [0.8.0] - 2026-09-11
 
 An object page with sections, and the rest of the shapes a client posting a

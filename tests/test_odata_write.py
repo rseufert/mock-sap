@@ -141,6 +141,44 @@ class TestSalesOrderWriteShapes(MockServerCase):
         self.assertEqual(len(rates), 1)
         self.assertEqual(float(rates[0]), 314.10)
 
+    def test_server_assigned_child_keys_are_not_asked_for(self):
+        # A client sends a condition type and a rate; SAP hands out the
+        # procedure step and counter, as it hands out item numbers.
+        headers = self.csrf_token()
+        payload = self._order()
+        payload["to_Item"][0]["to_PricingElement"] = [
+            {"ConditionType": "PPR0", "ConditionRateValue": "314.10", "ConditionCurrency": "USD"},
+            {"ConditionType": "RB00", "ConditionRateValue": "-14.10", "ConditionCurrency": "USD"},
+        ]
+        del payload["to_Item"][0]["SalesOrderItem"]
+        status, _, body = self.request(
+            "POST", SRV + "/A_SalesOrder", body=payload, headers=headers)
+        self.assertEqual(status, 201)
+        order = body["d"]["SalesOrder"]
+
+        _, _, items = self.get(SRV + "/A_SalesOrder('%s')/to_Item" % order)
+        item = items["d"]["results"][0]["SalesOrderItem"]
+        self.assertEqual(item, "000010")
+
+        _, _, prices = self.get(
+            SRV + "/A_SalesOrderItem(SalesOrder='%s',SalesOrderItem='%s')/to_PricingElement"
+            % (order, item))
+        rows = prices["d"]["results"]
+        self.assertEqual([r["ConditionType"] for r in rows], ["PPR0", "RB00"])
+        # Numbered, and numbered apart.
+        steps = [r["PricingProcedureStep"] for r in rows]
+        self.assertEqual(len(set(steps)), 2)
+        self.assertTrue(all(s.isdigit() for s in steps))
+
+    def test_a_key_the_client_owns_is_still_required(self):
+        headers = self.csrf_token()
+        payload = self._order()
+        del payload["to_Text"][0]["LongTextID"]
+        status, _, body = self.request(
+            "POST", SRV + "/A_SalesOrder", body=payload, headers=headers)
+        self.assertEqual(status, 400)
+        self.assertIn("LongTextID", body["error"]["message"]["value"])
+
     def test_a_misspelled_address_property_is_refused(self):
         # The point of carrying these shapes: a client that sends the business
         # partner address's spelling into a sales order hears about it here
