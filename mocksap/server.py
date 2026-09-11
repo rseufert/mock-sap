@@ -30,6 +30,7 @@ SCENARIOS = {
     "auth": "401 with a NetWeaver Basic realm",
     "forbidden": "403, missing authorization object",
     "lock": "423, document locked by another user",
+    "precondition": "412, as when the entity was changed after it was read",
     "notfound": "404 resource not found",
     "csrf": "403 CSRF token validation failed",
 }
@@ -44,6 +45,7 @@ class Config:
         self.user = kw.get("user", "MOCKUSER")
         self.basic_auth = kw.get("basic_auth")  # "user:password" or None
         self.csrf = kw.get("csrf", True)
+        self.require_if_match = kw.get("require_if_match", False)
         self.latency_ms = kw.get("latency_ms", 0)
         self.error_rate = kw.get("error_rate", 0.0)
         self.slow_ms = kw.get("slow_ms", 3000)
@@ -106,7 +108,8 @@ class MockSap:
         self.rnd = random.Random(config.seed_value)
 
     def context(self, base_url: str, client: str) -> Context:
-        return Context(self.conn, base_url, self.config.user, client)
+        return Context(self.conn, base_url, self.config.user, client,
+                       require_if_match=self.config.require_if_match)
 
     def new_token(self) -> str:
         token = secrets.token_urlsafe(18)
@@ -354,6 +357,10 @@ class Handler(BaseHTTPRequestHandler):
             return Response.error(SapError(
                 "No authorization to access Service '%s'" % path, 403,
                 code="/IWFND/CM_BEC"))
+        if scenario == "precondition":
+            return Response(412, body=error_payload(SapError(
+                "The entity was changed by another user after it was read",
+                412, code="/IWBEP/CX_MGW_BUSI_EXCEPTION")))
         if scenario == "lock":
             return Response(423, body=error_payload(SapError(
                 "Document is locked by user MOCKUSER", 423,
@@ -486,6 +493,7 @@ class Handler(BaseHTTPRequestHandler):
                 "client": mock.config.client,
                 "database": mock.config.db_path,
                 "csrf": mock.config.csrf,
+                "requireIfMatch": mock.config.require_if_match,
                 "auth": bool(mock.config.basic_auth),
                 "started": mock.started.isoformat() + "Z",
                 "uptime_s": round((_dt.datetime.utcnow() - mock.started).total_seconds(), 1),

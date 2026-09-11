@@ -24,6 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="require HTTP basic authentication")
     p.add_argument("--no-csrf", dest="csrf", action="store_false",
                    help="do not require an X-CSRF-Token on modifying requests")
+    p.add_argument("--require-if-match", action="store_true",
+                   help="refuse to modify a concurrency-controlled entity that "
+                        "arrives without an If-Match header (428)")
     p.add_argument("--seed", dest="seed_value", type=int, default=42,
                    help="seed for the generated demo data (default: 42)")
     p.add_argument("--latency-ms", type=int, default=0,

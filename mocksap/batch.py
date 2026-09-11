@@ -88,6 +88,7 @@ def parse_http_request(raw: bytes, service_path: str):
 
 STATUS_TEXT = {
     200: "OK", 201: "Created", 202: "Accepted", 204: "No Content",
+    304: "Not Modified", 428: "Precondition Required",
     400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
     404: "Not Found", 405: "Method Not Allowed", 409: "Conflict",
     412: "Precondition Failed", 500: "Internal Server Error",

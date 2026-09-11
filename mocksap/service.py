@@ -12,8 +12,9 @@ from urllib.parse import parse_qsl, unquote, urlparse
 
 from . import metadata, store
 from .odata import (SapError, build_orderby, build_where, collection_envelope,
-                    entity_envelope, entity_uri, error_payload, key_predicate,
-                    parse_key_predicate, serialize_entity, to_json_value)
+                    entity_envelope, entity_uri, error_payload, etag_for,
+                    etag_matches, key_predicate, parse_key_predicate,
+                    serialize_entity, to_json_value)
 from .schema import ENTITY_TYPES, SERVICES, EntityType, Service, service_for_path
 
 JSON_CT = "application/json;charset=utf-8"
@@ -57,11 +58,15 @@ class Response:
 class Context:
     """Everything a request handler needs that is not part of the URL."""
 
-    def __init__(self, conn, base_url, user="MOCKUSER", client="100"):
+    def __init__(self, conn, base_url, user="MOCKUSER", client="100",
+                 require_if_match=False):
         self.conn = conn
         self.base_url = base_url
         self.user = user
         self.client = client
+        # Newer Gateway services refuse to modify a concurrency-controlled
+        # entity that arrives without a validator; classic ones do not.
+        self.require_if_match = require_if_match
 
 
 # --------------------------------------------------------------------------
@@ -237,14 +242,25 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
             row = store.get(ctx.conn, et, keys)
             if row is None:
                 raise SapError(_not_found(et, keys), 404)
+            etag = etag_for(et, row)
+            if etag and etag_matches(headers.get("if-none-match"), etag):
+                return Response(304, headers={"ETag": etag}, body=b"", content_type=None)
             select = _select_list(opts, et)
             expand = _parse_expand(opts.get("$expand", ""), et) if opts.get("$expand") else {}
-            return Response(body=entity_envelope(_render(ctx, row, et, svc, select, expand)))
+            response = Response(body=entity_envelope(
+                _render(ctx, row, et, svc, select, expand)))
+            if etag:
+                response.headers["ETag"] = etag
+            return response
         if method in ("PATCH", "MERGE", "PUT"):
+            _check_if_match(ctx, et, keys, headers)
             payload = _json_body(body)
             store.update(ctx.conn, et, keys, payload, merge=(method != "PUT"), user=ctx.user)
-            return Response(204, body=b"", content_type=None)
+            etag = etag_for(et, store.get(ctx.conn, et, keys))
+            return Response(204, headers={"ETag": etag} if etag else {},
+                            body=b"", content_type=None)
         if method == "DELETE":
+            _check_if_match(ctx, et, keys, headers)
             store.delete(ctx.conn, et, keys)
             return Response(204, body=b"", content_type=None)
         raise SapError("Method %s is not allowed on an entity" % method, 405)
@@ -377,6 +393,35 @@ def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=
     entities = [_render(ctx, r, et, svc, select, expand) for r in rows]
     return Response(body=collection_envelope(entities, total),
                     headers={"DataServiceVersion": "2.0"})
+
+
+def _check_if_match(ctx: Context, et: EntityType, keys: Dict[str, Any],
+                    headers: Dict[str, str]) -> None:
+    """Enforce optimistic concurrency before a modifying request.
+
+    Only types that declare a concurrency property have an ETag; for anything
+    else a validator is meaningless and is ignored, which is how Gateway
+    behaves for entity sets without ConcurrencyMode="Fixed".
+    """
+    row = store.get(ctx.conn, et, keys)
+    if row is None:
+        raise SapError(_not_found(et, keys), 404)
+    etag = etag_for(et, row)
+    if etag is None:
+        return
+    supplied = headers.get("if-match")
+    if supplied is None:
+        if ctx.require_if_match:
+            raise SapError(
+                "This request must carry an If-Match header with the ETag of "
+                "'%s'. Read the entity first and send back its ETag." % et.name,
+                428, code="/IWBEP/CX_MGW_BUSI_EXCEPTION")
+        return
+    if not etag_matches(supplied, etag):
+        raise SapError(
+            "The entity was changed by another user after it was read. Read it "
+            "again and repeat the change (current ETag %s)." % etag,
+            412, code="/IWBEP/CX_MGW_BUSI_EXCEPTION")
 
 
 def _links(ctx, svc, et: EntityType, row, tail: List[str], method: str,
@@ -542,5 +587,8 @@ def _create(ctx, svc, et, set_name, opts, body, parent_keys=None) -> Response:
     expand = _parse_expand(opts.get("$expand", ""), et) if opts.get("$expand") else {}
     entity = _render(ctx, row, et, svc, None, expand)
     location = entity_uri(ctx.base_url, svc, et, row)
-    return Response(201, body=entity_envelope(entity),
-                    headers={"Location": location, "DataServiceVersion": "2.0"})
+    response_headers = {"Location": location, "DataServiceVersion": "2.0"}
+    etag = etag_for(et, row)
+    if etag:
+        response_headers["ETag"] = etag
+    return Response(201, body=entity_envelope(entity), headers=response_headers)

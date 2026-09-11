@@ -105,12 +105,29 @@ def children(conn, parent_row, et: EntityType, nav, limit: Optional[int] = None)
     return conn.execute(sql, params).fetchall()
 
 
+def _advance(previous, now: str) -> str:
+    """Return a change timestamp strictly later than the previous one.
+
+    The ETag is derived from LastChangeDate, so two updates inside the same
+    millisecond would leave the ETag unchanged and a stale validator would
+    wrongly match.  Nudging the timestamp forward keeps it monotonic.
+    """
+    if not previous or str(previous) < now:
+        return now
+    try:
+        moment = _dt.datetime.fromisoformat(str(previous))
+    except ValueError:
+        return now
+    return (moment + _dt.timedelta(milliseconds=1)).isoformat()
+
+
 def _context(user: str) -> dict:
-    now = _dt.datetime.utcnow().replace(microsecond=0)
+    moment = _dt.datetime.utcnow()
+    now = moment.replace(microsecond=(moment.microsecond // 1000) * 1000)
     return {
         "user": user,
         "now": now.isoformat(),
-        "today": now.replace(hour=0, minute=0, second=0).isoformat(),
+        "today": now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(),
     }
 
 
@@ -251,7 +268,7 @@ def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
             if not p.key and p.name not in values and p.updatable:
                 values[p.name] = initial_value(p)
     if et.prop("LastChangeDate") is not None:
-        values["LastChangeDate"] = ctx["now"]
+        values["LastChangeDate"] = _advance(existing["LastChangeDate"], ctx["now"])
     if et.prop("LastChangedByUser") is not None:
         values["LastChangedByUser"] = ctx["user"]
     if not values:

@@ -104,6 +104,7 @@ Entity sets carry the S/4HANA field names — `A_SalesOrder` with `SoldToParty`,
 | `$select` `$expand` | `$expand` follows to-one and to-many navigations, nested paths included |
 | `$orderby` `$top` `$skip` | |
 | `$inlinecount=allpages`, `/$count` | |
+| ETags | concurrency-controlled types carry a weak ETag in `__metadata.etag` and the `ETag` header; `If-Match` guards updates and deletes (412 when stale, `*` matches anything), `If-None-Match` answers 304 |
 | `$links` | reads the association as bare URIs, to-one and to-many, with `$top`/`$skip`/`$inlinecount`/`$count`; writes re-point the foreign key, and refuse a change that would rewrite a key |
 | `$format=json`, Accept negotiation | XML/Atom for the service document and errors |
 | `$metadata` | EDMX 1.0 with associations, referential constraints and `sap:label`/`sap:creatable`/`sap:updatable` |
@@ -213,6 +214,7 @@ curl -H 'sap-mock-scenario: busy' http://127.0.0.1:8000/sap/opu/odata/sap/API_SA
 | `busy` | 503 with `Retry-After`, "no dialog work process available" |
 | `auth` / `forbidden` | 401 with a NetWeaver realm / 403 missing authorization |
 | `lock` | 423, document locked by another user |
+| `precondition` | 412, as when the entity was changed after it was read |
 | `csrf` | 403 with `x-csrf-token: Required` |
 | `notfound` | 404 |
 
@@ -251,6 +253,8 @@ mock-sap [--host 127.0.0.1] [--port 8000] [--db :memory:|path.db] [--client 100]
 
 `--db mock.db` keeps data across restarts; the default in-memory system starts fresh
 every time. `--auth` turns on HTTP basic authentication with a NetWeaver realm.
+`--require-if-match` makes the mock refuse to modify a concurrency-controlled entity
+that arrives without a validator, the way newer Gateway services do.
 
 ## Using it from tests
 
@@ -294,10 +298,10 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-39 tests, every one of them over real HTTP against a running mock, split by
+52 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_links`,
-`test_batch`, `test_rfc`, `test_idoc`, `test_operations` and `test_auth`, over the
-shared harness in `tests/support.py`.
+`test_etag`, `test_batch`, `test_rfc`, `test_idoc`, `test_operations` and
+`test_auth`, over the shared harness in `tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work,
@@ -364,7 +368,6 @@ with a sketch of the work involved:
 
 - [#1 OData V4 services alongside V2](https://github.com/rseufert/mock-sap/issues/1)
 - [#2 Complex (structured) types](https://github.com/rseufert/mock-sap/issues/2)
-- [#4 ETags and `If-Match` concurrency](https://github.com/rseufert/mock-sap/issues/4)
 - [#5 OAuth 2.0 and SAML bearer authentication](https://github.com/rseufert/mock-sap/issues/5)
 
 Pull requests are welcome. Adding an entity set is usually a single declaration in

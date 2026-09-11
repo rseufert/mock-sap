@@ -52,6 +52,8 @@ def metadata_document(svc: Service) -> str:
                 attrs += _a("MaxLength", p.max_length)
             if p.type == "Edm.Decimal":
                 attrs += _a("Precision", p.precision or 13) + _a("Scale", p.scale or 3)
+            if p.concurrency:
+                attrs += ' ConcurrencyMode="Fixed"'  # feeds the entity's ETag
             if not p.creatable:
                 attrs += ' sap:creatable="false"'
             if not p.updatable:
