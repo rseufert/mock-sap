@@ -289,9 +289,17 @@ An annotation naming something that does not exist renders a blank column or an
 empty section in a Fiori app and explains nothing about why - the failure lands in
 someone else's UI, never here.
 
-The V2 services were left alone. They carry `sap:` attributes, which is what the
-V2 smart controls read; the vocabulary route is V4's, and serving both from one
-declaration would have misrepresented both.
+The V2 services take the other route SAP gives them. Their `$metadata` keeps its
+`sap:` attributes, and the layout terms go in a document of their own, rendered
+from the same `EntityType.ui` declarations - the terms are identical, only the
+envelope differs. Publishing is opt-in per service, because the entity types carry
+UI intent for the V4 services' sake and SAP's own A2X integration APIs ship none:
+`GWSAMPLE_BASIC` publishes, the `API_*` services do not.
+
+Where that document lives is the part SAP does not settle: a SAPUI5 app names the
+annotation URL in its manifest rather than discovering it. The mock serves it at a
+predictable path and links to it from the service document, and says in the module
+and the README that the link is its own convenience rather than a protocol.
 
 ### A deletion has to be remembered
 

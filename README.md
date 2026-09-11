@@ -170,8 +170,21 @@ Facet("Items", "to_Item/@UI.LineItem")
 The annotations live beside the entity types in `mocksap/schema.py`, so a column
 added to a list report is a line in the same file that defines the property.
 
-The V2 services keep their `sap:` attributes, which is what the V2 smart controls
-read; the vocabulary route is V4's, and mixing them would misrepresent both.
+The V2 services keep their `sap:` attributes in `$metadata`, which is what the V2
+smart controls read for labels and visibility. The layout terms a V2 list report
+needs live in a document of their own, the way a V2 app expects:
+
+```bash
+curl "$BASE/sap/opu/odata/IWBEP/GWSAMPLE_BASIC/annotations"
+```
+
+`GWSAMPLE_BASIC` publishes one - the demo service those tutorials use - and the
+service document points at it. The A2X APIs publish none, because SAP's own do
+not: they are integration APIs, not UI services.
+
+A caveat worth stating: a SAPUI5 application normally names its annotation URL in
+its manifest rather than discovering it, so the link from the service document is
+the mock's own convenience, not a protocol SAP defines.
 
 ### Aggregation
 
@@ -575,6 +588,7 @@ mocksap/odata4.py     the V4 shapes: annotations, ISO dates, plain numbers
 mocksap/apply.py      $apply pipelines compiled to GROUP BY
 mocksap/delta.py      delta tokens, and what changed since one
 mocksap/metadata.py   EDMX 1.0 / service document
+mocksap/annotations.py  the V2 annotation document
 mocksap/metadata4.py  CSDL 4.0, XML and JSON
 mocksap/store.py      CRUD, deep insert, cascades, document defaults
 mocksap/service.py    OData request dispatcher
@@ -611,7 +625,6 @@ and the UI annotations. What would extend the mock further, each with an issue
 sketching the work:
 
 - [#27 Deliveries and accounting documents](https://github.com/rseufert/mock-sap/issues/27) - the documents the mock hands out numbers for but cannot show
-- [#29 A V2 annotation document](https://github.com/rseufert/mock-sap/issues/29) - so the classic smart controls can be pointed at GWSAMPLE_BASIC
 
 Open an issue if you need something else.
 
