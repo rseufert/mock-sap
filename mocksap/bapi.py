@@ -400,6 +400,401 @@ def _rollback(ctx, params):
     return {"RETURN": ret("S", "Changes were rolled back", "00", "344")}
 
 
+# --------------------------------------------------------------------------
+# Master data reads
+# --------------------------------------------------------------------------
+
+
+def _address_of(ctx, bp_row):
+    bp = ENTITY_TYPES["A_BusinessPartner"]
+    rows = store.children(ctx.conn, bp_row, bp, bp.nav("to_BusinessPartnerAddress"), limit=1)
+    return rows[0] if rows else None
+
+
+def _bp_address_fields(address) -> dict:
+    if address is None:
+        return {}
+    return {
+        "STREET": address["StreetName"], "HOUSE_NO": address["HouseNumber"],
+        "CITY": address["CityName"], "POSTL_COD1": address["PostalCode"],
+        "COUNTRY": address["Country"], "REGION": address["Region"],
+        "TELEPHONE": address["PhoneNumber"], "E_MAIL": address["EmailAddress"],
+        "LANGU": address["Language"],
+    }
+
+
+@function("BAPI_CUSTOMER_GETLIST", "CustomerGetList")
+def _customer_getlist(ctx, params):
+    bp = ENTITY_TYPES["A_BusinessPartner"]
+    max_rows = int(_num(param(params, "MAXROWS", 0), 0))
+    wanted = [str(field(row, "SIGN", "I")) and str(field(row, "LOW", ""))
+              for row in (param(params, "IDRANGE") or [])]
+    wanted = [value.lstrip("0") or value for value in wanted if value]
+
+    rows = store.query(ctx.conn, bp, '"Customer" <> \'\'', [])
+    out = []
+    for row in rows:
+        if wanted and row["Customer"].lstrip("0") not in wanted:
+            continue
+        address = _address_of(ctx, row)
+        record = {"CUSTOMER": row["Customer"], "NAME": row["BusinessPartnerFullName"],
+                  "SEARCHTERM": row["SearchTerm1"]}
+        record.update(_bp_address_fields(address))
+        out.append(record)
+        if max_rows and len(out) >= max_rows:
+            break
+    messages = [] if out else [ret("W", "No customers found for the selection", "F2", "101")]
+    return {"ADDRESSDATA": out, "RETURN": messages}
+
+
+@function("BAPI_CUSTOMER_GETDETAIL2", "CustomerGetDetail2")
+def _customer_getdetail2(ctx, params):
+    number = str(param(params, "CUSTOMERNO", "") or "").strip().lstrip("0")
+    bp = ENTITY_TYPES["A_BusinessPartner"]
+    rows = store.query(ctx.conn, bp, '"Customer" = ?', [number], "", 1) if number else []
+    if not rows:
+        return {"CUSTOMERGENERALDETAIL": {}, "CUSTOMERCOMPANYDETAIL": {},
+                "RETURN": ret("E", "Customer %s does not exist" % number, "F2", "003",
+                              v1=number)}
+    row = rows[0]
+    general = {"NAME": row["BusinessPartnerFullName"], "SEARCHTERM": row["SearchTerm1"],
+               "CUSTOMER": row["Customer"], "CREAT_DATE": _sap_date(row["CreationDate"]),
+               "CREATED_BY": row["CreatedByUser"]}
+    general.update(_bp_address_fields(_address_of(ctx, row)))
+    return {
+        "CUSTOMERGENERALDETAIL": general,
+        "CUSTOMERCOMPANYDETAIL": {"COMP_CODE": "1710", "CUSTOMER": row["Customer"],
+                                  "REC_ACCOUNT": "0021100000"},
+        "RETURN": ret("S", "Customer %s read" % row["Customer"], "F2", "000"),
+    }
+
+
+@function("BAPI_VENDOR_GETDETAIL", "VendorGetDetail")
+def _vendor_getdetail(ctx, params):
+    number = str(param(params, "VENDORNO", "") or "").strip().lstrip("0")
+    bp = ENTITY_TYPES["A_BusinessPartner"]
+    rows = store.query(ctx.conn, bp, '"Supplier" = ?', [number], "", 1) if number else []
+    if not rows:
+        return {"GENERALDETAIL": {}, "RETURN": ret(
+            "E", "Vendor %s does not exist" % number, "F2", "003", v1=number)}
+    row = rows[0]
+    general = {"VENDOR_NO": row["Supplier"], "NAME": row["BusinessPartnerFullName"],
+               "SEARCHTERM": row["SearchTerm1"], "CREAT_DATE": _sap_date(row["CreationDate"])}
+    general.update(_bp_address_fields(_address_of(ctx, row)))
+    return {"GENERALDETAIL": general,
+            "RETURN": ret("S", "Vendor %s read" % row["Supplier"], "F2", "000")}
+
+
+@function("BAPI_MATERIAL_GETLIST", "MaterialGetList")
+def _material_getlist(ctx, params):
+    product = ENTITY_TYPES["A_Product"]
+    selections = param(params, "MATNRSELECTION") or []
+    where, binds = [], []
+    for selection in selections:
+        low = str(field(selection, "MATNR_LOW", "")).strip()
+        high = str(field(selection, "MATNR_HIGH", "")).strip()
+        option = str(field(selection, "OPTION", "EQ")).upper()
+        if not low:
+            continue
+        if high and option in ("BT", ""):
+            where.append('("Product" >= ? AND "Product" <= ?)')
+            binds.extend([low, high])
+        elif option == "CP" or low.endswith("*"):
+            where.append('"Product" LIKE ?')
+            binds.append(low.replace("*", "%"))
+        else:
+            where.append('"Product" = ?')
+            binds.append(low)
+    clause = " OR ".join(where)
+    rows = store.query(ctx.conn, product, clause, binds)
+
+    descriptions = {}
+    for row in store.query(ctx.conn, ENTITY_TYPES["A_ProductDescription"],
+                           '"Language" = ?', ["EN"]):
+        descriptions[row["Product"]] = row["ProductDescription"]
+
+    listing = [{"MATERIAL": row["Product"], "MATL_DESC": descriptions.get(row["Product"], ""),
+                "MATL_TYPE": row["ProductType"], "MATL_GROUP": row["ProductGroup"],
+                "BASE_UOM": row["BaseUnit"],
+                "DEL_FLAG": "X" if row["IsMarkedForDeletion"] else ""}
+               for row in rows]
+    messages = [] if listing else [ret("W", "No materials found", "M3", "096")]
+    return {"MATNRLIST": listing, "RETURN": messages}
+
+
+# --------------------------------------------------------------------------
+# Changing a sales order
+# --------------------------------------------------------------------------
+
+
+def _flagged(structure, name: str) -> bool:
+    """True when the X structure flags this field for change."""
+    return str(field(structure, name, "")).strip().upper() == "X"
+
+
+_HEADER_FIELDS = {
+    "PURCH_NO_C": "PurchaseOrderByCustomer",
+    "PURCH_DATE": None,
+    "DOC_TYPE": "SalesOrderType",
+    "SALES_ORG": "SalesOrganization",
+    "DISTR_CHAN": "DistributionChannel",
+    "DIVISION": "OrganizationDivision",
+    "CURRENCY": "TransactionCurrency",
+    "INCOTERMS1": "IncotermsClassification",
+    "PMNTTRMS": "CustomerPaymentTerms",
+    "REQ_DATE_H": "RequestedDeliveryDate",
+}
+
+_ITEM_FIELDS = {
+    "MATERIAL": "Material",
+    "SHORT_TEXT": "SalesOrderItemText",
+    "TARGET_QTY": "RequestedQuantity",
+    "REQ_QTY": "RequestedQuantity",
+    "SALES_UNIT": "RequestedQuantityUnit",
+    "PLANT": "Plant",
+    "COND_VALUE": "NetAmount",
+}
+
+
+@function("BAPI_SALESORDER_CHANGE", "SalesOrderChange")
+def _so_change(ctx, params):
+    document = str(param(params, "SALESDOCUMENT", "") or "").strip()
+    so = ENTITY_TYPES["A_SalesOrder"]
+    row = (store.get(ctx.conn, so, {"SalesOrder": document.zfill(10)})
+           or store.get(ctx.conn, so, {"SalesOrder": document}))
+    if row is None:
+        return {"RETURN": [ret("E", "Document %s does not exist" % document, "V1", "555",
+                               v1=document)]}
+    keys = {"SalesOrder": row["SalesOrder"]}
+
+    header = param(params, "ORDER_HEADER_IN") or {}
+    header_x = param(params, "ORDER_HEADER_INX") or {}
+    items = param(params, "ORDER_ITEM_IN") or []
+    items_x = {str(field(x, "ITM_NUMBER", "")).strip(): x
+               for x in (param(params, "ORDER_ITEM_INX") or [])}
+
+    messages: List[dict] = []
+    changed = False
+
+    # Only what the X structure flags is changed - a BAPI ignores the rest,
+    # which is the classic way a change call silently does nothing.
+    if header and str(field(header_x, "UPDATEFLAG", "U")).upper() in ("U", ""):
+        values = {}
+        for sap_name, our_name in _HEADER_FIELDS.items():
+            if our_name and _flagged(header_x, sap_name):
+                values[our_name] = field(header, sap_name, "")
+        if values:
+            store.update(ctx.conn, so, keys, values, user=ctx.user)
+            changed = True
+        elif header_x:
+            messages.append(ret(
+                "W", "No header fields were flagged in ORDER_HEADER_INX; the header "
+                     "was not changed", "V1", "010", parameter="ORDER_HEADER_INX"))
+        else:
+            messages.append(ret(
+                "W", "ORDER_HEADER_INX is missing; the header was not changed",
+                "V1", "010", parameter="ORDER_HEADER_INX"))
+
+    item_type = ENTITY_TYPES["A_SalesOrderItem"]
+    for index, item in enumerate(items, start=1):
+        number = str(field(item, "ITM_NUMBER", "")).strip()
+        flags = items_x.get(number, {})
+        action = str(field(flags, "UPDATEFLAG", "U")).upper() or "U"
+        item_keys = {"SalesOrder": row["SalesOrder"], "SalesOrderItem": number}
+
+        if action == "D":
+            if store.get(ctx.conn, item_type, item_keys) is None:
+                messages.append(ret("E", "Item %s does not exist" % number, "V1", "555",
+                                    row=index, parameter="ORDER_ITEM_IN"))
+                continue
+            store.delete(ctx.conn, item_type, item_keys)
+            changed = True
+            continue
+
+        if action == "I":
+            payload = {our: field(item, sap, "") for sap, our in _ITEM_FIELDS.items()
+                       if field(item, sap, "") != ""}
+            if number:
+                payload["SalesOrderItem"] = number
+            payload.setdefault("TransactionCurrency", row["TransactionCurrency"])
+            store.insert(ctx.conn, item_type, payload, user=ctx.user,
+                         parent_keys={"SalesOrder": row["SalesOrder"]})
+            changed = True
+            continue
+
+        if store.get(ctx.conn, item_type, item_keys) is None:
+            messages.append(ret("E", "Item %s does not exist" % number, "V1", "555",
+                                row=index, parameter="ORDER_ITEM_IN"))
+            continue
+        values = {our: field(item, sap, "") for sap, our in _ITEM_FIELDS.items()
+                  if _flagged(flags, sap)}
+        if values:
+            store.update(ctx.conn, item_type, item_keys, values, user=ctx.user)
+            changed = True
+        elif flags:
+            messages.append(ret(
+                "W", "No fields were flagged for item %s; it was not changed" % number,
+                "V1", "010", row=index, parameter="ORDER_ITEM_INX"))
+
+    if any(m["TYPE"] == "E" for m in messages):
+        return {"RETURN": messages}
+    if changed:
+        messages.append(ret("S", "Standard Order %s has been saved"
+                            % row["SalesOrder"].lstrip("0"), "V1", "311",
+                            v1="Standard Order", v2=row["SalesOrder"].lstrip("0")))
+    elif not messages:
+        messages.append(ret("W", "Nothing was flagged for change", "V1", "010"))
+    return {"RETURN": messages}
+
+
+# --------------------------------------------------------------------------
+# RFC_READ_TABLE
+# --------------------------------------------------------------------------
+
+# The classic table names people reach for, and what this mock has instead.
+_CLASSIC_TABLES = {
+    "VBAK": "A_SalesOrder", "VBAP": "A_SalesOrderItem", "KNA1": "A_BusinessPartner",
+    "LFA1": "A_BusinessPartner", "MARA": "A_Product", "MAKT": "A_ProductDescription",
+    "MARC": "A_ProductPlant", "EKKO": "A_PurchaseOrder", "EKPO": "A_PurchaseOrderItem",
+    "ADRC": "A_BusinessPartnerAddress",
+}
+
+_ABAP_TYPE = {
+    "Edm.String": "C", "Edm.DateTime": "D", "Edm.Decimal": "P",
+    "Edm.Double": "P", "Edm.Int32": "I", "Edm.Int16": "I", "Edm.Boolean": "C",
+}
+
+_OPTION_OPERATORS = {
+    "=": "=", "EQ": "=", "<>": "<>", "NE": "<>", "<": "<", "LT": "<",
+    ">": ">", "GT": ">", "<=": "<=", "LE": "<=", ">=": ">=", "GE": ">=",
+    "LIKE": "LIKE",
+}
+
+_OPTION_TOKEN = re.compile(
+    r"\s*(?:(?P<str>'(?:[^']|'')*')|(?P<op><>|<=|>=|=|<|>)|(?P<paren>[()])"
+    r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _options_where(et, lines) -> tuple:
+    """Translate the OPTIONS table into a parameterised WHERE clause.
+
+    Deliberately narrow: field names must exist on the table, only the ABAP
+    comparison operators are accepted, and every literal is bound. Nothing
+    from the caller reaches SQL as text.
+    """
+    text = " ".join(str(field(line, "TEXT", "")) for line in lines).strip()
+    if not text:
+        return "", []
+    columns = {name.upper(): name for name, _p in et.columns()}
+    sql, binds, pos, expect_value_for = [], [], 0, None
+    while pos < len(text):
+        match = _OPTION_TOKEN.match(text, pos)
+        if not match or match.end() == match.start():
+            raise SapError("Cannot read OPTIONS at '%s'" % text[pos:pos + 20], 400,
+                           code="OPTION_NOT_VALID")
+        pos = match.end()
+        kind = match.lastgroup
+        value = match.group(kind)
+        if kind == "paren":
+            sql.append(value)
+        elif kind == "str":
+            binds.append(value[1:-1].replace("''", "'"))
+            sql.append("?")
+        elif kind == "op":
+            sql.append(_OPTION_OPERATORS[value])
+        else:
+            upper = value.upper()
+            if upper in ("AND", "OR", "NOT"):
+                sql.append(upper)
+            elif upper in _OPTION_OPERATORS:
+                sql.append(_OPTION_OPERATORS[upper])
+            elif upper in columns:
+                sql.append('"%s"' % columns[upper])
+            else:
+                raise SapError(
+                    "Field %s does not exist in table %s" % (value, et.name), 400,
+                    code="FIELD_NOT_VALID")
+    return " ".join(sql), binds
+
+
+@function("RFC_READ_TABLE", "RfcReadTable")
+def _rfc_read_table(ctx, params):
+    requested = str(param(params, "QUERY_TABLE", "") or "").strip()
+    if not requested:
+        raise SapError("QUERY_TABLE is missing", 400, code="TABLE_NOT_AVAILABLE")
+
+    tables = {name.upper(): name for name in ENTITY_TYPES}
+    resolved = tables.get(requested.upper())
+    if resolved is None:
+        classic = _CLASSIC_TABLES.get(requested.upper())
+        hint = (" This mock exposes %s instead." % classic) if classic else ""
+        raise SapError(
+            "Table %s is not available in this system.%s" % (requested.upper(), hint),
+            400, code="TABLE_NOT_AVAILABLE")
+    et = ENTITY_TYPES[resolved]
+
+    columns = dict(et.columns())
+    wanted = [str(field(f, "FIELDNAME", "")).strip() for f in (param(params, "FIELDS") or [])]
+    wanted = [name for name in wanted if name]
+    if wanted:
+        lookup = {name.upper(): name for name in columns}
+        missing = [name for name in wanted if name.upper() not in lookup]
+        if missing:
+            raise SapError(
+                "Field %s does not exist in table %s" % (missing[0], resolved), 400,
+                code="FIELD_NOT_VALID")
+        wanted = [lookup[name.upper()] for name in wanted]
+    else:
+        wanted = list(columns)
+
+    where, binds = _options_where(et, param(params, "OPTIONS") or [])
+    skip = int(_num(param(params, "ROWSKIPS", 0), 0))
+    count = int(_num(param(params, "ROWCOUNT", 0), 0))
+    rows = store.query(ctx.conn, et, where, binds, "", count or None, skip or None)
+
+    # width per field, the way the dictionary would define it
+    widths = []
+    for name in wanted:
+        prop = columns[name]
+        width = prop.max_length or {"Edm.DateTime": 8, "Edm.Boolean": 1}.get(prop.type, 18)
+        widths.append(max(int(width), len(name)))
+
+    offset, fields_out = 0, []
+    for name, width in zip(wanted, widths):
+        prop = columns[name]
+        fields_out.append({
+            "FIELDNAME": name, "OFFSET": str(offset).zfill(6),
+            "LENGTH": str(width).zfill(6), "TYPE": _ABAP_TYPE.get(prop.type, "C"),
+            "FIELDTEXT": prop.label or name,
+        })
+        offset += width
+
+    delimiter = str(param(params, "DELIMITER", "") or "")
+    data = []
+    if str(param(params, "NO_DATA", "") or "").upper() != "X":
+        for row in rows:
+            cells = []
+            for name, width in zip(wanted, widths):
+                value = _flat_value(columns[name], row[name])
+                cells.append(value if delimiter else value[:width].ljust(width))
+            data.append({"WA": delimiter.join(cells) if delimiter else "".join(cells)})
+
+    return {"DATA": data, "FIELDS": fields_out}
+
+
+def _flat_value(prop, value) -> str:
+    """Render one cell the way an ABAP work area would hold it."""
+    if value is None:
+        return ""
+    if prop.type == "Edm.DateTime":
+        return str(value)[:10].replace("-", "")
+    if prop.type == "Edm.Boolean":
+        return "X" if value else ""
+    if prop.type in ("Edm.Decimal", "Edm.Double"):
+        return ("%%.%df" % (prop.scale if prop.scale is not None else 3)) % float(value)
+    return str(value)
+
+
 ALIASES = {norm(f["alias"]): name for name, f in FUNCTIONS.items()}
 ALIASES.update({norm(name): name for name in FUNCTIONS})
 
