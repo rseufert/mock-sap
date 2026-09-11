@@ -12,6 +12,15 @@ says so where it does.
 
 - This changelog, and `CONTRIBUTING.md`: what the project values, where to add
   each kind of thing, what a pull request should carry, and how a release is cut.
+- The rest of the sales-order write shapes: `A_SalesOrderPartnerAddress` (the
+  one-time address a partner carries, reached through `to_Address`),
+  `A_SalesOrderText`, and header and item pricing elements
+  (`A_SalesOrderHeaderPrElement`, `A_SalesOrderItemPrElement`), with the header
+  and item fields an order-management client sends alongside them —
+  `CustomerPurchaseOrderDate`, `SDDocumentReason`, `ReferenceSDDocument`,
+  `PricingDate` and the item's `PurchaseOrderByCustomer`. A client that posts a
+  complete `A_SalesOrder` deep insert is no longer refused for properties the
+  real service has.
 
 ## [0.7.0] - 2026-09-11
 

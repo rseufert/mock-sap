@@ -111,7 +111,11 @@ class TestV4Shapes(V4Case):
         _, _, body = self.get(V4 + "/")
         self.assertTrue(body["@odata.context"].endswith("$metadata"))
         names = {entry["name"] for entry in body["value"]}
-        self.assertEqual(names, {"SalesOrder", "SalesOrderItem", "SalesOrderHeaderPartner"})
+        self.assertEqual(names, {
+            "SalesOrder", "SalesOrderItem", "SalesOrderHeaderPartner",
+            "SalesOrderPartnerAddress", "SalesOrderText",
+            "SalesOrderHeaderPrElement", "SalesOrderItemPrElement",
+        })
         self.assertEqual(body["value"][0]["kind"], "EntitySet")
 
 
