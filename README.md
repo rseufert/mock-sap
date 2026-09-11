@@ -146,6 +146,8 @@ draw. The V4 services carry the handful of vocabulary terms it reads:
 | `UI.LineItem` | the columns of a list report |
 | `UI.SelectionFields` | the filter bar |
 | `UI.Identification` | the fields on the object page |
+| `UI.FieldGroup` | the sections that group those fields |
+| `UI.Facets` | the object page's layout, including its items table |
 | `Common.Label` | the label of every property |
 | `Capabilities.Insert/Update/DeleteRestrictions` | which buttons appear |
 
@@ -155,6 +157,14 @@ for it. What a list report would draw is visible directly:
 
 ```bash
 curl "$V4/\$metadata?\$format=json" | jq '."com.sap.gateway.srvd_a2x.api_salesorder.v0001".SalesOrderType."@UI.LineItem"'
+```
+
+An object page gets its sections from `UI.FieldGroup` and its layout from
+`UI.Facets` - including a facet pointing through a navigation property at the
+item type's own line items, which is how the items table appears:
+
+```
+Facet("Items", "to_Item/@UI.LineItem")
 ```
 
 The annotations live beside the entity types in `mocksap/schema.py`, so a column
@@ -520,7 +530,7 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-168 tests, every one of them over real HTTP against a running mock, split by
+172 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
 `test_apply`, `test_delta`, `test_annotations`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
@@ -601,7 +611,6 @@ and the UI annotations. What would extend the mock further, each with an issue
 sketching the work:
 
 - [#27 Deliveries and accounting documents](https://github.com/rseufert/mock-sap/issues/27) - the documents the mock hands out numbers for but cannot show
-- [#28 `UI.FieldGroup` and `UI.Facets`](https://github.com/rseufert/mock-sap/issues/28) - an object page with sections and an items table - a good first issue
 - [#29 A V2 annotation document](https://github.com/rseufert/mock-sap/issues/29) - so the classic smart controls can be pointed at GWSAMPLE_BASIC
 
 Open an issue if you need something else.

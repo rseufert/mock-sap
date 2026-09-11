@@ -160,6 +160,102 @@ class TestUiAnnotations(AnnotationCase):
             self.assertIsInstance(
                 container["@Capabilities.DeleteRestrictions"]["Deletable"], bool)
 
+    def test_field_groups_are_labelled_and_referenced(self):
+        root = self.edmx("api_salesorder")
+        block = self.annotations_for(root, "SalesOrderType")
+        groups = {}
+        for annotation in block.findall(EDM + "Annotation"):
+            if annotation.get("Term") != "UI.FieldGroup":
+                continue
+            qualifier = annotation.get("Qualifier")
+            self.assertTrue(qualifier, "a field group needs a qualifier to be referenced")
+            values = {p.get("Property"): p
+                      for p in annotation.find(EDM + "Record").findall(EDM + "PropertyValue")}
+            self.assertTrue(values["Label"].get("String"))
+            fields = [record.find(EDM + "PropertyValue").get("Path")
+                      for record in values["Data"].iter(EDM + "Record")]
+            self.assertTrue(fields)
+            groups[qualifier] = fields
+        self.assertIn("General", groups)
+        self.assertIn("SoldToParty", groups["General"])
+
+    def test_every_facet_target_resolves(self):
+        """A facet pointing at a field group that does not exist, or through a
+        navigation that does not, is a blank section in someone's app."""
+        for service, (set_name, type_name) in SERVICES.items():
+            root = self.edmx(service)
+            types, line_items, qualifiers = {}, set(), {}
+            for entity in root.iter(EDM + "EntityType"):
+                types[entity.get("Name")] = {
+                    nav.get("Name"): nav.get("Type")
+                    for nav in entity.findall(EDM + "NavigationProperty")}
+            for block in root.iter(EDM + "Annotations"):
+                target = block.get("Target", "").rsplit(".", 1)[-1]
+                for annotation in block.findall(EDM + "Annotation"):
+                    if annotation.get("Term") == "UI.LineItem":
+                        line_items.add(target)
+                    if annotation.get("Term") == "UI.FieldGroup":
+                        qualifiers.setdefault(target, set()).add(annotation.get("Qualifier"))
+
+            block = self.annotations_for(root, "." + type_name)
+            facets = [record for record in block.iter(EDM + "Record")
+                      if record.get("Type") == "UI.ReferenceFacet"]
+            self.assertTrue(facets, service)
+            for facet in facets:
+                values = {p.get("Property"): p for p in facet.findall(EDM + "PropertyValue")}
+                self.assertTrue(values["Label"].get("String"), service)
+                target = values["Target"].get("AnnotationPath")
+                self.assertTrue(target, service)
+
+                if target.startswith("@UI.FieldGroup#"):
+                    qualifier = target.split("#", 1)[1]
+                    self.assertIn(qualifier, qualifiers.get(type_name, set()),
+                                  "%s: no field group %s" % (service, qualifier))
+                    continue
+
+                path, _, term = target.partition("/")
+                self.assertEqual(term, "@UI.LineItem", service)
+                self.assertIn(path, types[type_name],
+                              "%s: %s is not a navigation property" % (service, path))
+                referenced = types[type_name][path]
+                referenced = referenced.replace("Collection(", "").rstrip(")")
+                referenced = referenced.rsplit(".", 1)[-1]
+                self.assertIn(referenced, line_items,
+                              "%s: %s has no UI.LineItem to show" % (service, referenced))
+
+    def test_an_object_page_can_reach_the_items(self):
+        root = self.edmx("api_salesorder")
+        block = self.annotations_for(root, "SalesOrderType")
+        targets = [record.findall(EDM + "PropertyValue")[1].get("AnnotationPath")
+                   for record in block.iter(EDM + "Record")
+                   if record.get("Type") == "UI.ReferenceFacet"]
+        self.assertIn("to_Item/@UI.LineItem", targets)
+
+        # and the type it points at really does describe its columns
+        item_block = self.annotations_for(root, "SalesOrderItemType")
+        self.assertIsNotNone(self.term(item_block, "UI.LineItem"))
+
+    def test_the_json_encoding_carries_groups_and_facets(self):
+        csdl = self.csdl("api_salesorder")
+        entity = csdl["com.sap.gateway.srvd_a2x.api_salesorder.v0001"]["SalesOrderType"]
+        groups = {key.split("#", 1)[1]: value for key, value in entity.items()
+                  if key.startswith("@UI.FieldGroup#")}
+        self.assertIn("General", groups)
+        self.assertEqual(groups["General"]["$Type"], "UI.FieldGroupType")
+        self.assertTrue(groups["General"]["Label"])
+        for data_field in groups["General"]["Data"]:
+            self.assertIn(data_field["Value"]["$Path"], entity)
+
+        facets = entity["@UI.Facets"]
+        self.assertTrue(facets)
+        for facet in facets:
+            self.assertEqual(facet["$Type"], "UI.ReferenceFacet")
+            target = facet["Target"]["$AnnotationPath"]
+            if target.startswith("@UI.FieldGroup#"):
+                self.assertIn(target.split("#", 1)[1], groups)
+            else:
+                self.assertTrue(target.endswith("/@UI.LineItem"))
+
     def test_metadata_still_parses_everywhere(self):
         for service in SERVICES:
             self.edmx(service)          # raises if the XML is malformed

@@ -85,6 +85,28 @@ class Nav:
 
 
 @dataclass
+class FieldGroup:
+    """A named set of fields, referenced from a facet by its qualifier."""
+
+    qualifier: str
+    label: str
+    fields: List[str]
+
+
+@dataclass
+class Facet:
+    """One section of an object page.
+
+    `target` is either a field group on this type - `@UI.FieldGroup#General` -
+    or a navigation property's own line items, `to_Item/@UI.LineItem`, which is
+    how an object page grows a table of its items.
+    """
+
+    label: str
+    target: str
+
+
+@dataclass
 class UI:
     """What a Fiori elements app needs to know to draw this entity type.
 
@@ -99,6 +121,8 @@ class UI:
     line_items: List[str] = field(default_factory=list)      # list report columns
     selection_fields: List[str] = field(default_factory=list)  # filter bar
     identification: List[str] = field(default_factory=list)  # object page fields
+    field_groups: List["FieldGroup"] = field(default_factory=list)
+    facets: List["Facet"] = field(default_factory=list)
     insertable: bool = True
     updatable: bool = True
     deletable: bool = True
@@ -808,6 +832,36 @@ ENTITY_TYPES["A_SalesOrder"].ui = UI(
     deletable=True,
 )
 
+ENTITY_TYPES["A_SalesOrder"].ui.field_groups = [
+    FieldGroup("General", "General Information",
+               ["SalesOrderType", "SalesOrganization", "DistributionChannel",
+                "OrganizationDivision", "SoldToParty", "PurchaseOrderByCustomer"]),
+    FieldGroup("Amounts", "Amounts",
+               ["TotalNetAmount", "TransactionCurrency", "CustomerPaymentTerms",
+                "IncotermsClassification"]),
+    FieldGroup("Dates", "Dates and Status",
+               ["SalesOrderDate", "RequestedDeliveryDate", "OverallSDProcessStatus",
+                "OverallDeliveryStatus"]),
+    FieldGroup("Admin", "Administrative Data",
+               ["CreatedByUser", "CreationDate", "LastChangeDate"]),
+]
+ENTITY_TYPES["A_SalesOrder"].ui.facets = [
+    Facet("General Information", "@UI.FieldGroup#General"),
+    Facet("Amounts", "@UI.FieldGroup#Amounts"),
+    Facet("Dates and Status", "@UI.FieldGroup#Dates"),
+    Facet("Items", "to_Item/@UI.LineItem"),
+    Facet("Partners", "to_Partner/@UI.LineItem"),
+    Facet("Administrative Data", "@UI.FieldGroup#Admin"),
+]
+
+ENTITY_TYPES["A_SalesOrderHeaderPartner"].ui = UI(
+    type_name="Partner",
+    type_name_plural="Partners",
+    title="PartnerFunction",
+    line_items=["PartnerFunction", "Customer", "Supplier", "ContactPerson"],
+    identification=["PartnerFunction", "Customer", "Supplier"],
+)
+
 ENTITY_TYPES["A_SalesOrderItem"].ui = UI(
     type_name="Sales Order Item",
     type_name_plural="Sales Order Items",
@@ -820,6 +874,19 @@ ENTITY_TYPES["A_SalesOrderItem"].ui = UI(
                     "RequestedQuantity", "NetAmount", "Plant"],
 )
 
+ENTITY_TYPES["A_SalesOrderItem"].ui.field_groups = [
+    FieldGroup("General", "General Information",
+               ["Material", "SalesOrderItemText", "SalesOrderItemCategory",
+                "MaterialGroup", "Plant", "ShippingPoint"]),
+    FieldGroup("Quantities", "Quantities and Amounts",
+               ["RequestedQuantity", "RequestedQuantityUnit", "NetAmount",
+                "TransactionCurrency"]),
+]
+ENTITY_TYPES["A_SalesOrderItem"].ui.facets = [
+    Facet("General Information", "@UI.FieldGroup#General"),
+    Facet("Quantities and Amounts", "@UI.FieldGroup#Quantities"),
+]
+
 ENTITY_TYPES["A_BusinessPartner"].ui = UI(
     type_name="Business Partner",
     type_name_plural="Business Partners",
@@ -831,6 +898,39 @@ ENTITY_TYPES["A_BusinessPartner"].ui = UI(
     identification=["BusinessPartner", "BusinessPartnerFullName", "FirstName",
                     "LastName", "SearchTerm1", "Industry"],
     deletable=False,
+)
+
+ENTITY_TYPES["A_BusinessPartner"].ui.field_groups = [
+    FieldGroup("General", "General Information",
+               ["BusinessPartnerCategory", "BusinessPartnerGrouping",
+                "BusinessPartnerFullName", "SearchTerm1", "Industry"]),
+    FieldGroup("Names", "Names",
+               ["OrganizationBPName1", "FirstName", "LastName"]),
+]
+ENTITY_TYPES["A_BusinessPartner"].ui.facets = [
+    Facet("General Information", "@UI.FieldGroup#General"),
+    Facet("Names", "@UI.FieldGroup#Names"),
+    Facet("Addresses", "to_BusinessPartnerAddress/@UI.LineItem"),
+    Facet("Roles", "to_BusinessPartnerRole/@UI.LineItem"),
+]
+
+ENTITY_TYPES["A_BusinessPartnerAddress"].ui = UI(
+    type_name="Address",
+    type_name_plural="Addresses",
+    title="CityName",
+    description="StreetName",
+    line_items=["AddressID", "StreetName", "HouseNumber", "PostalCode", "CityName",
+                "Country"],
+    identification=["AddressID", "StreetName", "HouseNumber", "PostalCode",
+                    "CityName", "Region", "Country", "PhoneNumber", "EmailAddress"],
+)
+
+ENTITY_TYPES["A_BusinessPartnerRole"].ui = UI(
+    type_name="Role",
+    type_name_plural="Roles",
+    title="BusinessPartnerRole",
+    line_items=["BusinessPartnerRole", "ValidFrom", "ValidTo"],
+    identification=["BusinessPartnerRole", "ValidFrom", "ValidTo"],
 )
 
 ENTITY_TYPES["A_Product"].ui = UI(
@@ -846,6 +946,37 @@ ENTITY_TYPES["A_Product"].ui = UI(
     deletable=False,
 )
 
+ENTITY_TYPES["A_Product"].ui.field_groups = [
+    FieldGroup("General", "General Information",
+               ["ProductType", "ProductGroup", "BaseUnit", "Division",
+                "ItemCategoryGroup"]),
+    FieldGroup("Weights", "Weights",
+               ["NetWeight", "GrossWeight", "WeightUnit"]),
+]
+ENTITY_TYPES["A_Product"].ui.facets = [
+    Facet("General Information", "@UI.FieldGroup#General"),
+    Facet("Weights", "@UI.FieldGroup#Weights"),
+    Facet("Descriptions", "to_Description/@UI.LineItem"),
+    Facet("Plants", "to_Plant/@UI.LineItem"),
+]
+
+ENTITY_TYPES["A_ProductDescription"].ui = UI(
+    type_name="Description",
+    type_name_plural="Descriptions",
+    title="ProductDescription",
+    line_items=["Language", "ProductDescription"],
+    identification=["Language", "ProductDescription"],
+)
+
+ENTITY_TYPES["A_ProductPlant"].ui = UI(
+    type_name="Plant",
+    type_name_plural="Plants",
+    title="Plant",
+    line_items=["Plant", "PurchasingGroup", "ProfitCenter", "MRPType"],
+    identification=["Plant", "PurchasingGroup", "ProfitCenter",
+                    "AvailabilityCheckType", "MRPType"],
+)
+
 ENTITY_TYPES["A_PurchaseOrder"].ui = UI(
     type_name="Purchase Order",
     type_name_plural="Purchase Orders",
@@ -857,6 +988,32 @@ ENTITY_TYPES["A_PurchaseOrder"].ui = UI(
     identification=["PurchaseOrder", "PurchaseOrderType", "CompanyCode",
                     "PurchasingOrganization", "Supplier", "PaymentTerms"],
 )
+
+ENTITY_TYPES["A_PurchaseOrder"].ui.field_groups = [
+    FieldGroup("General", "General Information",
+               ["PurchaseOrderType", "CompanyCode", "PurchasingOrganization",
+                "PurchasingGroup", "Supplier"]),
+    FieldGroup("Terms", "Terms",
+               ["DocumentCurrency", "PaymentTerms", "NetPaymentDays",
+                "PurchaseOrderDate"]),
+]
+ENTITY_TYPES["A_PurchaseOrder"].ui.facets = [
+    Facet("General Information", "@UI.FieldGroup#General"),
+    Facet("Terms", "@UI.FieldGroup#Terms"),
+    Facet("Items", "to_PurchaseOrderItem/@UI.LineItem"),
+]
+
+ENTITY_TYPES["A_PurchaseOrderItem"].ui = UI(
+    type_name="Purchase Order Item",
+    type_name_plural="Purchase Order Items",
+    title="PurchaseOrderItem",
+    description="PurchaseOrderItemText",
+    line_items=["PurchaseOrderItem", "Material", "PurchaseOrderItemText",
+                "OrderQuantity", "PurchaseOrderQuantityUnit", "NetPriceAmount"],
+    identification=["PurchaseOrderItem", "Material", "PurchaseOrderItemText",
+                    "OrderQuantity", "NetPriceAmount", "Plant", "StorageLocation"],
+)
+
 
 # --------------------------------------------------------------------------
 # Services

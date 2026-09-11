@@ -10,6 +10,11 @@ says so where it does.
 
 ### Added
 
+- `UI.FieldGroup` and `UI.Facets` on the V4 services ([#28]), so an object page
+  has sections and an items table rather than a flat list of fields. A facet can
+  point through a navigation property at the item type's own line items, and the
+  types those facets reference - addresses, roles, descriptions, plants, purchase
+  order items, sales order partners - gained line items of their own.
 - This changelog, and `CONTRIBUTING.md`: what the project values, where to add
   each kind of thing, what a pull request should carry, and how a release is cut.
 - The rest of the sales-order write shapes: `A_SalesOrderPartnerAddress` (the
@@ -198,3 +203,4 @@ First release.
 [#15]: https://github.com/rseufert/mock-sap/issues/15
 [#16]: https://github.com/rseufert/mock-sap/issues/16
 [#17]: https://github.com/rseufert/mock-sap/issues/17
+[#28]: https://github.com/rseufert/mock-sap/issues/28
