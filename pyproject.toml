@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mock-sap"
+version = "0.1.0"
+description = "A black-box mock SAP endpoint: OData V2, BAPI/RFC and IDoc shapes over SQLite, with zero dependencies."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["sap", "odata", "mock", "bapi", "rfc", "idoc", "s4hana", "testing", "integration"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing :: Mocking",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/your-org/mock-sap"
+Issues = "https://github.com/your-org/mock-sap/issues"
+
+[project.scripts]
+mock-sap = "mocksap.__main__:main"
+
+[tool.setuptools]
+packages = ["mocksap"]
