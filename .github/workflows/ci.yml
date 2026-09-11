@@ -75,8 +75,12 @@ jobs:
       - run: python -m twine check dist/*
       - name: Install the wheel and run the console script
         run: |
+          set -eu
           python -m pip install dist/*.whl
-          mock-sap --version
+          # __version__ is derived from the installed metadata: prove it matches
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "$(mock-sap --version)" = "mock-sap $VERSION"
+          test "$(cd /tmp && python -c 'import mocksap; print(mocksap.__version__)')" = "$VERSION"
           mock-sap --port 8001 -q &
           for _ in $(seq 1 40); do
             curl -sf http://127.0.0.1:8001/_mock/health && break

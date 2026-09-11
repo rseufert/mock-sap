@@ -559,7 +559,10 @@ code{background:#f3f4f6;padding:.1rem .3rem;border-radius:3px}</style>
 <li><code>POST /sap/bc/idoc</code> - inbound IDoc (XML or EDI_DC40 flat file)</li>
 <li><code>POST /sap/bc/idoc/generate</code> - outbound ORDERS05 from a sales order</li>
 <li><code>GET /sap/opu/odata/IWFND/CATALOGSERVICE;v=2/ServiceCollection</code> - service catalog</li>
-<li><code>GET /_mock/health</code>, <code>/_mock/state</code>, <code>/_mock/requests</code>,
+<li><code>GET /sap/bc/idoc/&lt;DOCNUM&gt;</code> - read a stored IDoc,
+    <code>PUT /sap/bc/idoc/&lt;DOCNUM&gt;/status</code> - set its status</li>
+<li><code>GET /_mock/health</code>, <code>/_mock/state</code>, <code>/_mock/services</code>,
+    <code>/_mock/requests</code>, <code>/_mock/rfc-log</code>, <code>/_mock/idocs</code>,
     <code>/_mock/faults</code>, <code>POST /_mock/reset</code></li>
 </ul>""" % (SYSTEM_ID, SYSTEM_ID, rows, functions)
 

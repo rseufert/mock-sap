@@ -88,7 +88,7 @@ bash examples/demo.sh
 | BAPI over SOAP | `POST /sap/bc/srt/rfc/sap/<service>/<client>/<name>/<binding>` |
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
 | IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05 |
-| Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/requests`, `/_mock/faults`, `/_mock/reset` |
+| Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs`, `/_mock/faults`, `POST /_mock/reset` |
 
 Entity sets carry the S/4HANA field names — `A_SalesOrder` with `SoldToParty`,
 `TotalNetAmount`, `OverallSDProcessStatus`, `to_Item`; `A_BusinessPartner` with
@@ -244,7 +244,8 @@ curl -X POST http://127.0.0.1:8000/_mock/reset \
 ```
 mock-sap [--host 127.0.0.1] [--port 8000] [--db :memory:|path.db] [--client 100]
          [--user MOCKUSER] [--auth USER:PASSWORD] [--no-csrf] [--seed 42]
-         [--latency-ms 0] [--error-rate 0.0] [--slow-ms 3000] [--no-request-log] [-q]
+         [--latency-ms 0] [--error-rate 0.0] [--slow-ms 3000] [--no-request-log]
+         [-q] [--version]
 ```
 
 `--db mock.db` keeps data across restarts; the default in-memory system starts fresh
@@ -253,6 +254,8 @@ every time. `--auth` turns on HTTP basic authentication with a NetWeaver realm.
 ## Using it from tests
 
 ```python
+import threading
+
 from mocksap import Config, make_server
 
 httpd = make_server(Config(port=0, db_path=":memory:", csrf=False, quiet=True))
@@ -305,10 +308,14 @@ test suite, builds the sdist and wheel, checks that the tag matches the version 
 `pyproject.toml`, and uploads. Running the workflow manually publishes to TestPyPI
 instead, to rehearse.
 
+`pyproject.toml` is the only place the version is written: `mocksap.__version__`
+reads it back from the installed package metadata, and CI fails the release if the
+tag, `pyproject.toml` and the built wheel disagree.
+
 ```bash
-# bump version in pyproject.toml and mocksap/__init__.py first
-git tag v0.1.0 && git push origin v0.1.0
-gh release create v0.1.0 --generate-notes
+# bump `version` in pyproject.toml, then:
+git tag v0.2.0 && git push origin v0.2.0
+gh release create v0.2.0 --generate-notes
 ```
 
 ## Layout
@@ -324,6 +331,10 @@ mocksap/batch.py      $batch multipart and atomic changesets
 mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
 mocksap/server.py     HTTP front end, CSRF, auth, fault injection, /_mock API
+
+tests/                the whole suite, driven over real HTTP
+examples/             the curl tour and a dependency-free Python client
+.github/workflows/    ci.yml (tests, examples, wheel, image) and publish.yml
 ```
 
 ## Scope
@@ -334,6 +345,15 @@ authorization objects, workflow or any other real SAP logic. What it is good for
 developing and testing integrations, contract tests in CI, demos, and load-testing
 your side of the wire.
 
-Not implemented yet, and the obvious next contributions: OData V4 services,
-complex (structured) types, `$links`, ETags with `If-Match`, and OAuth/SAML instead
-of basic authentication.
+Not implemented yet, and the obvious next contributions - each one has an issue
+with a sketch of the work involved:
+
+- [#1 OData V4 services alongside V2](https://github.com/rseufert/mock-sap/issues/1)
+- [#2 Complex (structured) types](https://github.com/rseufert/mock-sap/issues/2)
+- [#3 `$links` requests](https://github.com/rseufert/mock-sap/issues/3) - a good first issue
+- [#4 ETags and `If-Match` concurrency](https://github.com/rseufert/mock-sap/issues/4)
+- [#5 OAuth 2.0 and SAML bearer authentication](https://github.com/rseufert/mock-sap/issues/5)
+
+Pull requests are welcome. Adding an entity set is usually a single declaration in
+`mocksap/schema.py`; everything else - tables, `$metadata`, payload shapes - follows
+from it.
