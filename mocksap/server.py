@@ -556,8 +556,10 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8")) if body.strip() else {}
             order = str(payload.get("SalesOrder") or opts.get("salesorder") or "")
             if not order:
-                raise SapError("Provide a SalesOrder to generate an ORDERS05 IDoc", 400)
-            out = idoc.generate_orders05(ctx, order)
+                raise SapError("Provide a SalesOrder to generate an IDoc from", 400)
+            mestyp = str(payload.get("mestyp") or payload.get("MESTYP")
+                         or opts.get("mestyp") or "ORDERS")
+            out = idoc.generate(ctx, mestyp, order)
             if wants_xml or opts.get("format") == "xml":
                 return Response(201, body=out["xml"], content_type="text/xml;charset=utf-8",
                                 headers={"sap-idoc-docnum": out["docnum"]})
