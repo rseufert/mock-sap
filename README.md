@@ -124,6 +124,7 @@ honestly apart - a V2 option on a V4 service is an error, and the other way roun
 | Links | `__deferred`, `$links` | omitted, `$ref` |
 | Expanded | `{"results":[…]}` | a bare array |
 | Nested options | - | `$expand=to_Item($select=Material;$top=2;$count=true)` |
+| Aggregation | - | `$apply=groupby((SoldToParty),aggregate($count as Orders))` |
 | Metadata | EDMX 1.0 | CSDL 4.0, XML or JSON |
 | Batch | multipart/mixed | JSON, with `atomicityGroup` |
 | Errors | `message: {lang, value}` | `message` as a string |
@@ -131,6 +132,32 @@ honestly apart - a V2 option on a V4 service is an error, and the other way roun
 ```bash
 curl "http://127.0.0.1:8000/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001/SalesOrder?\$top=1&\$count=true"
 ```
+
+### Aggregation
+
+An analytical client opens with an `$apply`, and the V4 services answer one:
+
+```bash
+curl --get "$V4/SalesOrder" --data-urlencode \
+  '$apply=filter(TotalNetAmount gt 50000)/groupby((SoldToParty),aggregate($count as Orders,TotalNetAmount with average as Avg))/orderby(Orders desc)/top(3)'
+```
+
+```json
+{
+  "@odata.context": ".../$metadata#SalesOrder(SoldToParty,Orders,Avg)",
+  "value": [
+    {"SoldToParty": "1000003", "Orders": 3, "Avg": 152921.147},
+    {"SoldToParty": "1000018", "Orders": 2, "Avg": 123650.425}
+  ]
+}
+```
+
+`filter`, `groupby`, `aggregate`, `orderby`, `top` and `skip` compose with `/`;
+the aggregation methods are `sum`, `min`, `max`, `average`, `countdistinct` and
+`$count`. The rows are not entities - they carry the grouping keys and the
+aggregates and nothing else. `$count=true` beside an `$apply` counts the groups,
+not the page. Anything the mock does not implement is refused by name rather than
+half-honoured.
 
 ## OData V2 support
 
@@ -432,8 +459,9 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-135 tests, every one of them over real HTTP against a running mock, split by
+151 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
+`test_apply`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
 `test_oauth`, `test_messages`, `test_operations` and `test_auth`, over the shared
 harness in `tests/support.py`.
@@ -473,6 +501,7 @@ mocksap/schema.py     entity types, navigations, services   (add shapes here)
 mocksap/db.py         SQLite schema, number ranges, seed data
 mocksap/odata.py      $filter parser, key predicates, V2 shaping, error envelope
 mocksap/odata4.py     the V4 shapes: annotations, ISO dates, plain numbers
+mocksap/apply.py      $apply pipelines compiled to GROUP BY
 mocksap/metadata.py   EDMX 1.0 / service document
 mocksap/metadata4.py  CSDL 4.0, XML and JSON
 mocksap/store.py      CRUD, deep insert, cascades, document defaults
@@ -505,7 +534,6 @@ your side of the wire.
 The first roadmap - OData V4, complex types, `$links`, ETags, OAuth - is done.
 What would extend the mock further, each with an issue sketching the work:
 
-- [#14 `$apply` aggregations](https://github.com/rseufert/mock-sap/issues/14)
 - [#15 Delta tokens](https://github.com/rseufert/mock-sap/issues/15)
 - [#17 CDS and UI annotations for Fiori elements](https://github.com/rseufert/mock-sap/issues/17)
 

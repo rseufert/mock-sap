@@ -170,6 +170,21 @@ The dialects are kept apart deliberately: `$inlinecount` on a V4 service and
 to, because a mock that quietly accepted either would let a client ship code that a
 real system rejects.
 
+### $apply is a plan, not a calculation
+
+An aggregation could have been computed in Python over rows fetched from SQLite.
+It is not: `apply.py` parses the pipeline into a plan - a WHERE, grouping columns,
+aggregate expressions, an ORDER BY and a LIMIT - and emits one `GROUP BY`
+statement. SQLite does the arithmetic, which is both faster and less code to get
+wrong, and it is only possible because the `$filter` compiler already turns
+expressions into SQL rather than into predicates.
+
+The rows that come back are not entities, and the code is careful about that:
+they carry the grouping keys and the aggregates and nothing else - no ETag, no
+key, no navigation - because a client that receives an entity-shaped thing will
+try to use it as one. The `@odata.context` names the columns produced, which is
+how a V4 client knows what it is looking at.
+
 ### Structured properties are flat underneath
 
 SAP nests structured properties on the wire - `Address` is a `CT_Address` with its
@@ -321,14 +336,13 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 The first roadmap - V4, complex types, `$links`, ETags, OAuth - is complete. What
 is still absent is tracked as issues, and worth knowing before you go looking for
-it: aggregation ([#14]), delta handling ([#15]), and the UI vocabulary annotations
-a Fiori elements app reads ([#17]).
+it: delta handling ([#15]) and the UI vocabulary annotations a Fiori elements app
+reads ([#17]).
 
 Beyond those, the mock has no concept of authorizations, no ABAP, no background
 jobs, no transactional boundary spanning more than a changeset, and no attempt at
 SAP's performance characteristics. It is a wire-shape simulator, and it should
 stay one.
 
-[#14]: https://github.com/rseufert/mock-sap/issues/14
 [#15]: https://github.com/rseufert/mock-sap/issues/15
 [#17]: https://github.com/rseufert/mock-sap/issues/17
