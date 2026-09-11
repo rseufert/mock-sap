@@ -294,6 +294,21 @@ SOAP, IDoc round-trip, fault injection and authentication.
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work.
 
+## Releasing
+
+Releases go to PyPI through [Trusted Publishing](https://docs.pypi.org/trusted-publishers/):
+PyPI trusts this repository's `publish.yml` workflow directly, so no API token is
+stored in the repository or on anyone's laptop. Publishing a GitHub Release runs the
+test suite, builds the sdist and wheel, checks that the tag matches the version in
+`pyproject.toml`, and uploads. Running the workflow manually publishes to TestPyPI
+instead, to rehearse.
+
+```bash
+# bump version in pyproject.toml and mocksap/__init__.py first
+git tag v0.1.0 && git push origin v0.1.0
+gh release create v0.1.0 --generate-notes
+```
+
 ## Layout
 
 ```
