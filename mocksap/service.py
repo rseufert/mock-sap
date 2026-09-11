@@ -10,6 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlparse
 
+from . import apply as odata_apply
 from . import messages as sap_messages, metadata, metadata4, odata4, store
 from .odata import (SapError, build_orderby, build_where, collection_envelope,
                     entity_envelope, entity_uri, error_payload, etag_for,
@@ -336,6 +337,10 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
         if tail == ["$count"]:
             if method != "GET":
                 raise SapError("Method %s is not allowed on $count" % method, 405)
+            if opts.get("$apply"):
+                raise SapError(
+                    "The $count segment cannot be combined with $apply; ask for "
+                    "$count=true beside it instead", 400)
             where, params = _where_from(opts, et)
             return Response(body=str(store.count(ctx.conn, et, where, params)),
                             content_type="text/plain;charset=utf-8")
@@ -496,6 +501,8 @@ def _merge_where(w1, p1, w2, p2):
 
 
 def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=()):
+    if opts.get("$apply"):
+        return _read_aggregate(ctx, svc, et, set_name, opts, extra_where, extra_params)
     where, params = _where_from(opts, et)
     where, params = _merge_where(extra_where, extra_params, where, params)
     order = build_orderby(opts["$orderby"], et) if opts.get("$orderby") else ""
@@ -519,6 +526,48 @@ def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=
             headers={"OData-Version": "4.0"})
     return Response(body=collection_envelope(entities, total),
                     headers={"DataServiceVersion": "2.0"})
+
+
+def _read_aggregate(ctx, svc, et, set_name, opts, extra_where, extra_params) -> Response:
+    """Answer an $apply pipeline: rows of grouping keys and aggregates.
+
+    These are not entities, so they carry no ETag, no id and no navigation -
+    only what the pipeline produced, and a context naming those columns.
+    """
+    for option in ("$select", "$expand", "$filter"):
+        if opts.get(option):
+            raise SapError(
+                "%s cannot be combined with $apply; put it inside the pipeline, "
+                "as in $apply=filter(...)/groupby(...)" % option, 400)
+
+    plan = odata_apply.parse(opts["$apply"], et)
+    if extra_where:
+        plan.where = ("(%s) AND (%s)" % (extra_where, plan.where)
+                      if plan.where else extra_where)
+        plan.params = list(extra_params) + list(plan.params)
+    if opts.get("$orderby"):
+        odata_apply._orderby(plan, opts["$orderby"])
+    top, skip = _int_option(opts, "$top"), _int_option(opts, "$skip")
+    if top is not None:
+        plan.top = top
+    if skip is not None:
+        plan.skip = skip
+
+    rows = odata_apply.run(ctx.conn, et, plan)
+
+    total = None
+    if _wants_count(opts, svc):
+        counting = odata_apply.parse(opts["$apply"], et)
+        counting.where, counting.params = plan.where, plan.params
+        # how many groups there are, not how many this page shows
+        counting.top = counting.skip = None
+        counting.order = ""
+        total = len(odata_apply.run(ctx.conn, et, counting))
+
+    context = odata4.context_url(
+        ctx.base_url, svc, "%s(%s)" % (set_name, ",".join(plan.names)))
+    return Response(body=odata4.collection_envelope(rows, context, total),
+                    headers={"OData-Version": "4.0"})
 
 
 def _wants_count(opts, svc) -> bool:
