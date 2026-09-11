@@ -27,7 +27,7 @@ Roughly in dependency order: `schema` sits at the bottom and depends on nothing,
 | `odata.py` | The OData V2 vocabulary: the `$filter` tokenizer and recursive-descent parser that compiles to parameterised SQL, key-predicate parsing and rendering, EDM ↔ JSON value conversion, the response envelopes, and the SAP error payload. | Adding a `$filter` function, a new EDM type, or changing how values are rendered. |
 | `metadata.py` | Generates the EDMX `$metadata` document (entity types, associations, referential constraints, `sap:` annotations, the entity container) and the Atom/JSON service documents. | Changing what `$metadata` advertises. |
 | `store.py` | CRUD over SQLite: query, deep insert, update with MERGE-vs-PUT semantics, cascading delete, auto-assigned document numbers, item numbering, total recalculation, ABAP initial values. | Changing write behaviour or the system-filled fields. |
-| `service.py` | The OData request dispatcher: URL segmentation, query-option handling, and the `Response`/`Context` types. Deliberately transport agnostic - `dispatch()` is called both by the HTTP server and by `$batch`. | Adding a URL shape or a query option. |
+| `service.py` | The OData request dispatcher: URL segmentation, query-option handling, `$links`, and the `Response`/`Context` types. Deliberately transport agnostic - `dispatch()` is called both by the HTTP server and by `$batch`. | Adding a URL shape or a query option. |
 | `batch.py` | `$batch`: multipart/mixed parsing, nested changesets, response assembly, and changeset atomicity via a SQLite backup snapshot. | Changing batch semantics. |
 | `bapi.py` | The RFC layer: the function-module registry, the BAPIRET2 helper, the eleven implemented BAPIs, and the SOAP transport (envelope parsing, response rendering, faults). | Adding a BAPI or changing RFC error shapes. |
 | `idoc.py` | IDoc inbox and outbox: XML and EDI_DC40 flat-file parsing, status records, and ORDERS05 generation from a stored sales order. | Adding an IDoc type or segment. |
@@ -47,6 +47,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_metadata.py` | The service document, EDMX `$metadata`, and the service catalog. |
 | `test_odata_read.py` | Response envelopes and value formats, `$filter` (including string functions), `$top`/`$skip`/`$orderby`/`$inlinecount`, `$select`/`$expand`, navigation, `$count`, `$value`, and the error envelope for a bad filter. |
 | `test_odata_write.py` | CSRF enforcement, deep insert with item numbering and total recalculation, PATCH, DELETE, validation failures, and POST to a navigation. |
+| `test_links.py` | `$links` reads for to-one and to-many associations, paging and counting over them, and the write paths - including the refusal to re-point a composition, which would rewrite a key. |
 | `test_batch.py` | A mixed batch of a GET and a changeset, and the rollback of a changeset whose second request fails. |
 | `test_rfc.py` | BAPI create over JSON, the error `RETURN` table, unknown function modules, and the same functions over SOAP including a fault. |
 | `test_idoc.py` | ORDERS05 generation, posting it back in, reading it, setting a status, and a flat-file IDoc. |

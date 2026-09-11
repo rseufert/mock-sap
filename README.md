@@ -104,6 +104,7 @@ Entity sets carry the S/4HANA field names — `A_SalesOrder` with `SoldToParty`,
 | `$select` `$expand` | `$expand` follows to-one and to-many navigations, nested paths included |
 | `$orderby` `$top` `$skip` | |
 | `$inlinecount=allpages`, `/$count` | |
+| `$links` | reads the association as bare URIs, to-one and to-many, with `$top`/`$skip`/`$inlinecount`/`$count`; writes re-point the foreign key, and refuse a change that would rewrite a key |
 | `$format=json`, Accept negotiation | XML/Atom for the service document and errors |
 | `$metadata` | EDMX 1.0 with associations, referential constraints and `sap:label`/`sap:creatable`/`sap:updatable` |
 | `$batch` | multipart/mixed, changesets execute atomically and roll back as a unit |
@@ -293,10 +294,10 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-31 tests, every one of them over real HTTP against a running mock, split by
-surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_batch`,
-`test_rfc`, `test_idoc`, `test_operations` and `test_auth`, over the shared
-harness in `tests/support.py`.
+39 tests, every one of them over real HTTP against a running mock, split by
+surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_links`,
+`test_batch`, `test_rfc`, `test_idoc`, `test_operations` and `test_auth`, over the
+shared harness in `tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work,
@@ -363,7 +364,6 @@ with a sketch of the work involved:
 
 - [#1 OData V4 services alongside V2](https://github.com/rseufert/mock-sap/issues/1)
 - [#2 Complex (structured) types](https://github.com/rseufert/mock-sap/issues/2)
-- [#3 `$links` requests](https://github.com/rseufert/mock-sap/issues/3) - a good first issue
 - [#4 ETags and `If-Match` concurrency](https://github.com/rseufert/mock-sap/issues/4)
 - [#5 OAuth 2.0 and SAML bearer authentication](https://github.com/rseufert/mock-sap/issues/5)
 
