@@ -125,6 +125,7 @@ honestly apart - a V2 option on a V4 service is an error, and the other way roun
 | Expanded | `{"results":[…]}` | a bare array |
 | Nested options | - | `$expand=to_Item($select=Material;$top=2;$count=true)` |
 | Aggregation | - | `$apply=groupby((SoldToParty),aggregate($count as Orders))` |
+| Delta | `__delta`, `!deltatoken='…'` | `@odata.deltaLink`, `$deltatoken=…` |
 | Metadata | EDMX 1.0 | CSDL 4.0, XML or JSON |
 | Batch | multipart/mixed | JSON, with `atomicityGroup` |
 | Errors | `message: {lang, value}` | `message` as a string |
@@ -322,6 +323,37 @@ memory, and a SAML assertion is read for its `NameID` and otherwise believed - n
 signature is checked, no issuer is verified. It exists so a client can exercise
 fetch, use, expire, refresh and retry, not to stand in for an authorization server.
 
+## Delta: what changed since last time
+
+A replication client reads once with `Prefer: odata.track-changes`, keeps the link
+it is handed, and comes back with it later:
+
+```bash
+curl -H 'Prefer: odata.track-changes' "$V4/SalesOrder"      # → "@odata.deltaLink": "…?$deltatoken=D20260911T175753033"
+curl "$V4/SalesOrder?\$deltatoken=D20260911T175753033"      # → only what changed, and what went
+```
+
+```json
+{
+  "@odata.context": ".../$metadata#SalesOrder/$delta",
+  "value": [
+    {"SalesOrder": "0000004712", "PurchaseOrderByCustomer": "PO-DELTA", "…": "…"},
+    {"@id": ".../SalesOrder('0000004714')", "@removed": {"reason": "deleted"}}
+  ],
+  "@odata.deltaLink": ".../SalesOrder?$deltatoken=D20260911T175812004"
+}
+```
+
+The V2 services do the same in their own spelling: `__delta` in the payload,
+`!deltatoken='…'` on the way back, and deleted entries marked
+`"__metadata": {"deleted": true, …}`.
+
+Entity types with a change timestamp support this - sales orders, products,
+business partners - and the ones without say so rather than quietly returning
+everything. Deletions are remembered in a table of their own, because a deleted row
+leaves nothing behind for a reader to find; `POST /_mock/reset` forgets them along
+with the rest.
+
 ## Warnings that do not fail the request
 
 SAP answers are not binary: a request can succeed and still carry messages. The
@@ -459,9 +491,9 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-151 tests, every one of them over real HTTP against a running mock, split by
+160 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
-`test_apply`,
+`test_apply`, `test_delta`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
 `test_oauth`, `test_messages`, `test_operations` and `test_auth`, over the shared
 harness in `tests/support.py`.
@@ -502,6 +534,7 @@ mocksap/db.py         SQLite schema, number ranges, seed data
 mocksap/odata.py      $filter parser, key predicates, V2 shaping, error envelope
 mocksap/odata4.py     the V4 shapes: annotations, ISO dates, plain numbers
 mocksap/apply.py      $apply pipelines compiled to GROUP BY
+mocksap/delta.py      delta tokens, and what changed since one
 mocksap/metadata.py   EDMX 1.0 / service document
 mocksap/metadata4.py  CSDL 4.0, XML and JSON
 mocksap/store.py      CRUD, deep insert, cascades, document defaults
@@ -534,7 +567,6 @@ your side of the wire.
 The first roadmap - OData V4, complex types, `$links`, ETags, OAuth - is done.
 What would extend the mock further, each with an issue sketching the work:
 
-- [#15 Delta tokens](https://github.com/rseufert/mock-sap/issues/15)
 - [#17 CDS and UI annotations for Fiori elements](https://github.com/rseufert/mock-sap/issues/17)
 
 Open an issue if you need something else.

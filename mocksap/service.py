@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qsl, unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
 from . import apply as odata_apply
+from . import delta as odata_delta
 from . import messages as sap_messages, metadata, metadata4, odata4, store
 from .odata import (SapError, build_orderby, build_where, collection_envelope,
                     entity_envelope, entity_uri, error_payload, etag_for,
@@ -24,10 +25,11 @@ XML_CT = "application/xml;charset=utf-8"
 _SHARED_OPTIONS = {
     "$filter", "$select", "$expand", "$orderby", "$top", "$skip", "$format",
     "$search", "$skiptoken", "sap-client", "sap-language", "saml2", "$callback",
+    "!deltatoken",   # SAP's V2 services spell the delta token this way
 }
 # $count is a path segment in V2 (/A_SalesOrder/$count), not a query option
 SUPPORTED_OPTIONS = _SHARED_OPTIONS | {"$inlinecount", "$links"}
-SUPPORTED_OPTIONS_V4 = _SHARED_OPTIONS | {"$count", "$ref", "$apply"}
+SUPPORTED_OPTIONS_V4 = _SHARED_OPTIONS | {"$count", "$ref", "$apply", "$deltatoken"}
 
 _SEGMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\(.*\))?$")
 
@@ -347,7 +349,7 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
         if tail:
             raise SapError("Resource not found for the segment '%s'" % tail[0], 404)
         if method == "GET":
-            return _read_collection(ctx, svc, et, set_name, opts)
+            return _read_collection(ctx, svc, et, set_name, opts, headers=headers)
         if method == "POST":
             return _create(ctx, svc, et, set_name, opts, body)
         raise SapError("Method %s is not allowed on entity set '%s'" % (method, set_name), 405)
@@ -451,7 +453,8 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
 
     if method == "GET":
         return _read_collection(ctx, target_svc, target, target_set, opts,
-                                extra_where=join_where, extra_params=join_params)
+                                extra_where=join_where, extra_params=join_params,
+                                headers=headers)
     if method == "POST":
         parent_keys = {remote: row[local] for local, remote in nav.join}
         return _create(ctx, target_svc, target, target_set, opts, body, parent_keys)
@@ -500,9 +503,14 @@ def _merge_where(w1, p1, w2, p2):
     return (w1 or w2), list(p1) + list(p2)
 
 
-def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=()):
+def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=(),
+                     headers=None):
     if opts.get("$apply"):
         return _read_aggregate(ctx, svc, et, set_name, opts, extra_where, extra_params)
+    headers = headers or {}
+    token = odata_delta.token_option(opts)
+    if token:
+        return _read_delta(ctx, svc, et, set_name, opts, token, extra_where, extra_params)
     where, params = _where_from(opts, et)
     where, params = _merge_where(extra_where, extra_params, where, params)
     order = build_orderby(opts["$orderby"], et) if opts.get("$orderby") else ""
@@ -519,13 +527,76 @@ def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=
         total = None
 
     entities = [_render(ctx, r, et, svc, select, expand) for r in rows]
+    link = None
+    if odata_delta.wants_tracking(headers):
+        odata_delta.require_change_property(et)
+        link = _delta_link(ctx, svc, set_name, opts)
+
     if svc.version >= 4:
-        return Response(
-            body=odata4.collection_envelope(
-                entities, _context_for(ctx, svc, set_name, opts), total),
-            headers={"OData-Version": "4.0"})
-    return Response(body=collection_envelope(entities, total),
-                    headers={"DataServiceVersion": "2.0"})
+        body = odata4.collection_envelope(
+            entities, _context_for(ctx, svc, set_name, opts), total)
+        if link:
+            body["@odata.deltaLink"] = link
+        response = Response(body=body, headers={"OData-Version": "4.0"})
+    else:
+        body = collection_envelope(entities, total)
+        if link:
+            body["d"]["__delta"] = link
+        response = Response(body=body, headers={"DataServiceVersion": "2.0"})
+    if link:
+        response.headers["Preference-Applied"] = "odata.track-changes"
+    return response
+
+
+def _delta_link(ctx, svc, set_name, opts, moment=None) -> str:
+    """Where the client comes back to ask what changed."""
+    token = odata_delta.mint(moment)
+    keep = [(key, value) for key, value in opts.items()
+            if key in ("$filter", "$select", "$expand", "$format")]
+    spelling = "$deltatoken=%s" % token if svc.version >= 4 else "!deltatoken='%s'" % token
+    query = "&".join([urlencode(keep, safe="$,/'() ")] + [spelling]) if keep else spelling
+    return "%s%s/%s?%s" % (ctx.base_url, svc.path, set_name, query)
+
+
+def _read_delta(ctx, svc, et, set_name, opts, token, extra_where, extra_params) -> Response:
+    """Answer with what changed since the token was issued, deletions included."""
+    since = odata_delta.read(token)
+    where, params = _where_from(opts, et)
+    where, params = _merge_where(extra_where, extra_params, where, params)
+    changed_where, changed_params = odata_delta.changed_since(et, since)
+    where, params = _merge_where(where, params, changed_where, changed_params)
+
+    select = _select_list(opts, et)
+    expand = _parse_expand(opts.get("$expand", ""), et, svc.version) if opts.get("$expand") else {}
+    rows = store.query(ctx.conn, et, where, params, "",
+                       _int_option(opts, "$top"), _int_option(opts, "$skip"))
+    entities = [_render(ctx, r, et, svc, select, expand) for r in rows]
+
+    removed = odata_delta.deletions_since(ctx.conn, et, since)
+    link = _delta_link(ctx, svc, set_name, opts)
+
+    if svc.version >= 4:
+        for keys in removed:
+            entities.append({
+                "@id": "%s%s/%s%s" % (ctx.base_url, svc.path, set_name,
+                                      key_predicate(et, keys)),
+                "@removed": {"reason": "deleted"},
+            })
+        body = odata4.collection_envelope(
+            entities, _context_for(ctx, svc, set_name, opts).replace(
+                "#" + set_name, "#" + set_name + "/$delta", 1))
+        body["@odata.deltaLink"] = link
+        return Response(body=body, headers={"OData-Version": "4.0",
+                                            "Preference-Applied": "odata.track-changes"})
+
+    for keys in removed:
+        uri = "%s%s/%s%s" % (ctx.base_url, svc.path, set_name, key_predicate(et, keys))
+        entities.append({"__metadata": {"id": uri, "uri": uri, "deleted": True,
+                                        "type": "%s.%s" % (svc.namespace, et.edm_name)}})
+    body = collection_envelope(entities)
+    body["d"]["__delta"] = link
+    return Response(body=body, headers={"DataServiceVersion": "2.0",
+                                        "Preference-Applied": "odata.track-changes"})
 
 
 def _read_aggregate(ctx, svc, et, set_name, opts, extra_where, extra_params) -> Response:
