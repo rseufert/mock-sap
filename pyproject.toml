@@ -20,8 +20,8 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/your-org/mock-sap"
-Issues = "https://github.com/your-org/mock-sap/issues"
+Homepage = "https://github.com/rseufert/mock-sap"
+Issues = "https://github.com/rseufert/mock-sap/issues"
 
 [project.scripts]
 mock-sap = "mocksap.__main__:main"
