@@ -50,6 +50,12 @@ def open_database(path: str) -> sqlite3.Connection:
     return connect(path)
 
 
+def forget(conn: sqlite3.Connection) -> None:
+    """Stop keeping an in-memory database alive."""
+    while conn in _keepalive:
+        _keepalive.remove(conn)
+
+
 def ddl_for(et: EntityType) -> str:
     cols = []
     for name, p in et.columns():

@@ -39,6 +39,7 @@ class MockServerCase(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+        cls.httpd.mock.close()
 
     # -- helpers
     def request(self, method, path, body=None, headers=None, raw=False):

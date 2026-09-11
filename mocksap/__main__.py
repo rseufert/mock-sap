@@ -22,6 +22,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="user name written into administrative fields")
     p.add_argument("--auth", dest="basic_auth", metavar="USER:PASSWORD",
                    help="require HTTP basic authentication")
+    p.add_argument("--oauth", metavar="CLIENT_ID:CLIENT_SECRET",
+                   help="require an OAuth 2.0 bearer token, and serve the token "
+                        "endpoint at /sap/bc/sec/oauth2/token")
+    p.add_argument("--token-ttl", type=int, default=3600,
+                   help="lifetime in seconds of an issued access token "
+                        "(default: 3600; set it low to exercise refresh)")
     p.add_argument("--no-csrf", dest="csrf", action="store_false",
                    help="do not require an X-CSRF-Token on modifying requests")
     p.add_argument("--require-if-match", action="store_true",
@@ -44,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    # Line-buffer the output: piped or run in a container, a block-buffered
+    # stdout swallows the banner and the access log until the buffer fills.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):  # pragma: no cover - odd stdout
+        pass
     config = Config(**{k: v for k, v in vars(args).items()})
     httpd = make_server(config)
     base = "http://%s:%d" % (args.host, args.port)
@@ -53,6 +65,9 @@ def main(argv=None) -> int:
         print("  OData  %s%s" % (base, svc.path))
     print("  RFC    %s/sap/bc/rfc/<FUNCTION>" % base)
     print("  IDoc   %s/sap/bc/idoc" % base)
+    if args.oauth:
+        print("  OAuth  %s/sap/bc/sec/oauth2/token  (client %s, tokens live %ds)"
+              % (base, args.oauth.split(":", 1)[0], args.token_ttl))
     print("  Admin  %s/_mock/health" % base)
     try:
         httpd.serve_forever()
