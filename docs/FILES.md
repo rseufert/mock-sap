@@ -11,6 +11,8 @@ first.
 | `README.md` | The user-facing documentation: quick start, the endpoint table, what the OData layer supports, how to simulate failures, how to extend the mock. |
 | `LICENSE` | MIT, verbatim, so GitHub and `licensee` detect it. The SAP trademark disclaimer deliberately lives in the README instead - appending anything to the licence text breaks that detection. |
 | `pyproject.toml` | Packaging metadata and the **single source of truth for the version**. Declares the `mock-sap` console script and, notably, zero dependencies. |
+| `CHANGELOG.md` | Every release, what it added and what it fixed, in Keep a Changelog form with links to the compare views. |
+| `CONTRIBUTING.md` | What the project values and how to work on it: the principles that decide what gets merged, where to add each kind of thing, what a good pull request carries, and the release process. |
 | `MANIFEST.in` | Adds the Dockerfile, examples and tests to the sdist; without it an sdist carries only the package itself. |
 | `Dockerfile` | `python:3.12-slim`, `pip install .`, entrypoint bound to `0.0.0.0:8000`. Built and exercised by CI on every push. |
 | `.gitignore` | Build output, virtualenvs, `*.db` files left behind by `--db`. |

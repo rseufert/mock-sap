@@ -578,6 +578,8 @@ mocksap/server.py     HTTP front end, CSRF, auth, fault injection, /_mock API
 tests/                one module per surface, all driven over real HTTP
 examples/             the curl tour and a dependency-free Python client
 docs/                 ARCHITECTURE.md and FILES.md
+CHANGELOG.md          what each release changed
+CONTRIBUTING.md       how to work on the project
 .github/workflows/    ci.yml (tests, examples, wheel, image) and publish.yml
 ```
 
@@ -598,6 +600,8 @@ What would extend the mock further, each with an issue sketching the work:
 
 Open an issue if you need something else.
 
-Pull requests are welcome. Adding an entity set is usually a single declaration in
+Pull requests are welcome - [CONTRIBUTING.md](CONTRIBUTING.md) covers how to work
+on the project and what the code values, and [CHANGELOG.md](CHANGELOG.md) records
+what each release changed. Adding an entity set is usually a single declaration in
 `mocksap/schema.py`; everything else - tables, `$metadata`, payload shapes - follows
 from it.

@@ -33,7 +33,7 @@ dependencies = []
 Homepage = "https://github.com/rseufert/mock-sap"
 Repository = "https://github.com/rseufert/mock-sap"
 Issues = "https://github.com/rseufert/mock-sap/issues"
-Changelog = "https://github.com/rseufert/mock-sap/releases"
+Changelog = "https://github.com/rseufert/mock-sap/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mock-sap = "mocksap.__main__:main"
