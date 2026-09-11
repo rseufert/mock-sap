@@ -359,13 +359,19 @@ _register(
             S("OrganizationDivision", max_length=2, label="Division"),
             S("SoldToParty", max_length=10, label="Sold-To Party"),
             S("PurchaseOrderByCustomer", max_length=35, label="Customer Reference"),
+            S("CustomerPurchaseOrderType", max_length=4, label="Customer Reference Type"),
+            DT("CustomerPurchaseOrderDate", label="Customer Reference Date"),
             S("TransactionCurrency", max_length=5, label="Currency"),
+            S("SDDocumentReason", max_length=3, label="Order Reason"),
             DEC("TotalNetAmount", precision=16, scale=3, label="Net Value", creatable=False, updatable=False),
             DT("SalesOrderDate", label="Document Date"),
             DT("RequestedDeliveryDate", label="Requested Delivery Date"),
             S("ShippingCondition", max_length=2, label="Shipping Condition"),
             S("IncotermsClassification", max_length=3, label="Incoterms"),
             S("CustomerPaymentTerms", max_length=4, label="Payment Terms"),
+            DT("PricingDate", label="Pricing Date"),
+            S("ReferenceSDDocument", max_length=10, label="Reference Document"),
+            S("ReferenceSDDocumentCategory", max_length=1, label="Reference Document Category"),
             S("OverallSDProcessStatus", max_length=1, label="Overall Status", creatable=False, updatable=False),
             S("OverallDeliveryStatus", max_length=1, label="Delivery Status", creatable=False, updatable=False),
             S("CreatedByUser", max_length=12, creatable=False, updatable=False),
@@ -375,6 +381,8 @@ _register(
         navs=[
             Nav("to_Item", "A_SalesOrderItem", "*", [("SalesOrder", "SalesOrder")]),
             Nav("to_Partner", "A_SalesOrderHeaderPartner", "*", [("SalesOrder", "SalesOrder")]),
+            Nav("to_PricingElement", "A_SalesOrderHeaderPrElement", "*", [("SalesOrder", "SalesOrder")]),
+            Nav("to_Text", "A_SalesOrderText", "*", [("SalesOrder", "SalesOrder")]),
         ],
     )
 )
@@ -391,6 +399,7 @@ _register(
             S("MaterialByCustomer", max_length=35),
             S("SalesOrderItemText", max_length=40, label="Item Description"),
             S("SalesOrderItemCategory", max_length=4),
+            S("PurchaseOrderByCustomer", max_length=35, label="Customer Reference"),
             DEC("RequestedQuantity", label="Order Quantity"),
             S("RequestedQuantityUnit", max_length=3),
             DEC("NetAmount", precision=16, scale=3, label="Net Value"),
@@ -402,6 +411,8 @@ _register(
         ],
         navs=[
             Nav("to_SalesOrder", "A_SalesOrder", "1", [("SalesOrder", "SalesOrder")]),
+            Nav("to_PricingElement", "A_SalesOrderItemPrElement", "*",
+                [("SalesOrder", "SalesOrder"), ("SalesOrderItem", "SalesOrderItem")]),
         ],
     )
 )
@@ -413,11 +424,135 @@ _register(
         props=[
             S("SalesOrder", key=True, nullable=False, max_length=10),
             S("PartnerFunction", key=True, nullable=False, max_length=2),
+            S("PartnerFunctionInternalCode", max_length=2, creatable=False, updatable=False),
             S("Customer", max_length=10),
             S("Supplier", max_length=10),
             S("Personnel", max_length=8),
             S("ContactPerson", max_length=10),
+            S("ReferenceBusinessPartner", max_length=10),
             S("AddressID", max_length=10),
+            S("VATRegistration", max_length=20),
+        ],
+        navs=[
+            Nav("to_Address", "A_SalesOrderPartnerAddress", "*",
+                [("SalesOrder", "SalesOrder"), ("PartnerFunction", "PartnerFunction")]),
+            Nav("to_SalesOrder", "A_SalesOrder", "1", [("SalesOrder", "SalesOrder")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_SalesOrderPartnerAddress",
+        label="Sales Order Partner Address",
+        props=[
+            S("SalesOrder", key=True, nullable=False, max_length=10),
+            S("PartnerFunction", key=True, nullable=False, max_length=2),
+            S("AddressRepresentationCode", max_length=1),
+            S("CorrespondenceLanguage", max_length=2),
+            S("AddresseeFullName", max_length=80, label="Full Name of Person"),
+            S("OrganizationName1", max_length=40, label="Name 1"),
+            S("OrganizationName2", max_length=40),
+            S("OrganizationName3", max_length=40),
+            S("OrganizationName4", max_length=40),
+            S("CityName", max_length=40, label="City"),
+            S("DistrictName", max_length=40),
+            S("PostalCode", max_length=10, label="Postal Code"),
+            S("StreetPrefixName1", max_length=40),
+            S("StreetPrefixName2", max_length=40),
+            S("StreetName", max_length=60, label="Street"),
+            S("StreetSuffixName1", max_length=40),
+            S("StreetSuffixName2", max_length=40),
+            S("HouseNumber", max_length=10),
+            S("Country", max_length=3, label="Country"),
+            S("Region", max_length=3, label="Region"),
+            S("FormOfAddress", max_length=4),
+            S("TaxJurisdiction", max_length=15),
+            S("TransportZone", max_length=10),
+            S("POBox", max_length=10),
+            S("POBoxPostalCode", max_length=10),
+            S("EmailAddress", max_length=241),
+            S("MobilePhoneCountry", max_length=3),
+            S("MobileNumber", max_length=30),
+            S("PhoneNumberCountry", max_length=3),
+            S("PhoneNumber", max_length=30),
+            S("PhoneExtensionNumber", max_length=10),
+            S("FaxNumberCountry", max_length=3),
+            S("FaxAreaCodeSubscriberNumber", max_length=30),
+            S("FaxExtensionNumber", max_length=10),
+        ],
+        navs=[
+            Nav("to_Partner", "A_SalesOrderHeaderPartner", "1",
+                [("SalesOrder", "SalesOrder"), ("PartnerFunction", "PartnerFunction")]),
+            Nav("to_SalesOrder", "A_SalesOrder", "1", [("SalesOrder", "SalesOrder")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_SalesOrderText",
+        label="Sales Order Text",
+        props=[
+            S("SalesOrder", key=True, nullable=False, max_length=10),
+            S("Language", key=True, nullable=False, max_length=2),
+            S("LongTextID", key=True, nullable=False, max_length=4),
+            S("LongText", max_length=0, label="Text"),
+        ],
+        navs=[
+            Nav("to_SalesOrder", "A_SalesOrder", "1", [("SalesOrder", "SalesOrder")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_SalesOrderHeaderPrElement",
+        label="Sales Order Header Pricing Element",
+        props=[
+            S("SalesOrder", key=True, nullable=False, max_length=10),
+            S("PricingProcedureStep", key=True, nullable=False, max_length=3),
+            S("PricingProcedureCounter", key=True, nullable=False, max_length=3),
+            S("ConditionType", max_length=4, label="Condition Type"),
+            DEC("ConditionRateValue", precision=16, scale=3, label="Amount"),
+            S("ConditionCurrency", max_length=5),
+            DEC("ConditionQuantity", label="Condition Quantity"),
+            S("ConditionQuantityUnit", max_length=3),
+            DEC("ConditionAmount", precision=16, scale=3, label="Condition Value"),
+            S("ConditionCategory", max_length=1),
+            S("ConditionIsManuallyChanged", max_length=1),
+            S("TransactionCurrency", max_length=5),
+        ],
+        navs=[
+            Nav("to_SalesOrder", "A_SalesOrder", "1", [("SalesOrder", "SalesOrder")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_SalesOrderItemPrElement",
+        label="Sales Order Item Pricing Element",
+        props=[
+            S("SalesOrder", key=True, nullable=False, max_length=10),
+            S("SalesOrderItem", key=True, nullable=False, max_length=6),
+            S("PricingProcedureStep", key=True, nullable=False, max_length=3),
+            S("PricingProcedureCounter", key=True, nullable=False, max_length=3),
+            S("ConditionType", max_length=4, label="Condition Type"),
+            DEC("ConditionRateValue", precision=16, scale=3, label="Amount"),
+            S("ConditionCurrency", max_length=5),
+            DEC("ConditionQuantity", label="Condition Quantity"),
+            S("ConditionQuantityUnit", max_length=3),
+            DEC("ConditionBaseValue", precision=16, scale=3),
+            DEC("ConditionAmount", precision=16, scale=3, label="Condition Value"),
+            S("ConditionCategory", max_length=1),
+            S("ConditionIsManuallyChanged", max_length=1),
+            S("TransactionCurrency", max_length=5),
+        ],
+        navs=[
+            Nav("to_SalesOrder", "A_SalesOrder", "1", [("SalesOrder", "SalesOrder")]),
+            Nav("to_SalesOrderItem", "A_SalesOrderItem", "1",
+                [("SalesOrder", "SalesOrder"), ("SalesOrderItem", "SalesOrderItem")]),
         ],
     )
 )
@@ -758,6 +893,10 @@ for _svc in [
             "A_SalesOrder": "A_SalesOrder",
             "A_SalesOrderItem": "A_SalesOrderItem",
             "A_SalesOrderHeaderPartner": "A_SalesOrderHeaderPartner",
+            "A_SalesOrderPartnerAddress": "A_SalesOrderPartnerAddress",
+            "A_SalesOrderText": "A_SalesOrderText",
+            "A_SalesOrderHeaderPrElement": "A_SalesOrderHeaderPrElement",
+            "A_SalesOrderItemPrElement": "A_SalesOrderItemPrElement",
         },
     ),
     Service(
@@ -793,6 +932,10 @@ for _svc in [
             "SalesOrder": "A_SalesOrder",
             "SalesOrderItem": "A_SalesOrderItem",
             "SalesOrderHeaderPartner": "A_SalesOrderHeaderPartner",
+            "SalesOrderPartnerAddress": "A_SalesOrderPartnerAddress",
+            "SalesOrderText": "A_SalesOrderText",
+            "SalesOrderHeaderPrElement": "A_SalesOrderHeaderPrElement",
+            "SalesOrderItemPrElement": "A_SalesOrderItemPrElement",
         },
         version=4,
     ),

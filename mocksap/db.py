@@ -393,6 +393,18 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
         ins("A_SalesOrderHeaderPartner", dict(
             SalesOrder=so, PartnerFunction="WE", Customer=sold_to, Supplier="",
             Personnel="", ContactPerson="", AddressID=""))
+        ins("A_SalesOrderText", dict(
+            SalesOrder=so, Language="EN", LongTextID="0001",
+            LongText="Delivered to the goods entrance."))
+        for it in items:
+            ins("A_SalesOrderItemPrElement", dict(
+                SalesOrder=so, SalesOrderItem=it["SalesOrderItem"],
+                PricingProcedureStep="010", PricingProcedureCounter="01",
+                ConditionType="PPR0",
+                ConditionRateValue=it["NetAmount"] / max(it["RequestedQuantity"], 1),
+                ConditionCurrency=currency,
+                ConditionQuantity=1, ConditionQuantityUnit=it["RequestedQuantityUnit"],
+                ConditionAmount=it["NetAmount"], TransactionCurrency=currency))
     cur.execute(
         "INSERT INTO number_range(object,current) VALUES('SALESORDER',?) "
         "ON CONFLICT(object) DO UPDATE SET current=excluded.current", (so_no,))
