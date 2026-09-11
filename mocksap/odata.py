@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from .schema import EntityType, Prop, Service, set_for_type
 
@@ -511,6 +512,50 @@ def key_predicate(et: EntityType, row) -> str:
 # Serialization
 # --------------------------------------------------------------------------
 
+def etag_for(et: EntityType, row) -> Optional[str]:
+    """The weak ETag of a row, or None if the type is not concurrency-controlled.
+
+    SAP renders the ETag from the properties marked ConcurrencyMode="Fixed" -
+    for a timestamp that is a percent-escaped OData datetime literal, which is
+    what a Gateway service puts in `__metadata.etag` and the ETag header.
+    """
+    props = et.concurrency_props
+    if not props:
+        return None
+    parts = []
+    for prop in props:
+        value = row_get(row, prop.name)
+        if prop.type == "Edm.DateTime":
+            dt = _parse_datetime(value)
+            literal = dt.isoformat() if dt else ""
+            parts.append("datetime'%s'" % quote(literal, safe=""))
+        else:
+            parts.append(quote(str(value if value is not None else ""), safe=""))
+    return 'W/"%s"' % ",".join(parts)
+
+
+def etag_matches(header: str, etag: Optional[str]) -> bool:
+    """Compare an If-Match / If-None-Match header against an entity's ETag.
+
+    `*` matches anything that exists, and the weak-validator prefix is ignored,
+    as RFC 7232 allows for the weak comparison these headers use.
+    """
+    if header is None:
+        return False
+    candidates = [c.strip() for c in header.split(",") if c.strip()]
+    if "*" in candidates:
+        return etag is not None
+    if etag is None:
+        return False
+    def normalise(value):
+        value = value.strip()
+        if value.startswith("W/"):
+            value = value[2:]
+        return value.strip('"')
+    current = normalise(etag)
+    return any(normalise(c) == current for c in candidates)
+
+
 def entity_uri(base_url: str, svc: Service, et: EntityType, row) -> str:
     return "%s%s/%s%s" % (base_url, svc.path, set_for_type(svc, et.name), key_predicate(et, row))
 
@@ -520,13 +565,15 @@ def serialize_entity(row, et: EntityType, svc: Service, base_url: str,
                      expand: Optional[Dict[str, Any]] = None) -> dict:
     """Render one row in SAP's OData V2 JSON shape."""
     uri = entity_uri(base_url, svc, et, row)
-    out: Dict[str, Any] = {
-        "__metadata": {
-            "id": uri,
-            "uri": uri,
-            "type": "%s.%s" % (svc.namespace, et.edm_name),
-        }
+    meta: Dict[str, Any] = {
+        "id": uri,
+        "uri": uri,
+        "type": "%s.%s" % (svc.namespace, et.edm_name),
     }
+    etag = etag_for(et, row)
+    if etag is not None:
+        meta["etag"] = etag
+    out: Dict[str, Any] = {"__metadata": meta}
     for p in et.props:
         if select and p.name not in select:
             continue

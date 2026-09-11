@@ -159,6 +159,24 @@ in the current schema is a composition (a sales order item's key contains its
 order), so in practice re-pointing one is refused, exactly as SAP refuses it, while
 setting a link to the target it already has succeeds.
 
+### Concurrency is derived, not stored
+
+There is no ETag column. A property can declare itself the concurrency token -
+`ConcurrencyMode="Fixed"` in EDM terms - and `etag_for()` renders the ETag from the
+values of those properties, so the validator cannot fall out of step with the row it
+describes. For the three document types that carry a `LastChangeDate` that yields
+SAP's spelling, `W/"datetime'2026-01-15T09%3A41%3A00'"`.
+
+Deriving it does introduce one hazard: two updates inside the same millisecond would
+leave the timestamp, and therefore the ETag, unchanged, and a stale validator would
+wrongly match. `store._advance()` closes that by nudging the timestamp forward
+whenever it would not otherwise move, which makes the ETag strictly monotonic.
+
+Whether a missing `If-Match` is tolerated is a service setting rather than a law:
+classic Gateway services accept the write, newer ones refuse it with 428.
+`--require-if-match` picks, and the default is the lenient one so that existing
+clients keep working.
+
 ### Errors are shapes too
 
 A mock that returns a bare 400 teaches a client nothing. `odata.SapError` carries an
@@ -208,13 +226,12 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 ## Where fidelity stops
 
-Known gaps, each with an issue: OData V4 ([#1]), complex types ([#2]), ETags and
-`If-Match` ([#4]), OAuth and SAML ([#5]). Beyond those, the mock
+Known gaps, each with an issue: OData V4 ([#1]), complex types ([#2]), OAuth and
+SAML ([#5]). Beyond those, the mock
 has no concept of authorizations, no ABAP, no background jobs, no transactional
 boundary spanning more than a changeset, and no attempt at SAP's performance
 characteristics. It is a wire-shape simulator, and it should stay one.
 
 [#1]: https://github.com/rseufert/mock-sap/issues/1
 [#2]: https://github.com/rseufert/mock-sap/issues/2
-[#4]: https://github.com/rseufert/mock-sap/issues/4
 [#5]: https://github.com/rseufert/mock-sap/issues/5

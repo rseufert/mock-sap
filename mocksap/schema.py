@@ -33,6 +33,7 @@ class Prop:
     label: str = ""
     creatable: bool = True
     updatable: bool = True
+    concurrency: bool = False  # EDM ConcurrencyMode="Fixed": feeds the ETag
 
     @property
     def sql_type(self) -> str:
@@ -61,6 +62,11 @@ class EntityType:
     props: List[Prop]
     navs: List[Nav] = field(default_factory=list)
     label: str = ""
+
+    @property
+    def concurrency_props(self) -> List[Prop]:
+        """Properties that make up this type's ETag, if it has one."""
+        return [p for p in self.props if p.concurrency]
 
     @property
     def edm_name(self) -> str:
@@ -147,7 +153,7 @@ _register(
             S("CreatedByUser", max_length=12, label="Created By", creatable=False, updatable=False),
             DT("CreationDate", label="Created On", creatable=False, updatable=False),
             S("LastChangedByUser", max_length=12, label="Changed By", creatable=False, updatable=False),
-            DT("LastChangeDate", label="Changed On", creatable=False, updatable=False),
+            DT("LastChangeDate", label="Changed On", creatable=False, updatable=False, concurrency=True),
             BOOL("BusinessPartnerIsBlocked", label="Central Block"),
         ],
         navs=[
@@ -212,7 +218,7 @@ _register(
             BOOL("IsMarkedForDeletion", label="Deletion Flag"),
             S("CreatedByUser", max_length=12, creatable=False, updatable=False),
             DT("CreationDate", creatable=False, updatable=False),
-            DT("LastChangeDate", creatable=False, updatable=False),
+            DT("LastChangeDate", creatable=False, updatable=False, concurrency=True),
         ],
         navs=[
             Nav("to_Description", "A_ProductDescription", "*", [("Product", "Product")]),
@@ -276,7 +282,7 @@ _register(
             S("OverallDeliveryStatus", max_length=1, label="Delivery Status", creatable=False, updatable=False),
             S("CreatedByUser", max_length=12, creatable=False, updatable=False),
             DT("CreationDate", creatable=False, updatable=False),
-            DT("LastChangeDate", creatable=False, updatable=False),
+            DT("LastChangeDate", creatable=False, updatable=False, concurrency=True),
         ],
         navs=[
             Nav("to_Item", "A_SalesOrderItem", "*", [("SalesOrder", "SalesOrder")]),
