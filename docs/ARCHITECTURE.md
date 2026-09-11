@@ -247,6 +247,20 @@ asking for; getting this wrong makes the whole flow unusable, and it did, once.
 And the principal rides along: the user a token carries becomes `ctx.user`, so a
 document created with a SAML-derived token names that user in `CreatedByUser`.
 
+### A number should address a document
+
+`DELVRY07` generation used to draw a delivery number from a range, put it in the
+IDoc and stop: the number looked real and addressed nothing. `documents.py` closes
+that - it creates the delivery, the invoice and the journal entry the invoice
+posts, and the IDoc generators, the BAPIs and an inbound delivery all go through
+it. A document has to look the same whichever of the three created it, which is
+the whole reason the creation does not live in whichever layer needed it first.
+
+The chain is deliberately walkable: a delivery item names its sales order and
+item, an invoice item names its sales document, an invoice names the journal
+entry it posted. That is what makes the seeded data useful for testing a real
+order-to-cash flow rather than four unrelated piles of rows.
+
 ### An inbound IDoc can post, not just arrive
 
 Filing an IDoc and answering 53 is easy and teaches a client nothing about the

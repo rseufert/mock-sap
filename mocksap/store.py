@@ -16,6 +16,9 @@ AUTO_KEY = {
     "A_SalesOrder": ("SalesOrder", "SALESORDER", 10),
     "A_PurchaseOrder": ("PurchaseOrder", "PURCHASEORDER", 10),
     "A_BusinessPartner": ("BusinessPartner", "BUSINESSPARTNER", 10),
+    "A_OutbDeliveryHeader": ("DeliveryDocument", "DELIVERY", 10),
+    "A_BillingDocument": ("BillingDocument", "BILLINGDOCUMENT", 10),
+    "A_JournalEntry": ("AccountingDocument", "ACCOUNTINGDOCUMENT", 10),
 }
 
 # Status and document fields the system sets on creation, as SAP would.

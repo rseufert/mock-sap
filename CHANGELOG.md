@@ -8,6 +8,19 @@ says so where it does.
 
 ## [Unreleased]
 
+### Added
+
+- Deliveries, billing documents and journal entries ([#27]) - the documents a
+  sales order turns into. `BAPI_OUTB_DELIVERY_CREATE_SLS` and
+  `BAPI_ACC_DOCUMENT_POST` create them, and so do the `DELVRY07` and `INVOIC02`
+  generators, which previously invented a number with nothing behind it. Three
+  new OData services serve them, and an unbalanced accounting document is refused
+  the way SAP refuses one.
+- A V2 annotation document ([#29]), served at `<service>/annotations` and linked
+  from the service document, carrying the same UI intent the V4 services render
+  inside `$metadata`. `GWSAMPLE_BASIC` publishes one; the A2X APIs do not, as
+  SAP's own do not.
+
 ### Fixed
 
 - A key the server assigns is declared rather than named. `SalesOrderItem` and
@@ -220,5 +233,6 @@ First release.
 [#15]: https://github.com/rseufert/mock-sap/issues/15
 [#16]: https://github.com/rseufert/mock-sap/issues/16
 [#17]: https://github.com/rseufert/mock-sap/issues/17
+[#27]: https://github.com/rseufert/mock-sap/issues/27
 [#28]: https://github.com/rseufert/mock-sap/issues/28
 [#29]: https://github.com/rseufert/mock-sap/issues/29

@@ -145,6 +145,7 @@ _RANGE_START = {
     "PRODUCT": 100000,
     "DELIVERY": 80000001,
     "BILLINGDOCUMENT": 90000001,
+    "ACCOUNTINGDOCUMENT": 100000001,
     "IDOC": 1000000000000001,
 }
 
@@ -448,6 +449,7 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
         "ON CONFLICT(object) DO UPDATE SET current=excluded.current", (bp_no,))
     conn.commit()
 
+    seed_documents(conn, rnd, today)
     seed_gwsample(conn, rnd, today)
     return counts(conn)
 
@@ -477,6 +479,128 @@ _GW_PRODUCTS = [
 
 _GW_TITLES = [("0001", "Mr", "M"), ("0002", "Mrs", "F")]
 
+
+def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date) -> None:
+    """Turn some of the sales orders into the documents that follow them.
+
+    A delivery, an invoice and its journal entry, each carrying the reference
+    back to what it came from, so the order-to-cash chain can be walked in
+    either direction.
+    """
+    cur = conn.cursor()
+
+    def ins(table, row):
+        cols = ", ".join('"%s"' % c for c in row)
+        marks = ", ".join("?" for _ in row)
+        cur.execute('INSERT OR REPLACE INTO "%s" (%s) VALUES (%s)' % (table, cols, marks),
+                    list(row.values()))
+
+    orders = cur.execute(
+        'SELECT * FROM "A_SalesOrder" ORDER BY "SalesOrder" LIMIT 8').fetchall()
+    delivery_no, billing_no, accounting_no = (_RANGE_START["DELIVERY"],
+                                              _RANGE_START["BILLINGDOCUMENT"],
+                                              _RANGE_START["ACCOUNTINGDOCUMENT"])
+
+    for index, order in enumerate(orders):
+        items = cur.execute(
+            'SELECT * FROM "A_SalesOrderItem" WHERE "SalesOrder" = ? '
+            'ORDER BY "SalesOrderItem"', (order["SalesOrder"],)).fetchall()
+        if not items:
+            continue
+        doc_date = _dt.date.fromisoformat(str(order["SalesOrderDate"])[:10])
+        shipped = doc_date + _dt.timedelta(days=rnd.randint(2, 10))
+
+        # ---- delivery
+        delivery = str(delivery_no).zfill(10)
+        delivery_no += 1
+        weight = sum(float(item["RequestedQuantity"] or 0) for item in items)
+        ins("A_OutbDeliveryHeader", dict(
+            DeliveryDocument=delivery, DeliveryDocumentType="LF", ShippingPoint="1710",
+            SalesOrganization=order["SalesOrganization"], SoldToParty=order["SoldToParty"],
+            ShipToParty=order["SoldToParty"], DeliveryDate=_iso(shipped),
+            ActualGoodsMovementDate=_iso(shipped), OverallSDProcessStatus="C",
+            OverallGoodsMovementStatus="C", TotalWeight=round(weight, 3), WeightUnit="KG",
+            CreatedByUser="CB9980000001", CreationDate=_iso(shipped),
+            LastChangeDate=_iso(shipped)))
+        for item in items:
+            ins("A_OutbDeliveryItem", dict(
+                DeliveryDocument=delivery, DeliveryDocumentItem=item["SalesOrderItem"],
+                Material=item["Material"],
+                DeliveryDocumentItemText=item["SalesOrderItemText"],
+                ActualDeliveredQtyInOrderQtyUnit=item["RequestedQuantity"],
+                OrderQuantityUnit=item["RequestedQuantityUnit"], Plant=item["Plant"],
+                StorageLocation="171%d" % rnd.randint(0, 9),
+                ReferenceSDDocument=order["SalesOrder"],
+                ReferenceSDDocumentItem=item["SalesOrderItem"],
+                ItemGrossWeight=round(float(item["RequestedQuantity"] or 0), 3),
+                ItemWeightUnit="KG"))
+
+        # only some of the deliveries have been invoiced
+        if index % 3 == 2:
+            continue
+
+        # ---- invoice
+        billing = str(billing_no).zfill(10)
+        billing_no += 1
+        billed = shipped + _dt.timedelta(days=rnd.randint(1, 5))
+        net = round(sum(float(item["NetAmount"] or 0) for item in items), 2)
+        tax = round(net * 0.19, 2)
+        accounting = str(accounting_no).zfill(10)
+        accounting_no += 1
+        fiscal_year = str(billed.year)
+
+        ins("A_BillingDocument", dict(
+            BillingDocument=billing, BillingDocumentType="F2", SDDocumentCategory="M",
+            SalesOrganization=order["SalesOrganization"], SoldToParty=order["SoldToParty"],
+            PayerParty=order["SoldToParty"], BillingDocumentDate=_iso(billed),
+            TransactionCurrency=order["TransactionCurrency"], TotalNetAmount=net,
+            TotalTaxAmount=tax, TotalGrossAmount=round(net + tax, 2),
+            AccountingPostingStatus="C", AccountingDocument=accounting,
+            CreatedByUser="CB9980000001", CreationDate=_iso(billed),
+            LastChangeDate=_iso(billed)))
+        for item in items:
+            item_net = round(float(item["NetAmount"] or 0), 2)
+            ins("A_BillingDocumentItem", dict(
+                BillingDocument=billing, BillingDocumentItem=item["SalesOrderItem"],
+                Material=item["Material"],
+                BillingDocumentItemText=item["SalesOrderItemText"],
+                BillingQuantity=item["RequestedQuantity"],
+                BillingQuantityUnit=item["RequestedQuantityUnit"],
+                NetAmount=item_net, TaxAmount=round(item_net * 0.19, 2),
+                TransactionCurrency=item["TransactionCurrency"],
+                SalesDocument=order["SalesOrder"], SalesDocumentItem=item["SalesOrderItem"]))
+
+        # ---- the journal entry the invoice posted
+        ins("A_JournalEntry", dict(
+            AccountingDocument=accounting, CompanyCode="1710", FiscalYear=fiscal_year,
+            AccountingDocumentType="RV", DocumentDate=_iso(billed),
+            PostingDate=_iso(billed), FiscalPeriod=str(billed.month).zfill(3),
+            TransactionCurrency=order["TransactionCurrency"],
+            AccountingDocumentHeaderText="Invoice %s" % billing,
+            ReferenceDocument=billing, CreatedByUser="CB9980000001",
+            CreationDate=_iso(billed), LastChangeDate=_iso(billed)))
+        lines = [
+            ("000001", "0012100000", "S", round(net + tax, 2), "Receivable",
+             order["SoldToParty"], ""),
+            ("000002", "0041000000", "H", net, "Revenue", "", ""),
+            ("000003", "0022000000", "H", tax, "Output tax", "", ""),
+        ]
+        for number, account, side, amount, text, customer, supplier in lines:
+            ins("A_JournalEntryItem", dict(
+                AccountingDocument=accounting, CompanyCode="1710",
+                FiscalYear=fiscal_year, AccountingDocumentItem=number,
+                GLAccount=account, DebitCreditCode=side,
+                AmountInTransactionCurrency=amount,
+                TransactionCurrency=order["TransactionCurrency"],
+                DocumentItemText=text, CostCenter="", ProfitCenter="YB110",
+                Customer=customer, Supplier=supplier))
+
+    for obj, value in (("DELIVERY", delivery_no - 1), ("BILLINGDOCUMENT", billing_no - 1),
+                       ("ACCOUNTINGDOCUMENT", accounting_no - 1)):
+        cur.execute("INSERT INTO number_range(object,current) VALUES(?,?) "
+                    "ON CONFLICT(object) DO UPDATE SET current=excluded.current",
+                    (obj, value))
+    conn.commit()
 
 def seed_gwsample(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date) -> None:
     """Seed the classic Gateway demo service, structured addresses and all."""

@@ -84,6 +84,9 @@ bash examples/demo.sh
 | Product | `/sap/opu/odata/sap/API_PRODUCT_SRV` |
 | Sales Order | `/sap/opu/odata/sap/API_SALES_ORDER_SRV` |
 | Purchase Order | `/sap/opu/odata/sap/API_PURCHASEORDER_PROCESS_SRV` |
+| Outbound Delivery | `/sap/opu/odata/sap/API_OUTBOUND_DELIVERY_SRV` |
+| Billing Document | `/sap/opu/odata/sap/API_BILLING_DOCUMENT_SRV` |
+| Journal Entry | `/sap/opu/odata/sap/API_JOURNALENTRY_SRV` |
 | GWSAMPLE_BASIC (the classic demo service) | `/sap/opu/odata/IWBEP/GWSAMPLE_BASIC` |
 | Sales Order, **OData V4** | `/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001` |
 | Business Partner, **OData V4** | `/sap/opu/odata4/sap/api_businesspartner/srvd_a2x/sap/api_businesspartner/0001` |
@@ -285,6 +288,7 @@ Available: `BAPI_SALESORDER_CREATEFROMDAT2`, `BAPI_SALESORDER_CHANGE`,
 `BAPI_SALESORDER_GETLIST`, `BAPI_SALESORDER_GETSTATUS`, `BAPI_PO_CREATE1`,
 `BAPI_PO_GETDETAIL1`, `BAPI_CUSTOMER_GETLIST`, `BAPI_CUSTOMER_GETDETAIL2`,
 `BAPI_VENDOR_GETDETAIL`, `BAPI_MATERIAL_GETLIST`, `BAPI_MATERIAL_GET_DETAIL`,
+`BAPI_OUTB_DELIVERY_CREATE_SLS`, `BAPI_ACC_DOCUMENT_POST`,
 `BAPI_BUSINESS_PARTNER_GETDETAIL`, `BAPI_TRANSACTION_COMMIT`,
 `BAPI_TRANSACTION_ROLLBACK`, `RFC_READ_TABLE`, `RFC_PING`, `STFC_CONNECTION`.
 `GET /_mock/services` lists them; `POST /sap/bc/rfc/` with no name does too.
@@ -327,7 +331,24 @@ from its own number range.
 An inbound `DELVRY07` is not merely filed: its items name the order they came from
 in `VGBEL`/`VGPOS`, so posting one moves that order's `OverallDeliveryStatus` to
 `C` or `B` depending on whether the quantities cover it, and the receipt says what
-it did. Inbound IDocs are parsed (XML, or a
+it did. If the delivery it announces is one the mock has never seen, the delivery
+is created too.
+
+### The documents an order turns into
+
+A sales order becomes a delivery, an invoice and the journal entry that invoice
+posts - each carrying the reference back to what it came from, and each readable
+over OData:
+
+```bash
+curl "$BASE/sap/opu/odata/sap/API_OUTBOUND_DELIVERY_SRV/A_OutbDeliveryHeader?\$expand=to_DeliveryDocumentItem&\$format=json"
+```
+
+They are created three ways, and a document created one way looks like a document
+created another: `BAPI_OUTB_DELIVERY_CREATE_SLS` and `BAPI_ACC_DOCUMENT_POST`,
+generating an `INVOIC02` or `DELVRY07`, or posting an inbound delivery. Every
+number the mock hands out now addresses a document that exists - an invoice adds
+up to its items, and its journal entry balances. Inbound IDocs are parsed (XML, or a
 flat file read at the documented EDI_DC40 offsets), stored with a 16-digit IDoc number
 and status `53`, and can be inspected or re-statused:
 
@@ -543,12 +564,12 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-172 tests, every one of them over real HTTP against a running mock, split by
+196 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
-`test_apply`, `test_delta`, `test_annotations`,
+`test_apply`, `test_delta`, `test_annotations`, `test_v2_annotations`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
-`test_oauth`, `test_messages`, `test_operations` and `test_auth`, over the shared
-harness in `tests/support.py`.
+`test_documents`, `test_oauth`, `test_messages`, `test_operations` and `test_auth`,
+over the shared harness in `tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work,
@@ -594,6 +615,7 @@ mocksap/store.py      CRUD, deep insert, cascades, document defaults
 mocksap/service.py    OData request dispatcher
 mocksap/batch.py      $batch multipart and atomic changesets
 mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
+mocksap/documents.py  creating deliveries, invoices and journal entries
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
 mocksap/messages.py   sap-message warnings, and the rules that produce them
 mocksap/oauth.py      the token store: grants, bearer validation, refresh
@@ -620,13 +642,12 @@ developing and testing integrations, contract tests in CI, demos, and load-testi
 your side of the wire.
 
 Two roadmaps are done: OData V4, complex types, `$links`, ETags and OAuth, then
-more function modules, more IDoc types, `$apply`, delta handling, `sap-message`
-and the UI annotations. What would extend the mock further, each with an issue
-sketching the work:
+more function modules, more IDoc types, `$apply`, delta handling, `sap-message`,
+the UI annotations, and then the documents a sales order turns into, an object
+page worth opening and a V2 annotation document.
 
-- [#27 Deliveries and accounting documents](https://github.com/rseufert/mock-sap/issues/27) - the documents the mock hands out numbers for but cannot show
-
-Open an issue if you need something else.
+Open an issue if you need something else - a shape the mock gets wrong is worth
+one, and so is a shape it does not have yet.
 
 Pull requests are welcome - [CONTRIBUTING.md](CONTRIBUTING.md) covers how to work
 on the project and what the code values, and [CHANGELOG.md](CHANGELOG.md) records
