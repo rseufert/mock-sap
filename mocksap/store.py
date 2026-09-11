@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from . import db
 from .odata import SapError, to_db_value
-from .schema import ENTITY_TYPES, EntityType
+from .schema import COMPLEX_TYPES, ENTITY_TYPES, EntityType
 
 # Entity types whose key is drawn from a number range on create (as in SAP,
 # where the document number is assigned by the system, not by the caller).
@@ -147,12 +147,36 @@ def split_payload(et: EntityType, payload: dict):
                 raise SapError("Invalid payload for navigation property '%s'" % key, 400, target=key)
             deep[key] = value
             continue
-        if et.prop(key) is None:
+        prop = et.prop(key)
+        if prop is None:
             raise SapError(
                 "Property '%s' does not exist in type '%s'" % (key, et.name),
                 400, target=key)
+        if prop.complex_type:
+            flat.update(_flatten_complex(et, prop, value))
+            continue
         flat[key] = value
     return flat, deep
+
+
+def _flatten_complex(et: EntityType, prop, value) -> Dict[str, Any]:
+    """Turn `{"Address": {"City": …}}` into the columns that hold it."""
+    if not isinstance(value, dict):
+        raise SapError(
+            "Property '%s' is a structured property and needs a JSON object"
+            % prop.name, 400, target=prop.name)
+    ct = COMPLEX_TYPES[prop.complex_type]
+    out: Dict[str, Any] = {}
+    for name, sub_value in value.items():
+        if name == "__metadata":
+            continue
+        sub = ct.prop(name)
+        if sub is None:
+            raise SapError(
+                "Property '%s' does not exist in the structured type '%s'"
+                % (name, ct.name), 400, target="%s/%s" % (prop.name, name))
+        out["%s_%s" % (prop.name, name)] = to_db_value(sub, sub_value)
+    return out
 
 
 def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
@@ -162,9 +186,10 @@ def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
     flat, deep = split_payload(et, payload)
     row: Dict[str, Any] = {}
 
+    columns = dict(et.columns())
     for name, value in flat.items():
         prop = et.prop(name)
-        row[name] = to_db_value(prop, value)
+        row[name] = to_db_value(prop, value) if prop is not None else value
 
     if parent_keys:
         row.update(parent_keys)
@@ -194,9 +219,9 @@ def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
             row[name] = default(ctx) if callable(default) else default
 
     # SAP hands back initial values, not nulls: '' for characters, 0 for numbers.
-    for p in et.props:
-        if row.get(p.name) is None:
-            row[p.name] = initial_value(p)
+    for name, p in et.columns():
+        if row.get(name) is None:
+            row[name] = initial_value(p)
 
     keys = {p.name: row[p.name] for p in et.keys}
     if get(conn, et, keys) is not None:
@@ -258,15 +283,18 @@ def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
     values: Dict[str, Any] = {}
     for name, value in flat.items():
         prop = et.prop(name)
+        if prop is None:            # a column of a structured property
+            values[name] = value
+            continue
         if prop.key:
             if str(existing[name]) != str(to_db_value(prop, value)):
                 raise SapError("Key property '%s' cannot be changed" % name, 400, target=name)
             continue
         values[name] = to_db_value(prop, value)
     if not merge:  # PUT replaces: unspecified, non-key properties are reset
-        for p in et.props:
-            if not p.key and p.name not in values and p.updatable:
-                values[p.name] = initial_value(p)
+        for name, p in et.columns():
+            if not p.key and name not in values and p.updatable:
+                values[name] = initial_value(p)
     if et.prop("LastChangeDate") is not None:
         values["LastChangeDate"] = _advance(existing["LastChangeDate"], ctx["now"])
     if et.prop("LastChangedByUser") is not None:

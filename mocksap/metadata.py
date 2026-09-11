@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape, quoteattr
 
-from .schema import ENTITY_TYPES, EntityType, Service
+from .schema import COMPLEX_TYPES, ENTITY_TYPES, EntityType, Service
 
 EDMX_NS = "http://schemas.microsoft.com/ado/2007/06/edmx"
 M_NS = "http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
@@ -18,6 +18,28 @@ def _a(name, value):
 
 def _assoc_name(type_name: str, nav_name: str) -> str:
     return "assoc_%s_%s" % (type_name, nav_name)
+
+
+def _property_attrs(p, namespace: str = "") -> str:
+    """The attributes of one <Property>, entity or complex alike."""
+    if p.complex_type:
+        attrs = _a("Name", p.name) + _a(
+            "Type", "%s.%s" % (namespace, p.complex_type) if namespace else p.complex_type)
+    else:
+        attrs = _a("Name", p.name) + _a("Type", p.type)
+        if p.max_length and p.type == "Edm.String":
+            attrs += _a("MaxLength", p.max_length)
+        if p.type == "Edm.Decimal":
+            attrs += _a("Precision", p.precision or 13) + _a("Scale", p.scale or 3)
+    if not p.nullable:
+        attrs += ' Nullable="false"'
+    if p.concurrency:
+        attrs += ' ConcurrencyMode="Fixed"'  # feeds the entity's ETag
+    if not p.creatable:
+        attrs += ' sap:creatable="false"'
+    if not p.updatable:
+        attrs += ' sap:updatable="false"'
+    return attrs + _a("sap:label", p.label or p.name)
 
 
 def metadata_document(svc: Service) -> str:
@@ -36,6 +58,20 @@ def metadata_document(svc: Service) -> str:
 
     types = [ENTITY_TYPES[t] for t in dict.fromkeys(svc.sets.values())]
 
+    # --- complex types, declared before the entity types that use them
+    used = []
+    for et in types:
+        for p in et.props:
+            if p.complex_type and p.complex_type not in used:
+                used.append(p.complex_type)
+    for name in used:
+        ct = COMPLEX_TYPES[name]
+        out.append("<ComplexType Name=%s%s>"
+                   % (quoteattr(ct.name), _a("sap:label", ct.label or ct.name)))
+        for p in ct.props:
+            out.append("<Property%s/>" % _property_attrs(p))
+        out.append("</ComplexType>")
+
     # --- entity types
     for et in types:
         out.append("<EntityType Name=%s%s sap:content-version=\"1\">"
@@ -45,21 +81,7 @@ def metadata_document(svc: Service) -> str:
             out.append("<PropertyRef Name=%s/>" % quoteattr(k.name))
         out.append("</Key>")
         for p in et.props:
-            attrs = _a("Name", p.name) + _a("Type", p.type)
-            if not p.nullable:
-                attrs += ' Nullable="false"'
-            if p.max_length and p.type == "Edm.String":
-                attrs += _a("MaxLength", p.max_length)
-            if p.type == "Edm.Decimal":
-                attrs += _a("Precision", p.precision or 13) + _a("Scale", p.scale or 3)
-            if p.concurrency:
-                attrs += ' ConcurrencyMode="Fixed"'  # feeds the entity's ETag
-            if not p.creatable:
-                attrs += ' sap:creatable="false"'
-            if not p.updatable:
-                attrs += ' sap:updatable="false"'
-            attrs += _a("sap:label", p.label or p.name)
-            out.append("<Property%s/>" % attrs)
+            out.append("<Property%s/>" % _property_attrs(p, ns))
         for nav in et.navs:
             assoc = _assoc_name(et.name, nav.name)
             out.append(

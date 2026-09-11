@@ -22,7 +22,7 @@ Roughly in dependency order: `schema` sits at the bottom and depends on nothing,
 
 | File | What it is | Edit it when |
 | --- | --- | --- |
-| `schema.py` | The declarative heart. `Prop`, `Nav`, `EntityType` and `Service` definitions for the S/4HANA entity types the mock serves. Tables, `$metadata`, payload shapes and key handling are all derived from here. | Adding or changing an entity set, property or navigation. |
+| `schema.py` | The declarative heart. `Prop`, `ComplexType`, `Nav`, `EntityType` and `Service` definitions for the entity types the mock serves - the S/4HANA `API_*` shapes and the classic `GWSAMPLE_BASIC` demo service. Tables, `$metadata`, payload shapes and key handling are all derived from here. | Adding or changing an entity set, property or navigation. |
 | `db.py` | SQLite: DDL generated from the schema, number-range objects (`next_number`), the deterministic seed data, and the `request_log`, `idoc` and `rfc_log` tables. | Changing demo data, or adding a non-entity table. |
 | `odata.py` | The OData V2 vocabulary: the `$filter` tokenizer and recursive-descent parser that compiles to parameterised SQL, key-predicate parsing and rendering, EDM ↔ JSON value conversion, the response envelopes, and the SAP error payload. | Adding a `$filter` function, a new EDM type, or changing how values are rendered. |
 | `metadata.py` | Generates the EDMX `$metadata` document (entity types, associations, referential constraints, `sap:` annotations, the entity container) and the Atom/JSON service documents. | Changing what `$metadata` advertises. |
@@ -47,6 +47,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_metadata.py` | The service document, EDMX `$metadata`, and the service catalog. |
 | `test_odata_read.py` | Response envelopes and value formats, `$filter` (including string functions), `$top`/`$skip`/`$orderby`/`$inlinecount`, `$select`/`$expand`, navigation, `$count`, `$value`, and the error envelope for a bad filter. |
 | `test_odata_write.py` | CSRF enforcement, deep insert with item numbering and total recalculation, PATCH, DELETE, validation failures, and POST to a navigation. |
+| `test_complex.py` | Structured properties: the nested wire shape, `Address/City` in `$filter`/`$orderby`/`$select`, nested writes and partial updates, the `ComplexType` in `$metadata`, and the GWSAMPLE_BASIC service itself. |
 | `test_links.py` | `$links` reads for to-one and to-many associations, paging and counting over them, and the write paths - including the refusal to re-point a composition, which would rewrite a key. |
 | `test_etag.py` | The read-modify-write cycle: ETags on entity and header, conditional reads, `If-Match` on update and delete, `If-Match: *`, a changeset rolled back by a failed precondition, and the strict mode that demands a validator. |
 | `test_batch.py` | A mixed batch of a GET and a changeset, and the rollback of a changeset whose second request fails. |
