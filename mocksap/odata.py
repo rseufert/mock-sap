@@ -12,7 +12,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from .schema import EntityType, Prop, Service, set_for_type
+from .schema import COMPLEX_TYPES, EntityType, Prop, Service, set_for_type
 
 EPOCH = _dt.datetime(1970, 1, 1)
 
@@ -324,12 +324,26 @@ class _Filter:
         raise FilterError("Unexpected token '%s' in $filter" % text)
 
     def column(self, name: str) -> "_Frag":
-        # navigation paths (a/b) are not supported by the mock
+        path = name
         if self.peek() and self.peek()[1] == "/":
-            raise FilterError("Filtering on navigation paths is not supported: %s" % name)
-        if self.et.prop(name) is None:
-            raise FilterError("Property '%s' not found in type '%s'" % (name, self.et.name))
-        return _Frag('"%s"' % name)
+            self.next()
+            tail = self.next()
+            if tail[0] != "ident":
+                raise FilterError("Expected a property name after '%s/'" % name)
+            path = "%s/%s" % (name, tail[1])
+        resolved = self.et.resolve(path)
+        if resolved is None:
+            if self.et.prop(name) is not None and "/" not in path:
+                raise FilterError(
+                    "'%s' is a structured property; filter on one of its "
+                    "sub-properties, as in %s/..." % (name, name))
+            if "/" in path and self.et.prop(name) is not None:
+                raise FilterError(
+                    "Property '%s' not found in the structured property '%s'"
+                    % (path.split("/")[1], name))
+            raise FilterError(
+                "Property '%s' not found in type '%s'" % (path, self.et.name))
+        return _Frag('"%s"' % resolved[0])
 
     def parse_function(self, name):
         self.expect("(")
@@ -409,8 +423,11 @@ def build_orderby(expr: str, et: EntityType) -> str:
         if not bits:
             continue
         name = bits[0]
-        if et.prop(name) is None:
-            raise SapError("Property '%s' not found in type '%s'" % (name, et.name), 400)
+        resolved = et.resolve(name)
+        if resolved is None:
+            raise SapError("Property '%s' cannot be sorted on in type '%s'"
+                           % (name, et.name), 400)
+        name = resolved[0]
         direction = "ASC"
         if len(bits) > 1:
             if bits[1].lower() not in ("asc", "desc"):
@@ -512,6 +529,31 @@ def key_predicate(et: EntityType, row) -> str:
 # Serialization
 # --------------------------------------------------------------------------
 
+def _selected(select, name):
+    """What of `name` was asked for: None when nothing, [] for all of it, or
+    the list of sub-properties named by paths like `Address/City`."""
+    if select is None:
+        return []
+    subs = []
+    for entry in select:
+        if entry == name:
+            return []
+        if entry.startswith(name + "/"):
+            subs.append(entry.split("/", 1)[1])
+    return subs or None
+
+
+def _complex_value(prop: Prop, row, svc: Service, subs) -> dict:
+    """Render a complex property back into the nested shape SAP sends."""
+    ct = COMPLEX_TYPES[prop.complex_type]
+    value = {"__metadata": {"type": "%s.%s" % (svc.namespace, ct.name)}}
+    for sub in ct.props:
+        if subs and sub.name not in subs:
+            continue
+        value[sub.name] = to_json_value(sub, row_get(row, "%s_%s" % (prop.name, sub.name)))
+    return value
+
+
 def etag_for(et: EntityType, row) -> Optional[str]:
     """The weak ETag of a row, or None if the type is not concurrency-controlled.
 
@@ -575,9 +617,13 @@ def serialize_entity(row, et: EntityType, svc: Service, base_url: str,
         meta["etag"] = etag
     out: Dict[str, Any] = {"__metadata": meta}
     for p in et.props:
-        if select and p.name not in select:
+        chosen = _selected(select, p.name)
+        if select is not None and chosen is None:
             continue
-        out[p.name] = to_json_value(p, row_get(row, p.name))
+        if p.complex_type:
+            out[p.name] = _complex_value(p, row, svc, chosen)
+        else:
+            out[p.name] = to_json_value(p, row_get(row, p.name))
     expand = expand or {}
     for nav in et.navs:
         if select and nav.name not in select and nav.name not in expand:

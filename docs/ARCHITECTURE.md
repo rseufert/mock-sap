@@ -148,6 +148,23 @@ document numbers, `_next_item_number` numbers items, `_recalculate_totals` keeps
 header consistent, `DOCUMENT_DEFAULTS` sets statuses the system would set, and
 `_initial()` returns ABAP initial values. Anything the wire cannot reveal is absent.
 
+### Structured properties are flat underneath
+
+SAP nests structured properties on the wire - `Address` is a `CT_Address` with its
+own `__metadata.type` - but a column per sub-property keeps the database, the
+`$filter` compiler and the CRUD layer working in exactly one currency: columns.
+`EntityType.columns()` is the seam. It flattens `Address` into `Address_City`,
+`Address_PostalCode` and so on, and everything that touches storage iterates it
+rather than the declared properties. `EntityType.resolve()` is the inverse, turning
+the `Address/City` of a `$filter`, `$orderby` or `$select` back into a column, so
+paths cost the query layer nothing.
+
+Only the edges know about nesting: `_complex_value()` rebuilds the structure on the
+way out, `_flatten_complex()` takes it apart on the way in. A MERGE that names some
+sub-properties leaves the others alone, which is the behaviour a client patching one
+line of an address expects; a PUT resets the whole structure, as it does for every
+other property.
+
 ### Links are a surface of their own
 
 `$links` addresses an association rather than the entities behind it, so a read
@@ -226,12 +243,10 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 ## Where fidelity stops
 
-Known gaps, each with an issue: OData V4 ([#1]), complex types ([#2]), OAuth and
-SAML ([#5]). Beyond those, the mock
+Known gaps, each with an issue: OData V4 ([#1]), OAuth and SAML ([#5]). Beyond those, the mock
 has no concept of authorizations, no ABAP, no background jobs, no transactional
 boundary spanning more than a changeset, and no attempt at SAP's performance
 characteristics. It is a wire-shape simulator, and it should stay one.
 
 [#1]: https://github.com/rseufert/mock-sap/issues/1
-[#2]: https://github.com/rseufert/mock-sap/issues/2
 [#5]: https://github.com/rseufert/mock-sap/issues/5

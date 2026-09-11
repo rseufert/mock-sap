@@ -84,11 +84,17 @@ bash examples/demo.sh
 | Product | `/sap/opu/odata/sap/API_PRODUCT_SRV` |
 | Sales Order | `/sap/opu/odata/sap/API_SALES_ORDER_SRV` |
 | Purchase Order | `/sap/opu/odata/sap/API_PURCHASEORDER_PROCESS_SRV` |
+| GWSAMPLE_BASIC (the classic demo service) | `/sap/opu/odata/IWBEP/GWSAMPLE_BASIC` |
 | BAPI over JSON | `POST /sap/bc/rfc/<FUNCTION_MODULE>` |
 | BAPI over SOAP | `POST /sap/bc/srt/rfc/sap/<service>/<client>/<name>/<binding>` |
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
 | IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05 |
 | Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs`, `/_mock/faults`, `POST /_mock/reset` |
+
+The four `API_*` services carry the S/4HANA field names; `GWSAMPLE_BASIC` is the
+classic Gateway demo service every SAP OData tutorial uses, with its structured
+`CT_Address` and its entity sets named apart from their types (`BusinessPartnerSet`
+holds a `BusinessPartner`).
 
 Entity sets carry the S/4HANA field names — `A_SalesOrder` with `SoldToParty`,
 `TotalNetAmount`, `OverallSDProcessStatus`, `to_Item`; `A_BusinessPartner` with
@@ -104,6 +110,7 @@ Entity sets carry the S/4HANA field names — `A_SalesOrder` with `SoldToParty`,
 | `$select` `$expand` | `$expand` follows to-one and to-many navigations, nested paths included |
 | `$orderby` `$top` `$skip` | |
 | `$inlinecount=allpages`, `/$count` | |
+| Complex types | structured properties such as `CT_Address` nest on the wire with their own `__metadata.type`, and `Address/City` works in `$filter`, `$orderby` and `$select` |
 | ETags | concurrency-controlled types carry a weak ETag in `__metadata.etag` and the `ETag` header; `If-Match` guards updates and deletes (412 when stale, `*` matches anything), `If-None-Match` answers 304 |
 | `$links` | reads the association as bare URIs, to-one and to-many, with `$top`/`$skip`/`$inlinecount`/`$count`; writes re-point the foreign key, and refuse a change that would rewrite a key |
 | `$format=json`, Accept negotiation | XML/Atom for the service document and errors |
@@ -298,10 +305,10 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-52 tests, every one of them over real HTTP against a running mock, split by
-surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_links`,
-`test_etag`, `test_batch`, `test_rfc`, `test_idoc`, `test_operations` and
-`test_auth`, over the shared harness in `tests/support.py`.
+63 tests, every one of them over real HTTP against a running mock, split by
+surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_complex`,
+`test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`, `test_operations`
+and `test_auth`, over the shared harness in `tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work,
@@ -367,7 +374,6 @@ Not implemented yet, and the obvious next contributions - each one has an issue
 with a sketch of the work involved:
 
 - [#1 OData V4 services alongside V2](https://github.com/rseufert/mock-sap/issues/1)
-- [#2 Complex (structured) types](https://github.com/rseufert/mock-sap/issues/2)
 - [#5 OAuth 2.0 and SAML bearer authentication](https://github.com/rseufert/mock-sap/issues/5)
 
 Pull requests are welcome. Adding an entity set is usually a single declaration in

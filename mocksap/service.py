@@ -160,13 +160,23 @@ def _select_list(opts, et: EntityType) -> Optional[List[str]]:
         return None
     names = []
     for raw in opts["$select"].split(","):
-        name = raw.strip().split("/")[0]
-        if not name:
+        path = raw.strip()
+        if not path:
             continue
-        if et.prop(name) is None and et.nav(name) is None:
-            raise SapError("Property '%s' not found in type '%s'" % (name, et.name),
-                           400, target=name)
-        names.append(name)
+        head = path.split("/")[0]
+        prop = et.prop(head)
+        if prop is None and et.nav(head) is None:
+            raise SapError("Property '%s' not found in type '%s'" % (head, et.name),
+                           400, target=head)
+        # a path into a structured property selects part of it
+        if "/" in path and prop is not None and prop.complex_type:
+            if et.resolve(path) is None:
+                raise SapError(
+                    "Property '%s' not found in the structured property '%s'"
+                    % (path.split("/", 1)[1], head), 400, target=path)
+            names.append(path)
+            continue
+        names.append(head)
     return names
 
 

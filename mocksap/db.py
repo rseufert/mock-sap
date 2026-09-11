@@ -52,8 +52,8 @@ def open_database(path: str) -> sqlite3.Connection:
 
 def ddl_for(et: EntityType) -> str:
     cols = []
-    for p in et.props:
-        col = '"%s" %s' % (p.name, p.sql_type)
+    for name, p in et.columns():
+        col = '"%s" %s' % (name, p.sql_type)
         if p.key:
             col += " NOT NULL"
         cols.append(col)
@@ -420,8 +420,125 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
         "ON CONFLICT(object) DO UPDATE SET current=excluded.current", (bp_no,))
     conn.commit()
 
+    seed_gwsample(conn, rnd, today)
     return counts(conn)
 
+
+
+_GW_COMPANIES = [
+    ("0100000000", "SAP", "DE", "Walldorf", "69190", "Dietmar-Hopp-Allee", "16", "EUR"),
+    ("0100000001", "Becker Berlin", "DE", "Berlin", "10785", "Potsdamer Platz", "1", "EUR"),
+    ("0100000002", "DelBont Industries", "US", "Chicago", "60601", "Wacker Drive", "233", "USD"),
+    ("0100000003", "Talpa", "DE", "Muenchen", "80331", "Marienplatz", "8", "EUR"),
+    ("0100000004", "Panorama Studios", "IN", "Mumbai", "400051", "Bandra Kurla Complex", "9", "INR"),
+    ("0100000005", "TECUM", "DE", "Hamburg", "20095", "Moenckebergstrasse", "7", "EUR"),
+    ("0100000006", "Asia High tech", "JP", "Tokyo", "141-0032", "Osaki", "2", "JPY"),
+    ("0100000007", "Laurent", "FR", "Paris", "75008", "Avenue des Champs-Elysees", "42", "EUR"),
+]
+
+_GW_PRODUCTS = [
+    ("HT-1000", "PR", "Notebooks", "Notebook Basic 15", "Notebook Basic 15 with 1,7 GHz", 956.0, "EUR", 4.2, 30.0, 18.0, 3.0),
+    ("HT-1001", "PR", "Notebooks", "Notebook Basic 17", "Notebook Basic 17 with 1,7 GHz", 1249.0, "EUR", 4.5, 31.0, 21.0, 3.0),
+    ("HT-1002", "PR", "Notebooks", "Notebook Basic 18", "Notebook Basic 18 with 1,7 GHz", 1570.0, "EUR", 4.2, 32.0, 21.0, 4.0),
+    ("HT-1010", "PR", "Mice", "ITelO Vault", "Digital Organizer with State-of-the-Art Storage", 299.0, "EUR", 0.2, 8.0, 5.0, 1.0),
+    ("HT-1020", "PR", "Mice", "Comfort Easy", "32 GB Digital Assistant with high-resolution color screen", 1679.0, "EUR", 0.3, 9.0, 6.0, 1.0),
+    ("HT-1030", "PR", "Printers", "Ergo Screen E-I", "19 Multifunction Monitor", 230.0, "EUR", 5.0, 45.0, 40.0, 20.0),
+    ("HT-1040", "PR", "Speakers", "Flat Watch HD", "Flat Speaker with excellent sound", 59.0, "EUR", 1.0, 12.0, 12.0, 14.0),
+    ("HT-2000", "PR", "Software", "Smart Office", "Office suite with word processor and spreadsheet", 149.0, "EUR", 0.0, 0.0, 0.0, 0.0),
+]
+
+_GW_TITLES = [("0001", "Mr", "M"), ("0002", "Mrs", "F")]
+
+
+def seed_gwsample(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date) -> None:
+    """Seed the classic Gateway demo service, structured addresses and all."""
+    cur = conn.cursor()
+
+    def ins(table, row):
+        cols = ", ".join('"%s"' % c for c in row)
+        marks = ", ".join("?" for _ in row)
+        cur.execute('INSERT OR REPLACE INTO "%s" (%s) VALUES (%s)' % (table, cols, marks),
+                    list(row.values()))
+
+    for index, (bp, name, country, city, postal, street, building, currency) in enumerate(
+            _GW_COMPANIES):
+        created = today - _dt.timedelta(days=rnd.randint(100, 1500))
+        ins("BusinessPartner", dict(
+            BusinessPartnerID=bp, CompanyName=name,
+            WebAddress="http://www.%s.example" % name.split()[0].lower(),
+            EmailAddress="do.not.reply@%s.example" % name.split()[0].lower(),
+            PhoneNumber="+%d 6227 %d" % (rnd.randint(1, 99), rnd.randint(100000, 999999)),
+            FaxNumber="+%d 6227 %d" % (rnd.randint(1, 99), rnd.randint(100000, 999999)),
+            LegalForm=rnd.choice(["AG", "Ltd.", "Inc.", "GmbH"]), CurrencyCode=currency,
+            BusinessPartnerRole="01" if index % 3 else "02",
+            Address_City=city, Address_PostalCode=postal, Address_Street=street,
+            Address_Building=building, Address_Country=country, Address_AddressType="02",
+            CreatedAt=_iso(created), ChangedAt=_iso(created + _dt.timedelta(days=30))))
+
+        for contact_index in range(rnd.randint(1, 2)):
+            title, title_text, sex = rnd.choice(_GW_TITLES)
+            first, last = rnd.choice(_PERSONS)
+            ins("Contact", dict(
+                ContactGuid="005056A5-%04X-1ED4-%04X-%08X" % (
+                    index, contact_index, rnd.randint(0, 0xFFFFFFF)),
+                BusinessPartnerID=bp, Title=title_text, FirstName=first, MiddleName="",
+                LastName=last, Sex=sex,
+                PhoneNumber="+%d 6227 %d" % (rnd.randint(1, 99), rnd.randint(100000, 999999)),
+                EmailAddress="%s.%s@%s.example" % (
+                    first.lower(), last.lower().replace("'", ""), name.split()[0].lower()),
+                Address_City=city, Address_PostalCode=postal, Address_Street=street,
+                Address_Building=building, Address_Country=country, Address_AddressType="02",
+                DateOfBirth=_iso(_dt.date(rnd.randint(1960, 1995), rnd.randint(1, 12), 15))))
+
+    suppliers = [row[0] for row in _GW_COMPANIES]
+    for pid, type_code, category, name, description, price, currency, weight, width, depth, height in _GW_PRODUCTS:
+        supplier = rnd.choice(suppliers)
+        supplier_name = dict((c[0], c[1]) for c in _GW_COMPANIES)[supplier]
+        ins("Product", dict(
+            ProductID=pid, TypeCode=type_code, Category=category, Name=name,
+            NameLanguage="EN", Description=description, DescriptionLanguage="EN",
+            SupplierID=supplier, SupplierName=supplier_name, TaxTarifCode=1,
+            MeasureUnit="EA", WeightMeasure=weight, WeightUnit="KG",
+            CurrencyCode=currency, Price=price, Width=width, Depth=depth, Height=height,
+            DimUnit="CM", ProductPicUrl="/sap/public/bc/NWDEMO_MODEL/IMAGES/%s.jpg" % pid))
+
+    statuses = [("N", "New", "P", "Pending"), ("P", "In Process", "P", "Pending"),
+                ("C", "Completed", "C", "Completed")]
+    order_id = 500000000
+    for _ in range(12):
+        order_id += 1
+        order = str(order_id)
+        bp, company = rnd.choice([(c[0], c[1]) for c in _GW_COMPANIES])
+        lifecycle, lifecycle_text, billing, billing_text = rnd.choice(statuses)
+        created = today - _dt.timedelta(days=rnd.randint(0, 120))
+        net = 0.0
+        items = []
+        for position in range(1, rnd.randint(2, 4)):
+            product = rnd.choice(_GW_PRODUCTS)
+            quantity = float(rnd.randint(1, 12))
+            item_net = round(quantity * product[5], 2)
+            item_tax = round(item_net * 0.19, 2)
+            net += item_net
+            items.append(dict(
+                SalesOrderID=order, ItemPosition=str(position * 10).zfill(10),
+                ProductID=product[0], Note=product[3], NoteLanguage="EN",
+                CurrencyCode="EUR", GrossAmount=round(item_net + item_tax, 2),
+                NetAmount=item_net, TaxAmount=item_tax,
+                DeliveryDate=_iso(created + _dt.timedelta(days=rnd.randint(3, 21))),
+                Quantity=quantity, QuantityUnit="EA"))
+        tax = round(net * 0.19, 2)
+        ins("SalesOrder", dict(
+            SalesOrderID=order, Note="EPM DG: SO ID %s Deliver as fast as possible" % order,
+            NoteLanguage="EN", CustomerID=bp, CustomerName=company, CurrencyCode="EUR",
+            GrossAmount=round(net + tax, 2), NetAmount=round(net, 2), TaxAmount=tax,
+            LifecycleStatus=lifecycle, LifecycleStatusDescription=lifecycle_text,
+            BillingStatus=billing, BillingStatusDescription=billing_text,
+            DeliveryStatus=rnd.choice(["N", "D"]),
+            DeliveryStatusDescription=rnd.choice(["New", "Delivered"]),
+            CreatedAt=_iso(created), ChangedAt=_iso(created + _dt.timedelta(days=1))))
+        for item in items:
+            ins("SalesOrderLineItem", item)
+    conn.commit()
 
 def counts(conn: sqlite3.Connection) -> dict:
     cur = conn.cursor()
