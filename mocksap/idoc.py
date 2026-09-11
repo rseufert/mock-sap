@@ -7,7 +7,7 @@ and can generate outbound ORDERS05 XML from a stored sales order.
 from __future__ import annotations
 
 import datetime as _dt
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -69,6 +69,62 @@ def parse_flat(body: bytes) -> Dict[str, str]:
     return info
 
 
+def _apply_delivery(ctx, body: bytes) -> List[dict]:
+    """Post an inbound DELVRY07 against the sales orders it references.
+
+    Each item segment carries the document it was created from (VGBEL/VGPOS)
+    and the quantity delivered, which is enough to move the order's delivery
+    status the way posting a delivery would.
+    """
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return []
+
+    delivered: Dict[str, Dict[str, float]] = {}
+    for element in root.iter():
+        if _local(element.tag) != "E1EDL24":
+            continue
+        values = {_local(child.tag): (child.text or "").strip() for child in element}
+        order = values.get("VGBEL", "").strip()
+        position = values.get("VGPOS", "").strip()
+        if not order or not position:
+            continue
+        try:
+            quantity = float(values.get("LFIMG") or values.get("LGMNG") or 0)
+        except ValueError:
+            quantity = 0.0
+        delivered.setdefault(order, {})[position] = quantity
+
+    applied = []
+    so_type = ENTITY_TYPES["A_SalesOrder"]
+    item_type = ENTITY_TYPES["A_SalesOrderItem"]
+    for order, positions in delivered.items():
+        row = (store.get(ctx.conn, so_type, {"SalesOrder": order.zfill(10)})
+               or store.get(ctx.conn, so_type, {"SalesOrder": order}))
+        if row is None:
+            applied.append({"SALESORDER": order, "STATUS": "",
+                            "MESSAGE": "Sales order %s does not exist" % order})
+            continue
+        items = store.children(ctx.conn, row, so_type, so_type.nav("to_Item"))
+        complete = bool(items)
+        for item in items:
+            wanted = float(item["RequestedQuantity"] or 0)
+            got = positions.get(item["SalesOrderItem"], 0.0)
+            if got + 1e-9 < wanted:
+                complete = False
+                break
+        status = "C" if complete else "B"
+        store.update(ctx.conn, so_type, {"SalesOrder": row["SalesOrder"]},
+                     {"OverallDeliveryStatus": status}, user=ctx.user)
+        applied.append({
+            "SALESORDER": row["SalesOrder"], "STATUS": status,
+            "MESSAGE": "Delivery status set to %s (%s)"
+                       % (status, "fully delivered" if status == "C" else "partly delivered"),
+        })
+    return applied
+
+
 def receive(ctx, content_type: str, body: bytes) -> dict:
     """Store an inbound IDoc and return its status record."""
     if not body.strip():
@@ -87,7 +143,7 @@ def receive(ctx, content_type: str, body: bytes) -> dict:
          "xml" if is_xml else "flat", body.decode("utf-8", "replace")),
     )
     ctx.conn.commit()
-    return {
+    receipt = {
         "DOCNUM": docnum,
         "IDOCTYP": info.get("idoctyp", ""),
         "MESTYP": info.get("mestyp", ""),
@@ -99,6 +155,13 @@ def receive(ctx, content_type: str, body: bytes) -> dict:
         "CRETIM": now.strftime("%H%M%S"),
         "MANDT": ctx.client,
     }
+
+    # a delivery is not just filed: posting it moves the order it came from
+    if is_xml and info.get("mestyp", "").upper().startswith("DELVRY"):
+        applied = _apply_delivery(ctx, body)
+        if applied:
+            receipt["APPLIED"] = applied
+    return receipt
 
 
 def receipt_xml(receipt: dict) -> str:
@@ -216,3 +279,164 @@ def generate_orders05(ctx, sales_order: str) -> dict:
     )
     ctx.conn.commit()
     return {"docnum": docnum, "xml": xml}
+
+
+def _sales_order_context(ctx, sales_order: str):
+    """The order, its items and its sold-to party, or a 404."""
+    so_type = ENTITY_TYPES["A_SalesOrder"]
+    row = (store.get(ctx.conn, so_type, {"SalesOrder": sales_order.zfill(10)})
+           or store.get(ctx.conn, so_type, {"SalesOrder": sales_order}))
+    if row is None:
+        raise SapError("Sales order %s does not exist" % sales_order, 404)
+    items = store.children(ctx.conn, row, so_type, so_type.nav("to_Item"))
+    bp_type = ENTITY_TYPES["A_BusinessPartner"]
+    partner = store.get(ctx.conn, bp_type, {"BusinessPartner": row["SoldToParty"]})
+    addresses = store.children(ctx.conn, partner, bp_type,
+                               bp_type.nav("to_BusinessPartnerAddress"),
+                               limit=1) if partner else []
+    return row, items, partner, (addresses[0] if addresses else None)
+
+
+def _partner_segment(role: str, number: str, partner, address) -> str:
+    return _seg("E1EDKA1", {
+        "PARVW": role, "PARTN": number,
+        "NAME1": partner["BusinessPartnerFullName"] if partner else "",
+        "STRAS": address["StreetName"] if address else "",
+        "HAUSN": address["HouseNumber"] if address else "",
+        "ORT01": address["CityName"] if address else "",
+        "PSTLZ": address["PostalCode"] if address else "",
+        "LAND1": address["Country"] if address else "",
+        "SPRAS_ISO": "EN",
+    })
+
+
+def _store_idoc(ctx, docnum, idoctyp, mestyp, xml, direction="1", status="03") -> None:
+    ctx.conn.execute(
+        "INSERT INTO idoc(docnum,direction,idoctyp,mestyp,status,status_text,"
+        "created_at,content_type,payload) VALUES(?,?,?,?,?,?,?,?,?)",
+        (docnum, direction, idoctyp, mestyp, status, STATUS_TEXT[status],
+         _dt.datetime.utcnow().replace(microsecond=0).isoformat(), "xml", xml),
+    )
+    ctx.conn.commit()
+
+
+def generate_invoic02(ctx, sales_order: str) -> dict:
+    """Render a stored sales order as an outbound INVOIC02, the way a billing
+    document for it would leave the system."""
+    row, items, partner, address = _sales_order_context(ctx, sales_order)
+    docnum = db.next_number(ctx.conn, "IDOC", 16)
+    billing = db.next_number(ctx.conn, "BILLINGDOCUMENT", 10)
+    doc_date = str(row["SalesOrderDate"] or "")[:10].replace("-", "")
+    today = _dt.datetime.utcnow().strftime("%Y%m%d")
+    currency = row["TransactionCurrency"]
+    net = float(row["TotalNetAmount"] or 0)
+    tax = round(net * 0.19, 2)
+
+    segments = [
+        _control_record(docnum, "INVOIC02", "INVOIC", ctx.client),
+        _seg("E1EDK01", {
+            "CURCY": currency, "HWAER": currency, "WKURS": "1.00000",
+            "ZTERM": row["CustomerPaymentTerms"], "BELNR": billing,
+            "NTGEW": "%.3f" % net, "BSART": "INVO",
+        }),
+        _seg("E1EDK02", {"QUALF": "009", "BELNR": billing, "DATUM": today}),
+        _seg("E1EDK02", {"QUALF": "001", "BELNR": row["SalesOrder"], "DATUM": doc_date}),
+        _seg("E1EDK03", {"IDDAT": "026", "DATUM": today}),
+        _seg("E1EDK03", {"IDDAT": "012", "DATUM": doc_date}),
+        _partner_segment("RE", row["SoldToParty"], partner, address),
+        _partner_segment("RG", row["SoldToParty"], partner, address),
+        _partner_segment("AG", row["SoldToParty"], partner, address),
+    ]
+    for item in items:
+        quantity = float(item["RequestedQuantity"] or 0)
+        amount = float(item["NetAmount"] or 0)
+        price = round(amount / quantity, 2) if quantity else amount
+        children = "".join([
+            _seg("E1EDP19", {"QUALF": "002", "IDTNR": item["Material"],
+                             "KTEXT": item["SalesOrderItemText"]}),
+            _seg("E1EDP26", {"QUALF": "003", "BETRG": "%.2f" % amount}),
+            _seg("E1EDP26", {"QUALF": "011", "BETRG": "%.2f" % price}),
+        ])
+        segments.append(_seg("E1EDP01", {
+            "POSEX": item["SalesOrderItem"], "MENGE": "%.3f" % quantity,
+            "MENEE": item["RequestedQuantityUnit"], "PSTYV": item["SalesOrderItemCategory"],
+            "WERKS": item["Plant"], "VPREI": "%.2f" % price, "NETWR": "%.2f" % amount,
+            "CURCY": currency, "VGBEL": row["SalesOrder"], "VGPOS": item["SalesOrderItem"],
+        }, children))
+    segments.append(_seg("E1EDS01", {"SUMID": "010", "SUMME": "%.2f" % (net + tax),
+                                     "SUNIT": currency}))
+    segments.append(_seg("E1EDS01", {"SUMID": "011", "SUMME": "%.2f" % net,
+                                     "SUNIT": currency}))
+    segments.append(_seg("E1EDS01", {"SUMID": "205", "SUMME": "%.2f" % tax,
+                                     "SUNIT": currency}))
+
+    xml = ('<?xml version="1.0" encoding="utf-8"?><INVOIC02><IDOC BEGIN="1">%s'
+           "</IDOC></INVOIC02>" % "".join(segments))
+    _store_idoc(ctx, docnum, "INVOIC02", "INVOIC", xml)
+    return {"docnum": docnum, "xml": xml, "billing_document": billing}
+
+
+def generate_delvry07(ctx, sales_order: str) -> dict:
+    """Render a delivery for a stored sales order as an outbound DELVRY07."""
+    row, items, partner, address = _sales_order_context(ctx, sales_order)
+    docnum = db.next_number(ctx.conn, "IDOC", 16)
+    delivery = db.next_number(ctx.conn, "DELIVERY", 10)
+    today = _dt.datetime.utcnow().strftime("%Y%m%d")
+    weight = sum(float(item["RequestedQuantity"] or 0) for item in items)
+
+    children = "".join([
+        _seg("E1EDL21", {"LFART": "LF", "VSTEL": "1710", "VKORG": row["SalesOrganization"],
+                         "ROUTE": "R00001", "BTGEW": "%.3f" % weight, "GEWEI": "KGM"}),
+        _seg("E1EDL22", {"VBELN": delivery, "VSTEL": "1710", "LFDAT": today,
+                         "LFUHR": "120000", "KODAT": today}),
+        _seg("E1ADRM1", {"PARTNER_Q": "WE", "PARTNER_ID": row["SoldToParty"],
+                         "NAME1": partner["BusinessPartnerFullName"] if partner else "",
+                         "STREET1": address["StreetName"] if address else "",
+                         "CITY1": address["CityName"] if address else "",
+                         "POSTL_COD1": address["PostalCode"] if address else "",
+                         "COUNTRY1": address["Country"] if address else ""}),
+    ])
+    item_segments = []
+    for item in items:
+        quantity = float(item["RequestedQuantity"] or 0)
+        item_segments.append(_seg("E1EDL24", {
+            "POSNR": item["SalesOrderItem"], "MATNR": item["Material"],
+            "WERKS": item["Plant"], "LFIMG": "%.3f" % quantity,
+            "VRKME": item["RequestedQuantityUnit"], "LGMNG": "%.3f" % quantity,
+            "MEINS": item["RequestedQuantityUnit"],
+            "ARKTX": item["SalesOrderItemText"],
+            "VGBEL": row["SalesOrder"], "VGPOS": item["SalesOrderItem"],
+        }, _seg("E1EDL18", {"QUALF": "ORI", "PARAM": "SALESORDER"})))
+
+    segments = [
+        _control_record(docnum, "DELVRY07", "DELVRY", ctx.client),
+        _seg("E1EDL20", {"VBELN": delivery, "VSTEL": "1710", "VKORG": row["SalesOrganization"],
+                         "LFART": "LF", "KUNNR": row["SoldToParty"],
+                         "BTGEW": "%.3f" % weight, "GEWEI": "KGM",
+                         "ANZPK": str(len(items)).zfill(5)},
+             children + "".join(item_segments)),
+    ]
+    xml = ('<?xml version="1.0" encoding="utf-8"?><DELVRY07><IDOC BEGIN="1">%s'
+           "</IDOC></DELVRY07>" % "".join(segments))
+    _store_idoc(ctx, docnum, "DELVRY07", "DELVRY", xml)
+    return {"docnum": docnum, "xml": xml, "delivery": delivery}
+
+
+GENERATORS = {
+    "ORDERS": ("ORDERS05", lambda ctx, order: generate_orders05(ctx, order)),
+    "ORDERS05": ("ORDERS05", lambda ctx, order: generate_orders05(ctx, order)),
+    "INVOIC": ("INVOIC02", generate_invoic02),
+    "INVOIC02": ("INVOIC02", generate_invoic02),
+    "DELVRY": ("DELVRY07", generate_delvry07),
+    "DELVRY07": ("DELVRY07", generate_delvry07),
+}
+
+
+def generate(ctx, mestyp: str, sales_order: str) -> dict:
+    """Generate an outbound IDoc of the requested message type."""
+    entry = GENERATORS.get((mestyp or "ORDERS").upper())
+    if entry is None:
+        raise SapError(
+            "Message type %s cannot be generated; this mock generates %s"
+            % (mestyp, ", ".join(sorted({v[0] for v in GENERATORS.values()}))), 400)
+    return entry[1](ctx, sales_order)

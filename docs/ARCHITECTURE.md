@@ -232,6 +232,19 @@ asking for; getting this wrong makes the whole flow unusable, and it did, once.
 And the principal rides along: the user a token carries becomes `ctx.user`, so a
 document created with a SAML-derived token names that user in `CreatedByUser`.
 
+### An inbound IDoc can post, not just arrive
+
+Filing an IDoc and answering 53 is easy and teaches a client nothing about the
+half of the loop that matters. A `DELVRY07` names the document each item came from
+in `VGBEL`/`VGPOS`, which is enough to do what posting a delivery does: compare the
+delivered quantities against the order's items and move `OverallDeliveryStatus` to
+fully or partly delivered. The receipt reports what was applied, so a client can
+assert on the outcome rather than on the fact that the IDoc was accepted.
+
+Generation runs the other way from the same data - order, invoice and delivery are
+three renderings of one sales order - which is what keeps the segment trees
+consistent with what the OData services would say about the same document.
+
 ### RFC_READ_TABLE reads tables, not SQL
 
 `RFC_READ_TABLE` is the function module everyone reaches for and nobody admits to,

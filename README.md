@@ -92,7 +92,7 @@ bash examples/demo.sh
 | BAPI over JSON | `POST /sap/bc/rfc/<FUNCTION_MODULE>` |
 | BAPI over SOAP | `POST /sap/bc/srt/rfc/sap/<service>/<client>/<name>/<binding>` |
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
-| IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05 |
+| IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05, INVOIC02 or DELVRY07 |
 | OAuth token endpoint | `POST /sap/bc/sec/oauth2/token`, `POST /sap/bc/sec/oauth2/revoke` |
 | Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs`, `/_mock/tokens`, `/_mock/faults`, `POST /_mock/reset` |
 
@@ -227,10 +227,10 @@ SOAP uses the `urn:sap-com:document:sap:soap:functions:mc-style` namespace, retu
 ## IDoc
 
 ```bash
-# outbound: render a stored sales order as ORDERS05
+# outbound: render a stored sales order as ORDERS05, INVOIC02 or DELVRY07
 curl -X POST "http://127.0.0.1:8000/sap/bc/idoc/generate?format=xml" \
   -H "X-CSRF-Token: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"SalesOrder":"0000004712"}'
+  -d '{"mestyp":"INVOIC","SalesOrder":"0000004712"}'
 
 # inbound: post an IDoc and get its status record back
 curl -X POST http://127.0.0.1:8000/sap/bc/idoc \
@@ -238,8 +238,16 @@ curl -X POST http://127.0.0.1:8000/sap/bc/idoc \
   --data-binary @order.xml
 ```
 
-Generated IDocs carry a full `EDI_DC40` control record plus `E1EDK01`, `E1EDK14`,
-`E1EDK03`, `E1EDKA1`, `E1EDP01`/`E1EDP19` segments. Inbound IDocs are parsed (XML, or a
+Generated IDocs carry a full `EDI_DC40` control record and the segment tree their
+type calls for - `E1EDK01`/`E1EDK14`/`E1EDKA1`/`E1EDP01` for an order, `E1EDK02`
+references and `E1EDS01` totals for an invoice, `E1EDL20`/`E1EDL24` for a delivery.
+An invoice draws a billing document number and a delivery a delivery number, each
+from its own number range.
+
+An inbound `DELVRY07` is not merely filed: its items name the order they came from
+in `VGBEL`/`VGPOS`, so posting one moves that order's `OverallDeliveryStatus` to
+`C` or `B` depending on whether the quantities cover it, and the receipt says what
+it did. Inbound IDocs are parsed (XML, or a
 flat file read at the documented EDI_DC40 offsets), stored with a 16-digit IDoc number
 and status `53`, and can be inspected or re-statused:
 
@@ -424,7 +432,7 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-128 tests, every one of them over real HTTP against a running mock, split by
+135 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
 `test_oauth`, `test_messages`, `test_operations` and `test_auth`, over the shared
@@ -497,7 +505,6 @@ your side of the wire.
 The first roadmap - OData V4, complex types, `$links`, ETags, OAuth - is done.
 What would extend the mock further, each with an issue sketching the work:
 
-- [#12 More IDoc types: `INVOIC02` and `DELVRY07`](https://github.com/rseufert/mock-sap/issues/12)
 - [#14 `$apply` aggregations](https://github.com/rseufert/mock-sap/issues/14)
 - [#15 Delta tokens](https://github.com/rseufert/mock-sap/issues/15)
 - [#17 CDS and UI annotations for Fiori elements](https://github.com/rseufert/mock-sap/issues/17)
