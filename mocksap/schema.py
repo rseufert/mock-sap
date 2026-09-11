@@ -639,6 +639,170 @@ _register(
 
 
 # --------------------------------------------------------------------------
+# Entity types - the documents a sales order turns into
+#
+# API_OUTBOUND_DELIVERY_SRV, API_BILLING_DOCUMENT_SRV and API_JOURNALENTRY_SRV.
+# Each carries the reference back to the document it came from, so the chain
+# order -> delivery -> invoice -> journal entry can be walked.
+# --------------------------------------------------------------------------
+
+_register(
+    EntityType(
+        "A_OutbDeliveryHeader",
+        label="Outbound Delivery",
+        props=[
+            S("DeliveryDocument", key=True, nullable=False, max_length=10,
+              label="Delivery", creatable=False, updatable=False),
+            S("DeliveryDocumentType", max_length=4, label="Delivery Type"),
+            S("ShippingPoint", max_length=4, label="Shipping Point"),
+            S("SalesOrganization", max_length=4),
+            S("SoldToParty", max_length=10, label="Sold-To Party"),
+            S("ShipToParty", max_length=10, label="Ship-To Party"),
+            DT("DeliveryDate", label="Delivery Date"),
+            DT("ActualGoodsMovementDate", label="Actual Goods Movement Date"),
+            S("OverallSDProcessStatus", max_length=1, label="Overall Status",
+              creatable=False, updatable=False),
+            S("OverallGoodsMovementStatus", max_length=1, creatable=False, updatable=False),
+            DEC("TotalWeight", label="Total Weight"),
+            S("WeightUnit", max_length=3),
+            S("CreatedByUser", max_length=12, creatable=False, updatable=False),
+            DT("CreationDate", creatable=False, updatable=False),
+            DT("LastChangeDate", creatable=False, updatable=False, concurrency=True),
+        ],
+        navs=[
+            Nav("to_DeliveryDocumentItem", "A_OutbDeliveryItem", "*",
+                [("DeliveryDocument", "DeliveryDocument")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_OutbDeliveryItem",
+        label="Delivery Item",
+        props=[
+            S("DeliveryDocument", key=True, nullable=False, max_length=10),
+            S("DeliveryDocumentItem", key=True, nullable=False, max_length=6, creatable=False),
+            S("Material", max_length=40),
+            S("DeliveryDocumentItemText", max_length=40),
+            DEC("ActualDeliveredQtyInOrderQtyUnit", label="Delivered Quantity"),
+            S("OrderQuantityUnit", max_length=3),
+            S("Plant", max_length=4),
+            S("StorageLocation", max_length=4),
+            S("ReferenceSDDocument", max_length=10, label="Reference Document"),
+            S("ReferenceSDDocumentItem", max_length=6, label="Reference Item"),
+            DEC("ItemGrossWeight"),
+            S("ItemWeightUnit", max_length=3),
+        ],
+        navs=[
+            Nav("to_DeliveryDocument", "A_OutbDeliveryHeader", "1",
+                [("DeliveryDocument", "DeliveryDocument")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_BillingDocument",
+        label="Billing Document",
+        props=[
+            S("BillingDocument", key=True, nullable=False, max_length=10,
+              label="Billing Document", creatable=False, updatable=False),
+            S("BillingDocumentType", max_length=4, label="Billing Type"),
+            S("SDDocumentCategory", max_length=4),
+            S("SalesOrganization", max_length=4),
+            S("SoldToParty", max_length=10),
+            S("PayerParty", max_length=10),
+            DT("BillingDocumentDate", label="Billing Date"),
+            S("TransactionCurrency", max_length=5),
+            DEC("TotalNetAmount", precision=16, scale=3, label="Net Value"),
+            DEC("TotalTaxAmount", precision=16, scale=3, label="Tax Amount"),
+            DEC("TotalGrossAmount", precision=16, scale=3, label="Gross Amount"),
+            S("AccountingPostingStatus", max_length=1, label="Posting Status"),
+            S("AccountingDocument", max_length=10, label="Accounting Document"),
+            S("CreatedByUser", max_length=12, creatable=False, updatable=False),
+            DT("CreationDate", creatable=False, updatable=False),
+            DT("LastChangeDate", creatable=False, updatable=False, concurrency=True),
+        ],
+        navs=[
+            Nav("to_Item", "A_BillingDocumentItem", "*",
+                [("BillingDocument", "BillingDocument")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_BillingDocumentItem",
+        label="Billing Document Item",
+        props=[
+            S("BillingDocument", key=True, nullable=False, max_length=10),
+            S("BillingDocumentItem", key=True, nullable=False, max_length=6, creatable=False),
+            S("Material", max_length=40),
+            S("BillingDocumentItemText", max_length=40),
+            DEC("BillingQuantity", label="Billed Quantity"),
+            S("BillingQuantityUnit", max_length=3),
+            DEC("NetAmount", precision=16, scale=3),
+            DEC("TaxAmount", precision=16, scale=3),
+            S("TransactionCurrency", max_length=5),
+            S("SalesDocument", max_length=10, label="Sales Document"),
+            S("SalesDocumentItem", max_length=6),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_JournalEntry",
+        label="Journal Entry",
+        props=[
+            S("AccountingDocument", key=True, nullable=False, max_length=10,
+              label="Journal Entry", creatable=False, updatable=False),
+            S("CompanyCode", key=True, nullable=False, max_length=4),
+            S("FiscalYear", key=True, nullable=False, max_length=4),
+            S("AccountingDocumentType", max_length=2, label="Document Type"),
+            DT("DocumentDate", label="Document Date"),
+            DT("PostingDate", label="Posting Date"),
+            S("FiscalPeriod", max_length=3),
+            S("TransactionCurrency", max_length=5),
+            S("AccountingDocumentHeaderText", max_length=25, label="Header Text"),
+            S("ReferenceDocument", max_length=16, label="Reference"),
+            S("CreatedByUser", max_length=12, creatable=False, updatable=False),
+            DT("CreationDate", creatable=False, updatable=False),
+            DT("LastChangeDate", creatable=False, updatable=False, concurrency=True),
+        ],
+        navs=[
+            Nav("to_JournalEntryItem", "A_JournalEntryItem", "*",
+                [("AccountingDocument", "AccountingDocument"),
+                 ("CompanyCode", "CompanyCode"), ("FiscalYear", "FiscalYear")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_JournalEntryItem",
+        label="Journal Entry Item",
+        props=[
+            S("AccountingDocument", key=True, nullable=False, max_length=10),
+            S("CompanyCode", key=True, nullable=False, max_length=4),
+            S("FiscalYear", key=True, nullable=False, max_length=4),
+            S("AccountingDocumentItem", key=True, nullable=False, max_length=6,
+              creatable=False),
+            S("GLAccount", max_length=10, label="G/L Account"),
+            S("DebitCreditCode", max_length=1, label="Debit/Credit"),
+            DEC("AmountInTransactionCurrency", precision=16, scale=3, label="Amount"),
+            S("TransactionCurrency", max_length=5),
+            S("DocumentItemText", max_length=50),
+            S("CostCenter", max_length=10),
+            S("ProfitCenter", max_length=10),
+            S("Customer", max_length=10),
+            S("Supplier", max_length=10),
+        ],
+    )
+)
+
+# --------------------------------------------------------------------------
 # GWSAMPLE_BASIC - the classic SAP Gateway demo service
 #
 # Every SAP OData tutorial uses this one, and it is where SAP's structured
@@ -1157,6 +1321,33 @@ for _svc in [
             "A_SalesOrderText": "A_SalesOrderText",
             "A_SalesOrderHeaderPrElement": "A_SalesOrderHeaderPrElement",
             "A_SalesOrderItemPrElement": "A_SalesOrderItemPrElement",
+        },
+    ),
+    Service(
+        "API_OUTBOUND_DELIVERY_SRV",
+        "API_OUTBOUND_DELIVERY_SRV",
+        "Outbound Delivery (A2X)",
+        {
+            "A_OutbDeliveryHeader": "A_OutbDeliveryHeader",
+            "A_OutbDeliveryItem": "A_OutbDeliveryItem",
+        },
+    ),
+    Service(
+        "API_BILLING_DOCUMENT_SRV",
+        "API_BILLING_DOCUMENT_SRV",
+        "Billing Document (A2X)",
+        {
+            "A_BillingDocument": "A_BillingDocument",
+            "A_BillingDocumentItem": "A_BillingDocumentItem",
+        },
+    ),
+    Service(
+        "API_JOURNALENTRY_SRV",
+        "API_JOURNALENTRY_SRV",
+        "Journal Entry (A2X)",
+        {
+            "A_JournalEntry": "A_JournalEntry",
+            "A_JournalEntryItem": "A_JournalEntryItem",
         },
     ),
     Service(

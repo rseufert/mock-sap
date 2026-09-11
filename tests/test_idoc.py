@@ -116,22 +116,46 @@ class TestInvoiceAndDelivery(MockServerCase):
             self.assertTrue(item.find("LFIMG").text)
 
     def test_posting_a_delivery_moves_the_order(self):
-        order = self.an_order()
-        _, _, entity = self.get(SRV + "/A_SalesOrder('%s')?$format=json" % order)
-        self.assertNotEqual(entity["d"]["OverallDeliveryStatus"], "C")
+        # a fresh order, so no earlier test in this class has delivered it
+        headers = self.csrf_token()
+        _, _, created = self.request("POST", SRV + "/A_SalesOrder", headers=headers, body={
+            "SalesOrderType": "OR", "SalesOrganization": "1710", "SoldToParty": "1000001",
+            "DistributionChannel": "10", "OrganizationDivision": "00",
+            "to_Item": [{"Material": "TG11", "RequestedQuantity": "4",
+                         "RequestedQuantityUnit": "PC", "NetAmount": "400"}]})
+        order = created["d"]["SalesOrder"]
+        self.assertEqual(created["d"]["OverallDeliveryStatus"], "A")
 
-        _, _, generated = self.generate("DELVRY", order)
+        delivery = (
+            '<?xml version="1.0" encoding="utf-8"?><DELVRY07><IDOC BEGIN="1">'
+            '<EDI_DC40 SEGMENT="1"><IDOCTYP>DELVRY07</IDOCTYP><MESTYP>DELVRY</MESTYP>'
+            "</EDI_DC40>"
+            '<E1EDL20 SEGMENT="1"><VBELN>0080007777</VBELN>'
+            '<E1EDL24 SEGMENT="1"><POSNR>000010</POSNR><MATNR>TG11</MATNR>'
+            "<LFIMG>4.000</LFIMG><VGBEL>%s</VGBEL><VGPOS>000010</VGPOS></E1EDL24>"
+            "</E1EDL20></IDOC></DELVRY07>") % order
+
         status, _, receipt = self.request(
-            "POST", "/sap/bc/idoc", body=generated["xml"],
-            headers=dict(self.csrf_token(), **{"Content-Type": "application/xml",
-                                               "Accept": "application/json"}))
+            "POST", "/sap/bc/idoc", body=delivery,
+            headers=dict(headers, **{"Content-Type": "application/xml",
+                                     "Accept": "application/json"}))
         self.assertEqual(status, 201)
         self.assertEqual(receipt["STATUS"], "53")
-        self.assertEqual(receipt["APPLIED"][0]["SALESORDER"], order)
-        self.assertEqual(receipt["APPLIED"][0]["STATUS"], "C")
+        applied = receipt["APPLIED"][0]
+        self.assertEqual(applied["SALESORDER"], order)
+        self.assertEqual(applied["STATUS"], "C")
 
         _, _, entity = self.get(SRV + "/A_SalesOrder('%s')?$format=json" % order)
         self.assertEqual(entity["d"]["OverallDeliveryStatus"], "C")
+
+        # the delivery the IDoc announced was unknown, so one was created for it
+        self.assertIn("DELIVERY", applied)
+        _, _, delivery_entity = self.get(
+            "/sap/opu/odata/sap/API_OUTBOUND_DELIVERY_SRV/A_OutbDeliveryHeader('%s')"
+            "?$expand=to_DeliveryDocumentItem&$format=json" % applied["DELIVERY"])
+        items = delivery_entity["d"]["to_DeliveryDocumentItem"]["results"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["ReferenceSDDocument"], order)
 
     def test_a_partial_delivery_says_so(self):
         order = self.an_order()

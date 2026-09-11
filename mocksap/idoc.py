@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-from . import db, store
+from . import db, documents, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -96,32 +96,46 @@ def _apply_delivery(ctx, body: bytes) -> List[dict]:
             quantity = 0.0
         delivered.setdefault(order, {})[position] = quantity
 
+    # the delivery the IDoc describes, if it names one
+    announced = ""
+    for element in root.iter():
+        if _local(element.tag) == "E1EDL20":
+            for child in element:
+                if _local(child.tag) == "VBELN":
+                    announced = (child.text or "").strip()
+            break
+
     applied = []
-    so_type = ENTITY_TYPES["A_SalesOrder"]
-    item_type = ENTITY_TYPES["A_SalesOrderItem"]
     for order, positions in delivered.items():
-        row = (store.get(ctx.conn, so_type, {"SalesOrder": order.zfill(10)})
-               or store.get(ctx.conn, so_type, {"SalesOrder": order}))
+        row = documents.sales_order(ctx, order)
         if row is None:
             applied.append({"SALESORDER": order, "STATUS": "",
                             "MESSAGE": "Sales order %s does not exist" % order})
             continue
-        items = store.children(ctx.conn, row, so_type, so_type.nav("to_Item"))
-        complete = bool(items)
-        for item in items:
-            wanted = float(item["RequestedQuantity"] or 0)
-            got = positions.get(item["SalesOrderItem"], 0.0)
-            if got + 1e-9 < wanted:
-                complete = False
-                break
-        status = "C" if complete else "B"
-        store.update(ctx.conn, so_type, {"SalesOrder": row["SalesOrder"]},
-                     {"OverallDeliveryStatus": status}, user=ctx.user)
-        applied.append({
+
+        items = {item["SalesOrderItem"]: item for item in documents.order_items(ctx, row)}
+        known = announced and store.get(
+            ctx.conn, ENTITY_TYPES["A_OutbDeliveryHeader"],
+            {"DeliveryDocument": announced.zfill(10)}) is not None
+
+        created = ""
+        if not known:
+            lines = [(items[position], quantity)
+                     for position, quantity in positions.items() if position in items]
+            if lines:
+                created = documents.create_delivery(ctx, row, lines)
+
+        status = documents.apply_delivery_status(ctx, row, positions)
+        entry = {
             "SALESORDER": row["SalesOrder"], "STATUS": status,
             "MESSAGE": "Delivery status set to %s (%s)"
                        % (status, "fully delivered" if status == "C" else "partly delivered"),
-        })
+        }
+        if created:
+            entry["DELIVERY"] = created
+            entry["MESSAGE"] = "Delivery %s created; %s" % (created, entry["MESSAGE"][0].lower()
+                                                            + entry["MESSAGE"][1:])
+        applied.append(entry)
     return applied
 
 
@@ -324,13 +338,14 @@ def generate_invoic02(ctx, sales_order: str) -> dict:
     """Render a stored sales order as an outbound INVOIC02, the way a billing
     document for it would leave the system."""
     row, items, partner, address = _sales_order_context(ctx, sales_order)
+    # the invoice is a document, not a number: create it, then render it
+    invoice = documents.create_billing_document(ctx, row, items)
     docnum = db.next_number(ctx.conn, "IDOC", 16)
-    billing = db.next_number(ctx.conn, "BILLINGDOCUMENT", 10)
+    billing = invoice["billing_document"]
     doc_date = str(row["SalesOrderDate"] or "")[:10].replace("-", "")
     today = _dt.datetime.utcnow().strftime("%Y%m%d")
     currency = row["TransactionCurrency"]
-    net = float(row["TotalNetAmount"] or 0)
-    tax = round(net * 0.19, 2)
+    net, tax = invoice["net"], invoice["tax"]
 
     segments = [
         _control_record(docnum, "INVOIC02", "INVOIC", ctx.client),
@@ -373,14 +388,17 @@ def generate_invoic02(ctx, sales_order: str) -> dict:
     xml = ('<?xml version="1.0" encoding="utf-8"?><INVOIC02><IDOC BEGIN="1">%s'
            "</IDOC></INVOIC02>" % "".join(segments))
     _store_idoc(ctx, docnum, "INVOIC02", "INVOIC", xml)
-    return {"docnum": docnum, "xml": xml, "billing_document": billing}
+    return {"docnum": docnum, "xml": xml, "billing_document": billing,
+            "accounting_document": invoice["accounting_document"]}
 
 
 def generate_delvry07(ctx, sales_order: str) -> dict:
     """Render a delivery for a stored sales order as an outbound DELVRY07."""
     row, items, partner, address = _sales_order_context(ctx, sales_order)
+    # likewise the delivery: it is created, and the IDoc describes it
+    delivery = documents.create_delivery(
+        ctx, row, [(item, float(item["RequestedQuantity"] or 0)) for item in items])
     docnum = db.next_number(ctx.conn, "IDOC", 16)
-    delivery = db.next_number(ctx.conn, "DELIVERY", 10)
     today = _dt.datetime.utcnow().strftime("%Y%m%d")
     weight = sum(float(item["RequestedQuantity"] or 0) for item in items)
 

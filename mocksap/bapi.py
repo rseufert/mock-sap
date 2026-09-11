@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-from . import db, store
+from . import db, documents, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -328,6 +328,123 @@ def _po_getdetail(ctx, params):
             "NET_PRICE": "%.2f" % (it["NetPriceAmount"] or 0),
         } for it in items],
         "RETURN": [ret("S", "Purchase order %s read" % row["PurchaseOrder"], "06", "017")],
+    }
+
+
+@function("BAPI_OUTB_DELIVERY_CREATE_SLS", "OutbDeliveryCreateSls")
+def _delivery_create(ctx, params):
+    lines = param(params, "SALES_ORDER_ITEMS") or []
+    if not lines:
+        return {"DELIVERY": "", "RETURN": [ret(
+            "E", "Enter at least one sales order item", "VL", "561",
+            parameter="SALES_ORDER_ITEMS")]}
+
+    wanted: Dict[str, Dict[str, float]] = {}
+    for index, line in enumerate(lines, start=1):
+        order = str(field(line, "REF_DOC", "")).strip()
+        item = str(field(line, "REF_ITEM", "")).strip()
+        if not order or not item:
+            return {"DELIVERY": "", "RETURN": [ret(
+                "E", "Reference document and item are required", "VL", "561",
+                row=index, parameter="SALES_ORDER_ITEMS")]}
+        wanted.setdefault(order, {})[item] = _num(field(line, "DLV_QTY", 0))
+
+    if len(wanted) > 1:
+        return {"DELIVERY": "", "RETURN": [ret(
+            "E", "All items must belong to one sales order in this mock", "VL", "561")]}
+
+    number, quantities = list(wanted.items())[0]
+    order = documents.sales_order(ctx, number)
+    if order is None:
+        return {"DELIVERY": "", "RETURN": [ret(
+            "E", "Sales order %s does not exist" % number, "V1", "555", v1=number)]}
+
+    items = {item["SalesOrderItem"]: item for item in documents.order_items(ctx, order)}
+    selected, messages = [], []
+    for index, (position, quantity) in enumerate(quantities.items(), start=1):
+        item = items.get(position) or items.get(position.zfill(6))
+        if item is None:
+            messages.append(ret("E", "Item %s does not exist in order %s"
+                                % (position, number), "V1", "555", row=index))
+            continue
+        open_quantity = float(item["RequestedQuantity"] or 0)
+        quantity = quantity or open_quantity
+        if quantity > open_quantity + 1e-9:
+            messages.append(ret(
+                "E", "Only %.3f %s are open for item %s"
+                % (open_quantity, item["RequestedQuantityUnit"], item["SalesOrderItem"]),
+                "VL", "367", row=index, fld="DLV_QTY"))
+            continue
+        selected.append((item, quantity))
+
+    if any(m["TYPE"] == "E" for m in messages):
+        return {"DELIVERY": "", "RETURN": messages}
+
+    delivery = documents.create_delivery(ctx, order, selected)
+    messages.append(ret("S", "Delivery %s has been saved" % delivery.lstrip("0"),
+                        "VL", "311", v1=delivery.lstrip("0")))
+    return {"DELIVERY": delivery, "RETURN": messages}
+
+
+@function("BAPI_ACC_DOCUMENT_POST", "AccDocumentPost")
+def _acc_document_post(ctx, params):
+    header = param(params, "DOCUMENTHEADER") or {}
+    accounts = param(params, "ACCOUNTGL") or []
+    amounts = {str(field(a, "ITEMNO_ACC", "")).strip(): a
+               for a in (param(params, "CURRENCYAMOUNT") or [])}
+
+    company = str(field(header, "COMP_CODE", "")).strip()
+    if not company:
+        return {"OBJ_KEY": "", "RETURN": [ret(
+            "E", "Enter a company code", "F5", "165", parameter="DOCUMENTHEADER",
+            fld="COMP_CODE")]}
+    if not accounts:
+        return {"OBJ_KEY": "", "RETURN": [ret(
+            "E", "Enter at least one line item", "F5", "166", parameter="ACCOUNTGL")]}
+
+    lines, currency = [], "EUR"
+    for index, account in enumerate(accounts, start=1):
+        number = str(field(account, "ITEMNO_ACC", "")).strip()
+        amount_row = amounts.get(number, {})
+        currency = str(field(amount_row, "CURRENCY", currency)) or currency
+        lines.append({
+            "GLAccount": str(field(account, "GL_ACCOUNT", "")),
+            "Amount": _num(field(amount_row, "AMT_DOCCUR", 0)),
+            "Text": str(field(account, "ITEM_TEXT", "")),
+            "CostCenter": str(field(account, "COSTCENTER", "")),
+            "ProfitCenter": str(field(account, "PROFIT_CTR", "")),
+            "Customer": str(field(account, "CUSTOMER", "")),
+            "Supplier": str(field(account, "VENDOR_NO", "")),
+            "TransactionCurrency": currency,
+        })
+        if number not in amounts:
+            return {"OBJ_KEY": "", "RETURN": [ret(
+                "E", "No amount was supplied for item %s" % number, "F5", "167",
+                row=index, parameter="CURRENCYAMOUNT")]}
+
+    balance = documents.balance_of(lines)
+    if balance:
+        return {"OBJ_KEY": "", "RETURN": [ret(
+            "E", "Balance in transaction currency: %.2f %s" % (balance, currency),
+            "F5", "702", v1="%.2f" % balance, v2=currency)]}
+
+    posting = str(field(header, "PSTNG_DATE", "")) or None
+    document, company_code, year = documents.post_journal_entry(ctx, {
+        "CompanyCode": company,
+        "AccountingDocumentType": str(field(header, "DOC_TYPE", "SA")) or "SA",
+        "DocumentDate": str(field(header, "DOC_DATE", "")) or None,
+        "PostingDate": posting,
+        "TransactionCurrency": currency,
+        "HeaderText": str(field(header, "HEADER_TXT", "")),
+        "ReferenceDocument": str(field(header, "REF_DOC_NO", "")),
+    }, lines)
+
+    return {
+        "OBJ_TYPE": "BKPFF", "OBJ_SYS": SYSTEM_ID + "CLNT100",
+        "OBJ_KEY": "%s%s%s" % (document, company_code, year),
+        "RETURN": [ret("S", "Document posted successfully: %s %s %s"
+                       % (company_code, document, year), "RW", "605",
+                       v1=company_code, v2=document, v3=year)],
     }
 
 
