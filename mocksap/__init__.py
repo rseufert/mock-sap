@@ -11,13 +11,24 @@ __all__ = ["Config", "make_server", "__version__"]
 
 
 def _discover_version():
-    """The version comes from the installed package metadata.
+    """pyproject.toml is the single source of truth for the version.
 
-    pyproject.toml is the single source of truth.  When the package is
-    installed, importlib.metadata reads the version recorded at build time;
-    when it is run straight from a checkout that was never installed, fall
-    back to reading pyproject.toml next to the package.
+    Running from a checkout, the pyproject.toml sitting next to the package is
+    authoritative and the version is marked `+source`; stale build metadata in
+    the working tree (a leftover *.egg-info directory, say) would otherwise
+    shadow it and report a version that has already moved on. Installed - in
+    site-packages, a wheel, a container - there is no pyproject.toml alongside,
+    and the version recorded at build time is read instead.
     """
+    pyproject = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "pyproject.toml")
+    try:
+        with open(pyproject, encoding="utf-8") as handle:
+            match = re.search(r'^version\s*=\s*"([^"]+)"', handle.read(), re.M)
+        if match:
+            return match.group(1) + "+source"
+    except OSError:
+        pass
     try:
         from importlib.metadata import PackageNotFoundError, version
     except ImportError:  # pragma: no cover - Python < 3.8
@@ -25,14 +36,7 @@ def _discover_version():
     try:
         return version("mock-sap")
     except PackageNotFoundError:
-        pyproject = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "pyproject.toml")
-        try:
-            with open(pyproject, encoding="utf-8") as handle:
-                match = re.search(r'^version\s*=\s*"([^"]+)"', handle.read(), re.M)
-        except OSError:
-            return "0+unknown"
-        return match.group(1) + "+source" if match else "0+unknown"
+        return "0+unknown"
 
 
 __version__ = _discover_version()
