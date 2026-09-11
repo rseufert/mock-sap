@@ -232,6 +232,17 @@ asking for; getting this wrong makes the whole flow unusable, and it did, once.
 And the principal rides along: the user a token carries becomes `ctx.user`, so a
 document created with a SAML-derived token names that user in `CreatedByUser`.
 
+### RFC_READ_TABLE reads tables, not SQL
+
+`RFC_READ_TABLE` is the function module everyone reaches for and nobody admits to,
+and it maps onto SQLite almost too neatly - which is exactly where a mock could
+become a SQL injection hole with a `RETURN` table. It does not. The `QUERY_TABLE`
+must resolve to a known entity type, every `FIELDS` name must exist on it, and the
+`OPTIONS` text goes through a deliberately narrow parser: field names are looked up
+in the table's columns, only the ABAP comparison operators are accepted, and every
+literal is bound. Nothing from the caller reaches SQL as text, and a caller who
+tries gets `FIELD_NOT_VALID` rather than a surprise.
+
 ### A warning is not a failure
 
 A mock that only ever succeeds or errors teaches a client nothing about the third

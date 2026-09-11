@@ -201,11 +201,25 @@ Errors arrive the way BAPIs report them — `TYPE: "E"` in the `RETURN` table wi
 message number, not an HTTP error. Unknown material, unknown customer, missing
 sold-to party and test runs (`TESTRUN: "X"`) are all modelled.
 
-Available: `BAPI_SALESORDER_CREATEFROMDAT2`, `BAPI_SALESORDER_GETLIST`,
-`BAPI_SALESORDER_GETSTATUS`, `BAPI_PO_CREATE1`, `BAPI_PO_GETDETAIL1`,
-`BAPI_MATERIAL_GET_DETAIL`, `BAPI_BUSINESS_PARTNER_GETDETAIL`,
-`BAPI_TRANSACTION_COMMIT`, `BAPI_TRANSACTION_ROLLBACK`, `RFC_PING`, `STFC_CONNECTION`.
+Available: `BAPI_SALESORDER_CREATEFROMDAT2`, `BAPI_SALESORDER_CHANGE`,
+`BAPI_SALESORDER_GETLIST`, `BAPI_SALESORDER_GETSTATUS`, `BAPI_PO_CREATE1`,
+`BAPI_PO_GETDETAIL1`, `BAPI_CUSTOMER_GETLIST`, `BAPI_CUSTOMER_GETDETAIL2`,
+`BAPI_VENDOR_GETDETAIL`, `BAPI_MATERIAL_GETLIST`, `BAPI_MATERIAL_GET_DETAIL`,
+`BAPI_BUSINESS_PARTNER_GETDETAIL`, `BAPI_TRANSACTION_COMMIT`,
+`BAPI_TRANSACTION_ROLLBACK`, `RFC_READ_TABLE`, `RFC_PING`, `STFC_CONNECTION`.
 `GET /_mock/services` lists them; `POST /sap/bc/rfc/` with no name does too.
+
+`BAPI_SALESORDER_CHANGE` honours the X structures the way a real BAPI does: only
+fields flagged in `ORDER_HEADER_INX` / `ORDER_ITEM_INX` are changed, and a call
+that forgets them changes nothing and says so. `ORDER_ITEM_INX` takes `UPDATEFLAG`
+`I`, `U` and `D` to insert, update and delete items.
+
+`RFC_READ_TABLE` reads the same tables the OData services serve, with `FIELDS`,
+`OPTIONS` as a WHERE clause, `DELIMITER`, `ROWSKIPS` and `ROWCOUNT`, and returns
+the fixed-width `DATA` rows people expect. It answers only for tables it knows -
+ask it for `VBAK` and it tells you the mock has `A_SalesOrder` instead - and every
+field name and literal in `OPTIONS` is checked and bound, so nothing from the
+caller reaches SQL as text.
 
 SOAP uses the `urn:sap-com:document:sap:soap:functions:mc-style` namespace, returns
 `<…Response>` envelopes, and answers unknown functions with a SOAP fault.
@@ -410,7 +424,7 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-114 tests, every one of them over real HTTP against a running mock, split by
+128 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
 `test_oauth`, `test_messages`, `test_operations` and `test_auth`, over the shared
@@ -483,7 +497,6 @@ your side of the wire.
 The first roadmap - OData V4, complex types, `$links`, ETags, OAuth - is done.
 What would extend the mock further, each with an issue sketching the work:
 
-- [#11 More function modules in the RFC layer](https://github.com/rseufert/mock-sap/issues/11) - a good first issue
 - [#12 More IDoc types: `INVOIC02` and `DELVRY07`](https://github.com/rseufert/mock-sap/issues/12)
 - [#14 `$apply` aggregations](https://github.com/rseufert/mock-sap/issues/14)
 - [#15 Delta tokens](https://github.com/rseufert/mock-sap/issues/15)
