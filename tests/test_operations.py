@@ -47,8 +47,10 @@ class TestOperations(MockServerCase):
         names = {s["name"] for s in services["services"]}
         self.assertTrue({"API_SALES_ORDER_SRV", "GWSAMPLE_BASIC"} <= names, names)
         for service in services["services"]:
-            self.assertTrue(service["url"].endswith(service["name"]))
+            self.assertIn(service["name"], service["url"])
+            self.assertIn(service["odataVersion"], (2, 4))
             self.assertTrue(service["entitySets"])
+        self.assertTrue(any(s["odataVersion"] == 4 for s in services["services"]))
 
     def test_reset_restores_seed_data(self):
         headers = self.csrf_token()

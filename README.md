@@ -85,6 +85,8 @@ bash examples/demo.sh
 | Sales Order | `/sap/opu/odata/sap/API_SALES_ORDER_SRV` |
 | Purchase Order | `/sap/opu/odata/sap/API_PURCHASEORDER_PROCESS_SRV` |
 | GWSAMPLE_BASIC (the classic demo service) | `/sap/opu/odata/IWBEP/GWSAMPLE_BASIC` |
+| Sales Order, **OData V4** | `/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001` |
+| Business Partner, **OData V4** | `/sap/opu/odata4/sap/api_businesspartner/srvd_a2x/sap/api_businesspartner/0001` |
 | BAPI over JSON | `POST /sap/bc/rfc/<FUNCTION_MODULE>` |
 | BAPI over SOAP | `POST /sap/bc/srt/rfc/sap/<service>/<client>/<name>/<binding>` |
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
@@ -101,6 +103,31 @@ Entity sets carry the S/4HANA field names — `A_SalesOrder` with `SoldToParty`,
 `BusinessPartnerCategory`, `to_BusinessPartnerAddress`; and so on. Browse
 `/sap/opu/odata/sap/<SERVICE>/$metadata` for the full picture, or open
 `http://127.0.0.1:8000/` for an index page.
+
+## OData V4
+
+Two services are served in V4 as well, over the same rows: what you write through
+the V2 sales order service you read back through the V4 one. The dialects are kept
+honestly apart - a V2 option on a V4 service is an error, and the other way round.
+
+| | V2 | V4 |
+| --- | --- | --- |
+| Collection | `{"d":{"results":[…]}}` | `{"@odata.context":"…","value":[…]}` |
+| Entity | `{"d":{…}}` | the entity object itself |
+| Timestamps | `/Date(1754611200000)/` | `2025-08-08T00:00:00Z` |
+| Decimals | `"123991.820"` | `123991.82` |
+| Count | `$inlinecount=allpages` → `__count` | `$count=true` → `@odata.count` |
+| ETag | `__metadata.etag` | `@odata.etag` |
+| Links | `__deferred`, `$links` | omitted, `$ref` |
+| Expanded | `{"results":[…]}` | a bare array |
+| Nested options | - | `$expand=to_Item($select=Material;$top=2;$count=true)` |
+| Metadata | EDMX 1.0 | CSDL 4.0, XML or JSON |
+| Batch | multipart/mixed | JSON, with `atomicityGroup` |
+| Errors | `message: {lang, value}` | `message` as a string |
+
+```bash
+curl "http://127.0.0.1:8000/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001/SalesOrder?\$top=1&\$count=true"
+```
 
 ## OData V2 support
 
@@ -305,10 +332,10 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-63 tests, every one of them over real HTTP against a running mock, split by
-surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_complex`,
-`test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`, `test_operations`
-and `test_auth`, over the shared harness in `tests/support.py`.
+79 tests, every one of them over real HTTP against a running mock, split by
+surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
+`test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
+`test_operations` and `test_auth`, over the shared harness in `tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work,
@@ -343,8 +370,10 @@ gh release create v0.2.0 --generate-notes
 ```
 mocksap/schema.py     entity types, navigations, services   (add shapes here)
 mocksap/db.py         SQLite schema, number ranges, seed data
-mocksap/odata.py      $filter parser, key predicates, JSON shaping, error envelope
-mocksap/metadata.py   EDMX / service document
+mocksap/odata.py      $filter parser, key predicates, V2 shaping, error envelope
+mocksap/odata4.py     the V4 shapes: annotations, ISO dates, plain numbers
+mocksap/metadata.py   EDMX 1.0 / service document
+mocksap/metadata4.py  CSDL 4.0, XML and JSON
 mocksap/store.py      CRUD, deep insert, cascades, document defaults
 mocksap/service.py    OData request dispatcher
 mocksap/batch.py      $batch multipart and atomic changesets
@@ -373,7 +402,6 @@ your side of the wire.
 Not implemented yet, and the obvious next contributions - each one has an issue
 with a sketch of the work involved:
 
-- [#1 OData V4 services alongside V2](https://github.com/rseufert/mock-sap/issues/1)
 - [#5 OAuth 2.0 and SAML bearer authentication](https://github.com/rseufert/mock-sap/issues/5)
 
 Pull requests are welcome. Adding an entity set is usually a single declaration in
