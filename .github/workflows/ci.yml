@@ -56,7 +56,8 @@ jobs:
       - name: The changelog is well formed and has lost nothing
         run: |
           BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
-          python tools/check_changelog.py ${BASE:+--base "$BASE"}
+          LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
+          python tools/check_changelog.py ${BASE:+--base "$BASE"} --labels "$LABELS"
 
   smoke:
     name: documented examples still work

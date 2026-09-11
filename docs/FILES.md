@@ -85,7 +85,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 
 | File | What it is |
 | --- | --- |
-| `check_changelog.py` | Guards `CHANGELOG.md`. Structure and agreement with `pyproject.toml` always; against a base revision, that released sections are untouched, that nothing waiting for a release has gone, and that a change to `mocksap/` brought an entry with it — which is what a merge resolution that drops one side trips over. `python3 tools/check_changelog.py [--base origin/main]`. |
+| `check_changelog.py` | Guards `CHANGELOG.md`. Structure and agreement with `pyproject.toml` always; against a base revision, that released sections are untouched, that nothing waiting for a release has gone, and that a change to `mocksap/` brought an entry with it — which is what a merge resolution that drops one side trips over. A pull request labelled `no changelog` lifts that last rule. `python3 tools/check_changelog.py [--base origin/main] [--labels …]`. |
 | `check_docs.py` | Guards this index against drift: fails if a tracked file is not documented here, if a row names a file that no longer exists, or if a module is missing from the README's layout block. It checks coverage, not prose. Run it with `python3 tools/check_docs.py`; CI runs it on every push. |
 
 ## `.github/workflows/`
