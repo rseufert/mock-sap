@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A guided tour of the mock, using nothing but curl.
 # Start the server first:   python3 -m mocksap --port 8000
-set -euo pipefail
+set -eu
 BASE=${BASE:-http://127.0.0.1:8000}
 SO=$BASE/sap/opu/odata/sap/API_SALES_ORDER_SRV
 BP=$BASE/sap/opu/odata/sap/API_BUSINESS_PARTNER_SRV
@@ -49,7 +49,7 @@ CREATED=$(curl -s -X POST "$SO/A_SalesOrder?\$expand=to_Item" \
         ]
       }')
 echo "$CREATED" | head -30
-ORDER=$(echo "$CREATED" | sed -n 's/.*"SalesOrder": "\([0-9]*\)".*/\1/p' | head -1)
+ORDER=$(echo "$CREATED" | sed -n 's/.*"SalesOrder": "\([0-9]*\)".*/\1/p' | sed -n 1p)
 echo "created order: $ORDER"
 
 say "patch it, then read it back"

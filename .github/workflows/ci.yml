@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 3.8 is not in the tool cache on ubuntu-latest any more
+          - {os: ubuntu-22.04, python: "3.8"}
+          - {os: ubuntu-latest, python: "3.9"}
+          - {os: ubuntu-latest, python: "3.10"}
+          - {os: ubuntu-latest, python: "3.11"}
+          - {os: ubuntu-latest, python: "3.12"}
+          - {os: ubuntu-latest, python: "3.13"}
+          - {os: macos-latest, python: "3.12"}
+          - {os: windows-latest, python: "3.12"}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Byte-compile every module
+        run: python -m compileall -q mocksap tests examples
+      - name: Run the test suite
+        run: python -m unittest discover -s tests -v
+
+  smoke:
+    name: documented examples still work
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the documented curl tour and the example client
+        run: |
+          set -euo pipefail
+          python -m mocksap --port 8000 -q &
+          MOCK_PID=$!
+          trap 'kill $MOCK_PID 2>/dev/null || true' EXIT
+          for _ in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8000/_mock/health >/dev/null && break
+            sleep 0.25
+          done
+          curl -sf http://127.0.0.1:8000/_mock/health
+          bash examples/demo.sh
+          python examples/client.py
+
+  package:
+    name: package builds and installs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Install the wheel and run the console script
+        run: |
+          python -m pip install dist/*.whl
+          mock-sap --version
+          mock-sap --port 8001 -q &
+          for _ in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8001/_mock/health && break
+            sleep 0.25
+          done
+          curl -sf "http://127.0.0.1:8001/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder/\$count"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/*
+
+  docker:
+    name: container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t mock-sap:ci .
+      - name: Run it and query the catalog
+        run: |
+          docker run -d --name mock-sap -p 8000:8000 mock-sap:ci
+          for _ in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8000/_mock/health >/dev/null && break
+            sleep 0.5
+          done
+          curl -sf "http://127.0.0.1:8000/sap/opu/odata/IWFND/CATALOGSERVICE;v=2/ServiceCollection?\$format=json" | head -5
+          docker rm -f mock-sap

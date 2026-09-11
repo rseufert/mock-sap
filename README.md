@@ -1,5 +1,9 @@
 # mock-sap
 
+[![CI](https://github.com/rseufert/mock-sap/actions/workflows/ci.yml/badge.svg)](https://github.com/rseufert/mock-sap/actions/workflows/ci.yml)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A **black-box mock SAP endpoint**. It does not implement any SAP business logic —
 it speaks the shapes: SAP Gateway **OData V2** services, **BAPI/RFC** calls over JSON
 and SOAP, and **IDocs** in XML and EDI_DC40 flat-file form. Data is kept in SQLite.
@@ -286,6 +290,9 @@ python3 -m unittest discover -s tests -v
 31 tests, every one of them over real HTTP against a running mock: metadata,
 query options, error envelopes, CSRF, deep insert, `$batch` rollback, BAPI JSON and
 SOAP, IDoc round-trip, fault injection and authentication.
+
+CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
+checks that `examples/demo.sh`, the packaged wheel and the Docker image still work.
 
 ## Layout
 
