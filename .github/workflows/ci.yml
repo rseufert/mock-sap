@@ -45,10 +45,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The changelog check compares against the base of the pull request,
+          # so it needs more than the tip commit.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: python tools/check_docs.py
+      - name: The changelog is well formed and has lost nothing
+        run: |
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          python tools/check_changelog.py ${BASE:+--base "$BASE"}
 
   smoke:
     name: documented examples still work

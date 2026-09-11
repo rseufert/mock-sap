@@ -85,13 +85,14 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 
 | File | What it is |
 | --- | --- |
+| `check_changelog.py` | Guards `CHANGELOG.md`. Structure and agreement with `pyproject.toml` always; against a base revision, that released sections are untouched, that nothing waiting for a release has gone, and that a change to `mocksap/` brought an entry with it — which is what a merge resolution that drops one side trips over. `python3 tools/check_changelog.py [--base origin/main]`. |
 | `check_docs.py` | Guards this index against drift: fails if a tracked file is not documented here, if a row names a file that no longer exists, or if a module is missing from the README's layout block. It checks coverage, not prose. Run it with `python3 tools/check_docs.py`; CI runs it on every push. |
 
 ## `.github/workflows/`
 
 | File | What it is |
 | --- | --- |
-| `ci.yml` | Five jobs: the suite on Python 3.8-3.13 (Linux) plus 3.12 on macOS and Windows; a docs job running `tools/check_docs.py`; a smoke job running `demo.sh` and `client.py` against a live mock; a package job that builds, `twine check`s, installs the wheel and asserts the version agrees with `pyproject.toml`; and a job that builds and runs the Docker image. |
+| `ci.yml` | Five jobs: the suite on Python 3.8-3.13 (Linux) plus 3.12 on macOS and Windows; a docs job running `tools/check_docs.py` and `tools/check_changelog.py`; a smoke job running `demo.sh` and `client.py` against a live mock; a package job that builds, `twine check`s, installs the wheel and asserts the version agrees with `pyproject.toml`; and a job that builds and runs the Docker image. |
 | `publish.yml` | Releases to PyPI via Trusted Publishing (OIDC, no stored token). A published GitHub Release goes to PyPI; a manual run goes to TestPyPI. Both build from a green test run and refuse a tag that disagrees with the built package. |
 
 ## `docs/`
