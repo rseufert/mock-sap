@@ -59,6 +59,17 @@ def metadata_document(svc: Service) -> str:
     out.append("<edmx:DataServices>")
     out.append('<Schema Namespace=%s xmlns="%s">' % (quoteattr(ns), EDM_NS))
 
+    # RAP services declare the message type and hang a collection of it off
+    # every entity type, annotated as Common.Messages
+    out.append('<ComplexType Name="SAP__Message">')
+    for prop, attrs in (("code", 'Type="Edm.String"'),
+                        ("message", 'Type="Edm.String"'),
+                        ("target", 'Type="Edm.String"'),
+                        ("transition", 'Type="Edm.Boolean"'),
+                        ("numericSeverity", 'Type="Edm.Byte"')):
+        out.append('<Property Name="%s" %s/>' % (prop, attrs))
+    out.append("</ComplexType>")
+
     for name in _complex_names(types):
         ct = COMPLEX_TYPES[name]
         out.append("<ComplexType Name=%s>" % quoteattr(ct.name))
@@ -74,6 +85,8 @@ def metadata_document(svc: Service) -> str:
         out.append("</Key>")
         for p in et.props:
             out.append("<Property%s/>" % _property_attrs(p, ns))
+        out.append('<Property Name="SAP__Messages" Type="Collection(%s.SAP__Message)" '
+                   'Nullable="false"/>' % ns)
         for nav in et.navs:
             if nav.target not in svc.sets.values():
                 continue
@@ -109,6 +122,16 @@ def metadata_json(svc: Service) -> dict:
     types = _types_of(svc)
     schema = {}
 
+    # RAP services declare the message type and hang a collection of it off
+    # every entity type
+    schema["SAP__Message"] = {
+        "$Kind": "ComplexType",
+        "code": {"$Kind": "Property", "$Type": "Edm.String"},
+        "message": {"$Kind": "Property", "$Type": "Edm.String"},
+        "target": {"$Kind": "Property", "$Type": "Edm.String"},
+        "transition": {"$Kind": "Property", "$Type": "Edm.Boolean"},
+        "numericSeverity": {"$Kind": "Property", "$Type": "Edm.Byte"},
+    }
     for name in _complex_names(types):
         ct = COMPLEX_TYPES[name]
         entry = {"$Kind": "ComplexType"}
@@ -120,6 +143,8 @@ def metadata_json(svc: Service) -> dict:
         entry = {"$Kind": "EntityType", "$Key": [k.name for k in et.keys]}
         for p in et.props:
             entry[p.name] = _json_property(p, ns)
+        entry["SAP__Messages"] = {"$Kind": "Property", "$Collection": True,
+                                  "$Type": "%s.SAP__Message" % ns, "$Nullable": False}
         for nav in et.navs:
             if nav.target not in svc.sets.values():
                 continue

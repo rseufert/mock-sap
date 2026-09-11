@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote, urlparse
 
-from . import bapi, batch, db, idoc, metadata, oauth
+from . import bapi, batch, db, idoc, messages, metadata, oauth
 from .odata import SapError, error_payload
 from .schema import SERVICES, service_for_path
 from .service import JSON_CT, Context, Response, dispatch, parse_query
@@ -183,6 +183,7 @@ class Handler(BaseHTTPRequestHandler):
         started = time.time()
         self._issue_token = None
         self._principal = None
+        self._injected_message = None
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         query = parsed.query
@@ -198,6 +199,13 @@ class Handler(BaseHTTPRequestHandler):
             response = Response.error(SapError(
                 "Unexpected mock failure: %s" % exc, 500,
                 code="/IWBEP/CX_MGW_TECH_EXCEPTION"))
+
+        if self._injected_message is not None and response.status < 400:
+            injected = self._injected_message
+            if isinstance(injected, str):
+                injected = messages.message("MOCK/001", injected)
+            response.headers.setdefault(
+                "sap-message", messages.to_header([injected]) or "")
 
         if self._issue_token:
             response.headers["x-csrf-token"] = self._issue_token
@@ -383,6 +391,10 @@ class Handler(BaseHTTPRequestHandler):
         rule = self.mock.faults.match(method, path)
         if rule and not scenario:
             scenario = (rule.get("scenario") or "").lower()
+        if rule and rule.get("message") and not rule.get("status"):
+            # a rule may warn without failing: remember it for the response
+            self._injected_message = rule["message"]
+            return None
         if rule and rule.get("status"):
             message = rule.get("message") or "Fault injected by mock rule %s" % rule["id"]
             if rule.get("delay_ms"):

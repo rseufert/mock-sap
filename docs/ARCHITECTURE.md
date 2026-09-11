@@ -232,6 +232,20 @@ asking for; getting this wrong makes the whole flow unusable, and it did, once.
 And the principal rides along: the user a token carries becomes `ctx.user`, so a
 document created with a SAML-derived token names that user in `CreatedByUser`.
 
+### A warning is not a failure
+
+A mock that only ever succeeds or errors teaches a client nothing about the third
+case SAP has: a request that works and still has something to say. `messages.py`
+renders those into the `sap-message` header, and V4 responses carry the same
+content in a `SAP__Messages` collection that CSDL declares, so the annotation
+resolves rather than appearing from nowhere.
+
+Two lines are held deliberately. A warning never changes the status code, and a
+failure never arrives as a warning - a fault rule with a `message` warns, one with
+a `status` fails, and never both. And a rule may correct the document as well as
+complain about it: a delivery date in the past is moved to today and the move is
+reported, which is what SAP does and what makes the warning worth reading.
+
 ### Errors are shapes too
 
 A mock that returns a bare 400 teaches a client nothing. `odata.SapError` carries an
@@ -283,9 +297,8 @@ the build otherwise, so the index cannot quietly fall behind the code.
 
 The first roadmap - V4, complex types, `$links`, ETags, OAuth - is complete. What
 is still absent is tracked as issues, and worth knowing before you go looking for
-it: aggregation ([#14]), delta handling ([#15]), warnings that do not fail a
-request ([#16]), and the UI vocabulary annotations a Fiori elements app reads
-([#17]).
+it: aggregation ([#14]), delta handling ([#15]), and the UI vocabulary annotations
+a Fiori elements app reads ([#17]).
 
 Beyond those, the mock has no concept of authorizations, no ABAP, no background
 jobs, no transactional boundary spanning more than a changeset, and no attempt at
@@ -294,5 +307,4 @@ stay one.
 
 [#14]: https://github.com/rseufert/mock-sap/issues/14
 [#15]: https://github.com/rseufert/mock-sap/issues/15
-[#16]: https://github.com/rseufert/mock-sap/issues/16
 [#17]: https://github.com/rseufert/mock-sap/issues/17

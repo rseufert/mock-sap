@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlparse
 
-from . import metadata, metadata4, odata4, store
+from . import messages as sap_messages, metadata, metadata4, odata4, store
 from .odata import (SapError, build_orderby, build_where, collection_envelope,
                     entity_envelope, entity_uri, error_payload, etag_for,
                     etag_matches, key_predicate, parse_key_predicate,
@@ -374,9 +374,11 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
             _check_if_match(ctx, et, keys, headers)
             payload = _json_body(body)
             store.update(ctx.conn, et, keys, payload, merge=(method != "PUT"), user=ctx.user)
+            warnings = sap_messages.after_write(ctx.conn, et, keys)
             etag = etag_for(et, store.get(ctx.conn, et, keys))
-            return Response(204, headers={"ETag": etag} if etag else {},
-                            body=b"", content_type=None)
+            response = Response(204, headers={"ETag": etag} if etag else {},
+                                body=b"", content_type=None)
+            return _with_messages(response, warnings)
         if method == "DELETE":
             _check_if_match(ctx, et, keys, headers)
             store.delete(ctx.conn, et, keys)
@@ -733,9 +735,26 @@ def _json_body(body: bytes) -> dict:
     return payload
 
 
+def _with_messages(response: Response, warnings: List[dict]) -> Response:
+    """Attach warnings to a response without changing its status."""
+    header = sap_messages.to_header(warnings)
+    if header:
+        response.headers["sap-message"] = header
+    return response
+
+
 def _create(ctx, svc, et, set_name, opts, body, parent_keys=None) -> Response:
     payload = _json_body(body)
     keys = store.insert(ctx.conn, et, payload, user=ctx.user, parent_keys=parent_keys)
+    warnings = list(sap_messages.after_write(ctx.conn, et, keys))
+    for nav in et.navs:
+        if nav.multiplicity != "*" or nav.name not in payload:
+            continue
+        child = ENTITY_TYPES[nav.target]
+        parent = store.get(ctx.conn, et, keys)
+        for kid in store.children(ctx.conn, parent, et, nav):
+            warnings.extend(sap_messages.after_write(
+                ctx.conn, child, {p.name: kid[p.name] for p in child.keys}))
     row = store.get(ctx.conn, et, keys)
     expand = _parse_expand(opts.get("$expand", ""), et, svc.version) if opts.get("$expand") else {}
     entity = _render(ctx, row, et, svc, None, expand)
@@ -745,9 +764,15 @@ def _create(ctx, svc, et, set_name, opts, body, parent_keys=None) -> Response:
         response_headers = {"Location": location, "OData-Version": "4.0"}
         if etag:
             response_headers["ETag"] = etag
-        return Response(201, headers=response_headers, body=odata4.entity_envelope(
-            entity, _context_for(ctx, svc, set_name, opts, single=True)))
+        if warnings:
+            # V4 services carry the same messages on the entity itself
+            entity["SAP__Messages"] = [
+                {k: v for k, v in m.items() if k != "details"} for m in warnings]
+        return _with_messages(Response(
+            201, headers=response_headers, body=odata4.entity_envelope(
+                entity, _context_for(ctx, svc, set_name, opts, single=True))), warnings)
     response_headers = {"Location": location, "DataServiceVersion": "2.0"}
     if etag:
         response_headers["ETag"] = etag
-    return Response(201, body=entity_envelope(entity), headers=response_headers)
+    return _with_messages(
+        Response(201, body=entity_envelope(entity), headers=response_headers), warnings)

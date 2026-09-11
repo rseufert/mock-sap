@@ -273,6 +273,41 @@ memory, and a SAML assertion is read for its `NameID` and otherwise believed - n
 signature is checked, no issuer is verified. It exists so a client can exercise
 fetch, use, expire, refresh and retry, not to stand in for an authorization server.
 
+## Warnings that do not fail the request
+
+SAP answers are not binary: a request can succeed and still carry messages. The
+mock puts them in the `sap-message` header, and on the V4 services in a
+`SAP__Messages` collection on the entity, which is where SAPUI5's message popover
+reads them from.
+
+```http
+HTTP/1.1 201 Created
+sap-message: {"code":"V1/302","message":"Requested delivery date 2020-01-01 is in the
+              past; it was moved to 2026-09-11","severity":"warning",
+              "target":"RequestedDeliveryDate","numericSeverity":3,"details":[]}
+```
+
+Three rules produce warnings from the data itself, so a client can be tested
+against messages that arise rather than only injected ones:
+
+| Situation | Message |
+| --- | --- |
+| a requested delivery date in the past | the order is rescheduled to today and the move is reported |
+| a sold-to party blocked centrally | the block is reported |
+| an item whose material is flagged for deletion | the flag is reported |
+
+Any warning can also be injected, which is what an integration test usually wants:
+
+```bash
+curl -X POST http://127.0.0.1:8000/_mock/faults -H 'Content-Type: application/json' \
+  -d '{"match":"A_SalesOrder","method":"GET","message":"Credit limit exceeded","count":1}'
+```
+
+A rule with a `message` and no `status` warns without failing; a rule with a
+`status` fails, and a failure belongs in the error body rather than a warning
+header. The message classes and numbers are plausible rather than authentic - what
+a client depends on is the shape, the severity and the target.
+
 ## Simulating a bad day
 
 Per request, with a header or a query parameter:
@@ -375,11 +410,11 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-103 tests, every one of them over real HTTP against a running mock, split by
+114 tests, every one of them over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
-`test_oauth`, `test_operations` and `test_auth`, over the shared harness in
-`tests/support.py`.
+`test_oauth`, `test_messages`, `test_operations` and `test_auth`, over the shared
+harness in `tests/support.py`.
 
 CI runs them on Python 3.8-3.13 across Linux, macOS and Windows, and additionally
 checks that `examples/demo.sh`, the packaged wheel and the Docker image still work,
@@ -423,6 +458,7 @@ mocksap/service.py    OData request dispatcher
 mocksap/batch.py      $batch multipart and atomic changesets
 mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
+mocksap/messages.py   sap-message warnings, and the rules that produce them
 mocksap/oauth.py      the token store: grants, bearer validation, refresh
 mocksap/server.py     HTTP front end, CSRF, auth, fault injection, /_mock API
 
@@ -451,7 +487,6 @@ What would extend the mock further, each with an issue sketching the work:
 - [#12 More IDoc types: `INVOIC02` and `DELVRY07`](https://github.com/rseufert/mock-sap/issues/12)
 - [#14 `$apply` aggregations](https://github.com/rseufert/mock-sap/issues/14)
 - [#15 Delta tokens](https://github.com/rseufert/mock-sap/issues/15)
-- [#16 `sap-message` warnings that do not fail the request](https://github.com/rseufert/mock-sap/issues/16) - a good first issue
 - [#17 CDS and UI annotations for Fiori elements](https://github.com/rseufert/mock-sap/issues/17)
 
 Open an issue if you need something else.
