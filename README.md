@@ -538,14 +538,20 @@ httpd.shutdown()
 
 `examples/client.py` is a dependency-free client showing the token/cookie flow.
 
-For a fuller example, [mock-edi](https://github.com/rseufert/mock-edi) carries
-[`examples/po_bridge.py`](https://github.com/rseufert/mock-edi/blob/main/examples/po_bridge.py),
-a small integration that reads a purchase order from
-`API_PURCHASEORDER_PROCESS_SRV`, sends it to a supplier as an X12 850, and posts
-the supplier's 855 back here as an `ORDRSP` IDoc. Its tests use this mock's fault
-rules to take the IDoc endpoint down mid-run and prove the confirmation is not
-lost. [Testing an SAP-to-EDI integration without SAP or a trading partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration)
-walks through it.
+Two fuller examples use this mock together with
+[mock-edi](https://github.com/rseufert/mock-edi), a mock EDI trading partner:
+
+- [`examples/invoice_check.py`](examples/invoice_check.py) checks a supplier's
+  X12 invoices against the purchase order in `API_PURCHASEORDER_PROCESS_SRV` and
+  the supplier's ship notice, and posts the ones that match here as `INVOIC`
+  IDocs. [`examples/test_invoice_check.py`](examples/test_invoice_check.py) covers
+  a clean invoice, a short shipment, a price disagreement and a duplicate invoice.
+- mock-edi's [`examples/po_bridge.py`](https://github.com/rseufert/mock-edi/blob/main/examples/po_bridge.py)
+  sends purchase orders from here to the supplier as 850s and posts the 855
+  confirmations back as `ORDRSP` IDocs, and its tests use this mock's fault rules
+  to take the IDoc endpoint down mid-run. [Testing an SAP-to-EDI integration
+  without SAP or a trading partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration)
+  walks through it.
 
 ## Adding entity sets
 
@@ -673,3 +679,4 @@ acknowledgment, order response, ship notice and invoice a real one sends, and
 misbehaves on demand. An IDoc `ORDERS05` and an X12 850 are the same business
 document, so the two mocks make a reasonable pair of ends for testing the
 middleware between SAP and a trading partner.
+[`examples/invoice_check.py`](examples/invoice_check.py) is one.
