@@ -8,7 +8,18 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **An example integration, tested against mock-sap and mock-edi.**
+  `examples/invoice_check.py` verifies a supplier's EDI invoices before posting
+  them into SAP as `INVOIC` IDocs: prices against the purchase order, quantities
+  against the supplier's ship notice, the total against its lines, and the
+  invoice number against what has already been posted.
+  `examples/test_invoice_check.py` runs it against
+  [mock-edi](https://github.com/rseufert/mock-edi) as the supplier: a clean
+  invoice, a short shipment billed as shipped, a price the supplier disagrees
+  with, and the same invoice sent twice. CI runs it with the other documented
+  examples.
 
 ## [0.9.1] - 2026-09-11
 

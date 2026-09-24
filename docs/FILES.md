@@ -80,6 +80,8 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | --- | --- |
 | `demo.sh` | A guided tour of every endpoint in curl - catalog, metadata, filters, expand, CSRF, deep insert, BAPI over JSON and SOAP, IDoc out and back in, fault injection, request log. CI runs it on every push so the documented commands cannot rot. |
 | `client.py` | A dependency-free client showing the flow a real SAP OData client needs: fetch a CSRF token, keep the session cookie, read with query options, write a deep insert. |
+| `invoice_check.py` | An example of the code the mock exists to test: accounts-payable middleware that checks a supplier's X12 810 invoices against the purchase order and the 856 ship notice, and posts the ones that match into SAP as `INVOIC` IDocs. Uses [mock-edi](https://github.com/rseufert/mock-edi) as the supplier. |
+| `test_invoice_check.py` | Integration tests for `invoice_check.py` against both mocks: a clean invoice, a short shipment billed as shipped, a price disagreement, and a duplicate invoice that must be posted once. |
 
 ## `tools/`
 
