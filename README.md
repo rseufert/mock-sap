@@ -538,6 +538,15 @@ httpd.shutdown()
 
 `examples/client.py` is a dependency-free client showing the token/cookie flow.
 
+For a fuller example, [mock-edi](https://github.com/rseufert/mock-edi) carries
+[`examples/po_bridge.py`](https://github.com/rseufert/mock-edi/blob/main/examples/po_bridge.py),
+a small integration that reads a purchase order from
+`API_PURCHASEORDER_PROCESS_SRV`, sends it to a supplier as an X12 850, and posts
+the supplier's 855 back here as an `ORDRSP` IDoc. Its tests use this mock's fault
+rules to take the IDoc endpoint down mid-run and prove the confirmation is not
+lost. [Testing an SAP-to-EDI integration without SAP or a trading partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration)
+walks through it.
+
 ## Adding entity sets
 
 Everything is generated from the declarations in
@@ -655,3 +664,12 @@ on the project and what the code values, and [CHANGELOG.md](CHANGELOG.md) record
 what each release changed. Adding an entity set is usually a single declaration in
 `mocksap/schema.py`; everything else - tables, `$metadata`, payload shapes - follows
 from it.
+
+## See also
+
+[mock-edi](https://github.com/rseufert/mock-edi) is the same idea for EDI: a mock
+trading partner that answers an X12 850 or EDIFACT `ORDERS` with the
+acknowledgment, order response, ship notice and invoice a real one sends, and
+misbehaves on demand. An IDoc `ORDERS05` and an X12 850 are the same business
+document, so the two mocks make a reasonable pair of ends for testing the
+middleware between SAP and a trading partner.
