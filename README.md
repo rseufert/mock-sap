@@ -459,6 +459,12 @@ that user in `CreatedByUser`. `--token-ttl 60` makes tokens expire quickly so a
 client's refresh path can actually be exercised, `POST /sap/bc/sec/oauth2/revoke`
 ends one early, and `GET /_mock/tokens` shows what is outstanding.
 
+`expires_in` means two different things in the two places it appears, deliberately.
+In a token response it is the lifetime the token was *issued* with, as RFC 6749
+defines it, so `--token-ttl 60` always answers `60` no matter how long the mock
+took to reply. In `GET /_mock/tokens` it is the seconds that token has *left*,
+counting down, which is what a listing of live tokens is for.
+
 **None of this is cryptography.** Tokens are opaque strings the mock remembers in
 memory, and a SAML assertion is read for its `NameID` and otherwise believed - no
 signature is checked, no issuer is verified. It exists so a client can exercise

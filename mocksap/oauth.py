@@ -63,15 +63,28 @@ class Token:
         return _dt.datetime.utcnow() >= self.expires_at
 
     @property
+    def lifetime(self) -> int:
+        """The seconds this token was issued for.
+
+        RFC 6749 defines a token response's ``expires_in`` as the lifetime of
+        the token, which is a property of the token and not of the clock: a
+        freshly issued one reports the whole of it. Deriving it from
+        ``issued_at`` reports that exactly, however long the server then spends
+        writing the response - where reading the clock again shortens it, and
+        a rounded value can be short by a whole second.
+        """
+        return max(0, int(round((self.expires_at - self.issued_at).total_seconds())))
+
+    @property
     def expires_in(self) -> int:
-        # rounded, not truncated: a 3600s token should not report 3599
+        """The seconds this token has left, which is what a listing wants."""
         return max(0, int(round((self.expires_at - _dt.datetime.utcnow()).total_seconds())))
 
     def response(self) -> dict:
         return {
             "access_token": self.value,
             "token_type": "Bearer",
-            "expires_in": self.expires_in,
+            "expires_in": self.lifetime,
             "scope": self.scope,
             "refresh_token": self.refresh_value,
         }
