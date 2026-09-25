@@ -8,7 +8,19 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A token response reported the lifetime left rather than the lifetime issued.**
+  `expires_in` was computed from the clock each time it was read, so the value in
+  a token response was short by however long the mock spent building it - and
+  because it is rounded, half a second was enough to answer `3599` for an hour or
+  `0` for a one-second token. RFC 6749 defines a token response's `expires_in` as
+  the lifetime of the token, which is a property of the token and not of the
+  clock, so it is now derived from when the token was issued. `GET /_mock/tokens`
+  still counts down, because remaining seconds are what a listing of live tokens
+  is for. Found while hunting the flake that turned out to be [#49]; two tests
+  asserted the exact value and would have failed on a slow enough response.
+  ([#51])
 
 ## [0.11.1] - 2026-09-25
 
@@ -376,3 +388,4 @@ First release.
 [#45]: https://github.com/rseufert/mock-sap/issues/45
 [#46]: https://github.com/rseufert/mock-sap/issues/46
 [#49]: https://github.com/rseufert/mock-sap/issues/49
+[#51]: https://github.com/rseufert/mock-sap/issues/51

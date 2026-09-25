@@ -4,6 +4,7 @@ import time
 import unittest
 from urllib.parse import urlencode
 
+from mocksap import oauth as oauth_module
 from support import MockServerCase, SRV
 
 TOKEN_URL = "/sap/bc/sec/oauth2/token"
@@ -197,6 +198,44 @@ class TestBearerValidation(OAuthCase):
 
 class TestExpiryAndRefresh(MockServerCase):
     config_kwargs = {"oauth": "SAP_CLIENT:s3cret", "csrf": False, "token_ttl": 1}
+
+    def test_the_response_reports_the_lifetime_however_slow_the_server_was(self):
+        """A token endpoint reports the lifetime it issued, not what is left.
+
+        RFC 6749's expires_in is a property of the token. Reading the clock
+        again to build the response shortens it by however long the server
+        took, and because the value is rounded a delay over half a second was
+        enough to report 0 for a one-second token and 3599 for an hour. The
+        delay cannot be injected over HTTP, so this asks the token directly.
+        """
+        token = oauth_module.Token("a", "r", "SAP_CLIENT", "MOCKUSER", "", 1,
+                                   "client_credentials")
+        time.sleep(0.6)
+        self.assertEqual(token.response()["expires_in"], 1,
+                         "the response says what the token was issued for")
+        self.assertEqual(token.describe()["expires_in"], 0,
+                         "the listing says what is left of it")
+
+        hour = oauth_module.Token("a", "r", "SAP_CLIENT", "MOCKUSER", "", 3600,
+                                  "client_credentials")
+        time.sleep(0.6)
+        self.assertEqual(hour.response()["expires_in"], 3600)
+        self.assertEqual(hour.describe()["expires_in"], 3599)
+
+    def test_the_listing_counts_down_where_the_response_does_not(self):
+        first = self.request(
+            "POST", TOKEN_URL, body=urlencode({"grant_type": "client_credentials",
+                                               "client_id": "SAP_CLIENT",
+                                               "client_secret": "s3cret"}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"})[2]
+        self.assertEqual(first["expires_in"], 1, "issued for a second")
+
+        time.sleep(1.2)
+        _, _, listing = self.get("/_mock/tokens")
+        record = [r for r in listing["results"]
+                  if first["access_token"].startswith(r["access_token"][:8])][0]
+        self.assertEqual(record["expires_in"], 0, "and a second later, none left")
+        self.assertTrue(record["expired"])
 
     def test_expiry_then_refresh(self):
         form = urlencode({"grant_type": "client_credentials",
