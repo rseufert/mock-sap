@@ -8,6 +8,14 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.11.1] - 2026-09-25
+
+One fix, and it is worth reading if you use delta: a delta read could answer that
+nothing had changed when something had, and never mention it again. Every release
+with delta support has had this.
+
 ### Fixed
 
 - **A delta read lost a change made in the same millisecond as the token.**
@@ -333,7 +341,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/rseufert/mock-sap/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/rseufert/mock-sap/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rseufert/mock-sap/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/rseufert/mock-sap/compare/v0.9.1...v0.9.2
