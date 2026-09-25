@@ -30,7 +30,7 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/rseufert/mock-sap"
+Homepage = "https://rickseufert.com/#projects"
 Repository = "https://github.com/rseufert/mock-sap"
 Issues = "https://github.com/rseufert/mock-sap/issues"
 Changelog = "https://github.com/rseufert/mock-sap/blob/main/CHANGELOG.md"
