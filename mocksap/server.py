@@ -112,6 +112,7 @@ class MockSap:
             self.oauth = oauth.TokenStore(client_id, client_secret,
                                           config.token_ttl, config.user)
         self.faults = Faults()
+        self.idoc_posting = idoc.PostingRules()
         self.started = _dt.datetime.utcnow()
         self.rnd = random.Random(config.seed_value)
 
@@ -541,7 +542,8 @@ class Handler(BaseHTTPRequestHandler):
             wants_xml = "xml" in (headers.get("content-type", "") or "").lower()
         if rest in ("", "idoc_xml"):
             if method == "POST":
-                receipt = idoc.receive(ctx, headers.get("content-type", ""), body)
+                receipt = idoc.receive(ctx, headers.get("content-type", ""), body,
+                                       self.mock.idoc_posting)
                 if wants_xml:
                     return Response(201, body=idoc.receipt_xml(receipt),
                                     content_type="text/xml;charset=utf-8")
@@ -625,6 +627,7 @@ class Handler(BaseHTTPRequestHandler):
                 int(payload.get("orders", 25)), int(payload.get("purchaseOrders", 12)))
             mock.tokens.clear()
             mock.faults.clear()
+            mock.idoc_posting.clear()
             return Response(body={"reset": True, "counts": counts})
         if rest == "requests":
             limit = int(opts.get("limit", 25))
@@ -658,6 +661,17 @@ class Handler(BaseHTTPRequestHandler):
             if method == "DELETE":
                 return Response(body={"cleared": mock.faults.clear()})
             raise SapError("Method %s is not allowed on /_mock/faults" % method, 405)
+        if rest == "idoc-posting":
+            if method == "GET":
+                return Response(body={
+                    "results": mock.idoc_posting.rules,
+                    "statuses": {s: idoc.STATUS_TEXT[s] for s in idoc.INBOUND_STATUSES}})
+            if method == "POST":
+                return Response(201, body=mock.idoc_posting.add(payload))
+            if method == "DELETE":
+                return Response(body={"cleared": mock.idoc_posting.clear()})
+            raise SapError(
+                "Method %s is not allowed on /_mock/idoc-posting" % method, 405)
         raise SapError("Unknown mock endpoint '%s'" % rest, 404)
 
 
@@ -687,7 +701,8 @@ code{background:#f3f4f6;padding:.1rem .3rem;border-radius:3px}</style>
     <code>PUT /sap/bc/idoc/&lt;DOCNUM&gt;/status</code> - set its status</li>
 <li><code>GET /_mock/health</code>, <code>/_mock/state</code>, <code>/_mock/services</code>,
     <code>/_mock/requests</code>, <code>/_mock/rfc-log</code>, <code>/_mock/idocs</code>,
-    <code>/_mock/faults</code>, <code>POST /_mock/reset</code></li>
+    <code>/_mock/faults</code>, <code>/_mock/idoc-posting</code>,
+    <code>POST /_mock/reset</code></li>
 </ul>""" % (SYSTEM_ID, SYSTEM_ID, rows, functions)
 
 

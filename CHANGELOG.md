@@ -8,7 +8,29 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **An inbound IDoc can be accepted and then fail to post.** Every failure this
+  mock could simulate was at the transport level - an HTTP status and a message.
+  `POST /_mock/idoc-posting` sets what the application does with an inbound IDoc
+  instead: status `51` (application document not posted), `56` or `68`, filtered
+  by `mestyp`/`idoctyp` and optionally spent after `count` IDocs. The HTTP status
+  stays `201`, because the IDoc *was* received and a docnum *was* issued; the
+  failure is in the status record, which is where a real client has to look for
+  it. A `DELVRY07` that does not post leaves the order's delivery status where it
+  was and creates no delivery - a failed posting does nothing, which is the whole
+  difference between `53` and `51`. `POST /_mock/reset` clears the rules.
+  ([#45](https://github.com/rseufert/mock-sap/issues/45))
+
+### Fixed
+
+- **`examples/invoice_check.py` treated an accepted IDoc as a posted invoice.**
+  It read `DOCNUM` from the receipt and reported `posted` without looking at
+  `STATUS`, so an invoice SAP declined to post was booked as paid-ready - and
+  its number was added to the posted set, which would have made the resend after
+  someone opened the posting period look like a duplicate. It now requires
+  status `53`, and reports `not posted` with the status record's message
+  otherwise. Found by the feature above, which is the whole argument for it.
 
 ## [0.9.2] - 2026-09-25
 
