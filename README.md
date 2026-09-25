@@ -549,9 +549,10 @@ Two fuller examples use this mock together with
 - mock-edi's [`examples/po_bridge.py`](https://github.com/rseufert/mock-edi/blob/main/examples/po_bridge.py)
   sends purchase orders from here to the supplier as 850s and posts the 855
   confirmations back as `ORDRSP` IDocs, and its tests use this mock's fault rules
-  to take the IDoc endpoint down mid-run. [Testing an SAP-to-EDI integration
-  without SAP or a trading partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration)
-  walks through it.
+  to take the IDoc endpoint down mid-run.
+
+Both are walked through, test by test, in
+[Testing an SAP-to-EDI Integration Without SAP or a Trading Partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration).
 
 ## Adding entity sets
 
@@ -680,3 +681,8 @@ misbehaves on demand. An IDoc `ORDERS05` and an X12 850 are the same business
 document, so the two mocks make a reasonable pair of ends for testing the
 middleware between SAP and a trading partner.
 [`examples/invoice_check.py`](examples/invoice_check.py) is one.
+
+[Testing an SAP-to-EDI Integration Without SAP or a Trading Partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration)
+uses the two mocks together: purchase orders out and confirmations in, then
+invoices checked against what was ordered and shipped, with the failure modes
+each test exercises.
