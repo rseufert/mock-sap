@@ -7,6 +7,7 @@ and can generate outbound ORDERS05 XML from a stored sales order.
 from __future__ import annotations
 
 import datetime as _dt
+import threading
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
@@ -27,6 +28,68 @@ STATUS_TEXT = {
     "64": "IDoc ready to be transferred to application",
     "68": "Error - no further processing",
 }
+
+# What posting an inbound IDoc can end in. The rest of STATUS_TEXT describes an
+# outbound IDoc on its way to a port, which is not an outcome of posting one.
+INBOUND_STATUSES = ("53", "51", "56", "68")
+
+
+class PostingRules:
+    """What the application does with an inbound IDoc, driven through
+    ``/_mock/idoc-posting``.
+
+    Receiving an IDoc and posting it are two different events, and SAP reports
+    them separately: the port answers, and then the application either posts
+    the document or does not. Without this, every IDoc this mock receives
+    posts, so the failure that costs the most -- accepted, never posted, nobody
+    told -- is the one failure a client could not be tested against.
+    """
+
+    def __init__(self):
+        self.rules: List[dict] = []
+        self._lock = threading.Lock()
+        self._next_id = 1
+
+    def add(self, rule: dict) -> dict:
+        status = str(rule.get("status") or "51")
+        if status not in INBOUND_STATUSES:
+            raise SapError(
+                "Posting an inbound IDoc cannot end in status %s; this mock "
+                "offers %s" % (status, ", ".join(
+                    "%s (%s)" % (s, STATUS_TEXT[s]) for s in INBOUND_STATUSES)), 400)
+        with self._lock:
+            stored = {
+                "id": self._next_id,
+                "mestyp": str(rule.get("mestyp") or "").upper(),
+                "idoctyp": str(rule.get("idoctyp") or "").upper(),
+                "status": status,
+                "message": str(rule.get("message") or rule.get("text") or ""),
+                "count": int(rule.get("count") or 0),   # 0 = until cleared
+                "hits": 0,
+            }
+            self._next_id += 1
+            self.rules.append(stored)
+            return stored
+
+    def clear(self) -> int:
+        with self._lock:
+            count = len(self.rules)
+            self.rules = []
+            return count
+
+    def match(self, mestyp: str, idoctyp: str) -> Optional[dict]:
+        """The first rule that applies, spent if it was only good for so many."""
+        with self._lock:
+            for rule in list(self.rules):
+                if rule["mestyp"] and rule["mestyp"] != (mestyp or "").upper():
+                    continue
+                if rule["idoctyp"] and rule["idoctyp"] != (idoctyp or "").upper():
+                    continue
+                rule["hits"] += 1
+                if rule["count"] and rule["hits"] >= rule["count"]:
+                    self.rules.remove(rule)
+                return rule
+        return None
 
 # EDI_DC40 flat-file layout (offset, length) for the fields we surface.
 _FLAT_FIELDS = {
@@ -139,21 +202,29 @@ def _apply_delivery(ctx, body: bytes) -> List[dict]:
     return applied
 
 
-def receive(ctx, content_type: str, body: bytes) -> dict:
-    """Store an inbound IDoc and return its status record."""
+def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
+    """Store an inbound IDoc and return its status record.
+
+    ``posting`` is an optional :class:`PostingRules`: the IDoc is received
+    either way -- that is what the receipt says -- but the application may
+    decline to post it, and then none of what posting it would have done
+    happens.
+    """
     if not body.strip():
         raise SapError("The IDoc payload is empty", 400)
     is_xml = "xml" in (content_type or "").lower() or body.lstrip()[:1] == b"<"
     info = parse_xml(body) if is_xml else parse_flat(body)
 
     docnum = db.next_number(ctx.conn, "IDOC", 16)
-    status = "53"
+    rule = posting.match(info.get("mestyp", ""), info.get("idoctyp", "")) if posting else None
+    status = rule["status"] if rule else "53"
+    status_text = (rule and rule["message"]) or STATUS_TEXT[status]
     now = _dt.datetime.utcnow().replace(microsecond=0)
     ctx.conn.execute(
         "INSERT INTO idoc(docnum,direction,idoctyp,mestyp,status,status_text,"
         "created_at,content_type,payload) VALUES(?,?,?,?,?,?,?,?,?)",
         (docnum, "2", info.get("idoctyp", ""), info.get("mestyp", ""), status,
-         STATUS_TEXT[status], now.isoformat(),
+         status_text, now.isoformat(),
          "xml" if is_xml else "flat", body.decode("utf-8", "replace")),
     )
     ctx.conn.commit()
@@ -162,7 +233,7 @@ def receive(ctx, content_type: str, body: bytes) -> dict:
         "IDOCTYP": info.get("idoctyp", ""),
         "MESTYP": info.get("mestyp", ""),
         "STATUS": status,
-        "STATUS_TEXT": STATUS_TEXT[status],
+        "STATUS_TEXT": status_text,
         "DIRECT": "2",
         "SEGMENTS": info.get("segments", 0),
         "CREDAT": now.strftime("%Y%m%d"),
@@ -170,8 +241,10 @@ def receive(ctx, content_type: str, body: bytes) -> dict:
         "MANDT": ctx.client,
     }
 
-    # a delivery is not just filed: posting it moves the order it came from
-    if is_xml and info.get("mestyp", "").upper().startswith("DELVRY"):
+    # A delivery is not just filed: posting it moves the order it came from.
+    # An IDoc that did not post has done nothing to the order, which is the
+    # whole difference between status 53 and status 51.
+    if status == "53" and is_xml and info.get("mestyp", "").upper().startswith("DELVRY"):
         applied = _apply_delivery(ctx, body)
         if applied:
             receipt["APPLIED"] = applied

@@ -83,6 +83,26 @@ class SupplierInvoices(unittest.TestCase):
         self.assertEqual(result["problems"], ["item 00010 billed at 12.50, ordered at 11.00"])
         self.assertEqual(self.invoice_idocs(), [])
 
+    def test_an_idoc_sap_would_not_post_is_not_treated_as_posted(self):
+        # SAP answers 201 with a docnum and then declines to post the invoice.
+        # Reading the docnum and stopping there books an invoice SAP rejected.
+        control(SAP, "POST", "/_mock/idoc-posting",
+                {"mestyp": "INVOIC", "status": "51",
+                 "message": "Posting period 08 2026 is not open"})
+        self.order()
+
+        [result] = self.check.run()
+        self.assertEqual(result["status"], "not posted")
+        self.assertIn("status 51", result["problems"][0])
+
+        # SAP's own record agrees, and the invoice is not marked as posted here,
+        # so the resend after someone opens the period is not a duplicate
+        [idoc] = self.invoice_idocs()
+        self.assertEqual(idoc["status"], "51")
+        self.assertEqual(self.check.posted, set())
+
+        control(SAP, "DELETE", "/_mock/idoc-posting")
+
     def test_duplicate_invoice_is_posted_once(self):
         # A supplier with a retry bug sends the same invoice again a second
         # later.  Release it now rather than sleeping.

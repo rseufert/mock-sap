@@ -8,6 +8,9 @@ is posted into SAP (as an inbound INVOIC IDoc) only if
     - its total adds up, and
     - it has not been posted before.
 
+An IDoc SAP accepted is not an invoice SAP posted, so the status record that
+comes back decides: only status 53 counts as posted.
+
 Anything else is blocked with the reasons, for a person to look at.
 
 The supplier is mock-edi (https://github.com/rseufert/mock-edi), which answers
@@ -186,7 +189,17 @@ class InvoiceCheck:
             else:
                 receipt = self.sap.request("POST", "/sap/bc/idoc",
                                            invoic_idoc(invoice), "application/xml")
-                self.posted.add(invoice["number"])
-                result.update(status="posted", idoc=receipt["DOCNUM"])
+                # A 201 means SAP took the IDoc, not that it posted the invoice.
+                # The status record says which, and only 53 is posted; treating
+                # the docnum as success books an invoice SAP rejected, and marks
+                # the number as posted so the resend looks like a duplicate.
+                if receipt.get("STATUS") == "53":
+                    self.posted.add(invoice["number"])
+                    result.update(status="posted", idoc=receipt["DOCNUM"])
+                else:
+                    result.update(status="not posted", idoc=receipt["DOCNUM"],
+                                  problems=["IDoc %s is in status %s: %s"
+                                            % (receipt["DOCNUM"], receipt.get("STATUS"),
+                                               receipt.get("STATUS_TEXT", ""))])
             results.append(result)
         return results

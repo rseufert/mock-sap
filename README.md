@@ -338,6 +338,39 @@ in `VGBEL`/`VGPOS`, so posting one moves that order's `OverallDeliveryStatus` to
 it did. If the delivery it announces is one the mock has never seen, the delivery
 is created too.
 
+### Accepted is not posted
+
+Receiving an IDoc and posting it are two events, and SAP reports them separately:
+the port answers, and then the application either posts the document or does not.
+By default every inbound IDoc posts, status `53`. Ask for something else:
+
+```bash
+curl -X POST http://127.0.0.1:8000/_mock/idoc-posting \
+  -H 'Content-Type: application/json' \
+  -d '{"mestyp":"INVOIC","status":"51","message":"Posting period 08 2026 is not open","count":1}'
+```
+
+| Status | Meaning |
+| --- | --- |
+| `53` | Application document posted - the default |
+| `51` | Application document not posted |
+| `56` | IDoc with errors added |
+| `68` | Error - no further processing |
+
+`mestyp` and `idoctyp` are optional filters, `count` spends the rule after that
+many IDocs, `GET` lists the rules and `DELETE` clears them, as does
+`POST /_mock/reset`.
+
+Two things about this are the point. **The HTTP status stays `201`**: the IDoc
+*was* received, a docnum *was* issued, and the failure is in the status record
+where a client has to go looking for it. And **a failed posting does nothing** -
+a `DELVRY07` that ends in `51` leaves the order's delivery status exactly where it
+was and creates no delivery, which is the entire difference between `53` and `51`.
+
+That combination is the expensive one. A `503` is loud and retryable; an IDoc that
+is accepted and never posts looks like success from the sending side, and nobody
+finds out until someone asks why the invoice was never paid.
+
 ### The documents an order turns into
 
 A sales order becomes a delivery, an invoice and the journal entry that invoice
@@ -497,6 +530,10 @@ curl -X DELETE http://127.0.0.1:8000/_mock/faults     # clear all rules
 
 Or globally, at startup: `--latency-ms 250 --error-rate 0.05`.
 
+Every one of these is a *transport* failure. For the application-level kind, where
+the response is a success and the payload says otherwise, see
+[Accepted is not posted](#accepted-is-not-posted).
+
 ## Inspecting what your client did
 
 Every request is recorded, which makes the mock useful as a contract check in CI:
@@ -505,6 +542,7 @@ Every request is recorded, which makes the mock useful as a contract check in CI
 curl "http://127.0.0.1:8000/_mock/requests?limit=10"   # method, path, query, status, duration
 curl  http://127.0.0.1:8000/_mock/rfc-log              # which BAPIs were called
 curl  http://127.0.0.1:8000/_mock/state                # row counts per entity
+curl  http://127.0.0.1:8000/_mock/idoc-posting         # how inbound IDocs will post
 curl -X POST http://127.0.0.1:8000/_mock/reset \
      -H 'Content-Type: application/json' -d '{"seed":7,"orders":50}'
 ```

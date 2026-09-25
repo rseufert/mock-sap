@@ -198,6 +198,142 @@ class TestInvoiceAndDelivery(MockServerCase):
         self.assertEqual(receipt["APPLIED"][0]["STATUS"], "")
         self.assertIn("does not exist", receipt["APPLIED"][0]["MESSAGE"])
 
+    # ----------------------------------------------------------------- posting
+
+    def posts_as(self, rule):
+        status, _, stored = self.request("POST", "/_mock/idoc-posting", body=rule)
+        self.assertEqual(status, 201)
+        self.addCleanup(self.request, "DELETE", "/_mock/idoc-posting")
+        return stored
+
+    def test_an_idoc_can_be_accepted_and_not_posted(self):
+        self.posts_as({"mestyp": "INVOIC", "status": "51",
+                       "message": "Posting period 08 2026 is not open", "count": 1})
+        headers = self.csrf_token()
+        invoice = (
+            '<?xml version="1.0" encoding="utf-8"?><INVOIC02><IDOC BEGIN="1">'
+            '<EDI_DC40 SEGMENT="1"><IDOCTYP>INVOIC02</IDOCTYP><MESTYP>INVOIC</MESTYP>'
+            "</EDI_DC40></IDOC></INVOIC02>")
+
+        status, _, receipt = self.request(
+            "POST", "/sap/bc/idoc", body=invoice,
+            headers=dict(headers, **{"Content-Type": "application/xml",
+                                     "Accept": "application/json"}))
+
+        # received is not posted: the port took it, the application refused it
+        self.assertEqual(status, 201, "the IDoc was received, so 201 stands")
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertEqual(receipt["STATUS_TEXT"], "Posting period 08 2026 is not open")
+        self.assertRegex(receipt["DOCNUM"], r"^\d{16}$")
+
+        # and it is readable afterwards, the way a failed IDoc is in WE02
+        _, _, record = self.get("/sap/bc/idoc/" + receipt["DOCNUM"])
+        self.assertEqual((record["status"], record["direction"]), ("51", "2"))
+        self.assertEqual(record["status_text"], "Posting period 08 2026 is not open")
+
+    def test_a_delivery_that_does_not_post_leaves_the_order_alone(self):
+        """The difference between 53 and 51 is what happened to the order."""
+        headers = self.csrf_token()
+        _, _, created = self.request("POST", SRV + "/A_SalesOrder", headers=headers, body={
+            "SalesOrderType": "OR", "SalesOrganization": "1710", "SoldToParty": "1000001",
+            "DistributionChannel": "10", "OrganizationDivision": "00",
+            "to_Item": [{"Material": "TG11", "RequestedQuantity": "4",
+                         "RequestedQuantityUnit": "PC", "NetAmount": "400"}]})
+        order = created["d"]["SalesOrder"]
+
+        # read the order's state from the service rather than assuming it
+        _, _, before = self.get(SRV + "/A_SalesOrder('%s')?$format=json" % order)
+        deliveries_before = self.get(
+            "/sap/opu/odata/sap/API_OUTBOUND_DELIVERY_SRV/A_OutbDeliveryHeader"
+            "?$format=json")[2]["d"]["results"]
+
+        self.posts_as({"mestyp": "DELVRY", "status": "51",
+                       "message": "Goods movement not possible for plant 1710"})
+        delivery = (
+            '<?xml version="1.0" encoding="utf-8"?><DELVRY07><IDOC BEGIN="1">'
+            '<EDI_DC40 SEGMENT="1"><IDOCTYP>DELVRY07</IDOCTYP><MESTYP>DELVRY</MESTYP>'
+            "</EDI_DC40>"
+            '<E1EDL20 SEGMENT="1"><VBELN>0080007788</VBELN>'
+            '<E1EDL24 SEGMENT="1"><POSNR>000010</POSNR><MATNR>TG11</MATNR>'
+            "<LFIMG>4.000</LFIMG><VGBEL>%s</VGBEL><VGPOS>000010</VGPOS></E1EDL24>"
+            "</E1EDL20></IDOC></DELVRY07>") % order
+
+        status, _, receipt = self.request(
+            "POST", "/sap/bc/idoc", body=delivery,
+            headers=dict(headers, **{"Content-Type": "application/xml",
+                                     "Accept": "application/json"}))
+        self.assertEqual(status, 201)
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertNotIn("APPLIED", receipt, "nothing was applied, so say nothing")
+
+        # the order is where it was: still not delivered, no delivery created
+        _, _, after = self.get(SRV + "/A_SalesOrder('%s')?$format=json" % order)
+        self.assertEqual(after["d"]["OverallDeliveryStatus"],
+                         before["d"]["OverallDeliveryStatus"])
+        self.assertEqual(after["d"]["OverallDeliveryStatus"], "A")
+        deliveries_after = self.get(
+            "/sap/opu/odata/sap/API_OUTBOUND_DELIVERY_SRV/A_OutbDeliveryHeader"
+            "?$format=json")[2]["d"]["results"]
+        self.assertEqual(len(deliveries_after), len(deliveries_before))
+
+    def test_a_rule_can_be_spent_leaving_the_retry_to_post(self):
+        self.posts_as({"mestyp": "ORDERS", "status": "51",
+                       "message": "Customer 1000001 is blocked for orders",
+                       "count": 1})
+        headers = dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                             "Accept": "application/json"})
+        order_idoc = (
+            '<?xml version="1.0" encoding="utf-8"?><ORDERS05><IDOC BEGIN="1">'
+            '<EDI_DC40 SEGMENT="1"><IDOCTYP>ORDERS05</IDOCTYP><MESTYP>ORDERS</MESTYP>'
+            "</EDI_DC40></IDOC></ORDERS05>")
+
+        first = self.request("POST", "/sap/bc/idoc", body=order_idoc, headers=headers)[2]
+        second = self.request("POST", "/sap/bc/idoc", body=order_idoc, headers=headers)[2]
+
+        self.assertEqual(first["STATUS"], "51")
+        self.assertEqual(second["STATUS"], "53", "the rule was good for one IDoc")
+        self.assertEqual(second["STATUS_TEXT"], "Application document posted")
+        self.assertNotEqual(first["DOCNUM"], second["DOCNUM"])
+
+    def test_a_rule_only_catches_the_message_type_it_names(self):
+        self.posts_as({"mestyp": "INVOIC", "status": "68"})
+        headers = dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                             "Accept": "application/json"})
+
+        def send(idoctyp, mestyp):
+            body = ('<?xml version="1.0" encoding="utf-8"?><%s><IDOC BEGIN="1">'
+                    '<EDI_DC40 SEGMENT="1"><IDOCTYP>%s</IDOCTYP><MESTYP>%s</MESTYP>'
+                    "</EDI_DC40></IDOC></%s>") % (idoctyp, idoctyp, mestyp, idoctyp)
+            return self.request("POST", "/sap/bc/idoc", body=body, headers=headers)[2]
+
+        self.assertEqual(send("INVOIC02", "INVOIC")["STATUS"], "68")
+        self.assertEqual(send("ORDERS05", "ORDERS")["STATUS"], "53")
+
+    def test_a_status_posting_cannot_end_in_is_refused(self):
+        # 12 is a dispatch status: an outbound IDoc on its way to a port.
+        status, _, body = self.request(
+            "POST", "/_mock/idoc-posting", body={"mestyp": "ORDERS", "status": "12"})
+        self.assertEqual(status, 400)
+        self.assertIn("cannot end in status 12", body["error"]["message"]["value"])
+
+        # and nothing was stored, so the next IDoc still posts
+        _, _, listing = self.get("/_mock/idoc-posting")
+        self.assertEqual(listing["results"], [])
+        self.assertEqual(sorted(listing["statuses"]), ["51", "53", "56", "68"])
+
+    def test_reset_clears_the_posting_rules(self):
+        self.request("POST", "/_mock/idoc-posting", body={"status": "51"})
+        self.request("POST", "/_mock/reset")
+
+        headers = dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                             "Accept": "application/json"})
+        _, _, receipt = self.request(
+            "POST", "/sap/bc/idoc", headers=headers,
+            body='<?xml version="1.0" encoding="utf-8"?><ORDERS05><IDOC BEGIN="1">'
+                 '<EDI_DC40 SEGMENT="1"><IDOCTYP>ORDERS05</IDOCTYP>'
+                 "<MESTYP>ORDERS</MESTYP></EDI_DC40></IDOC></ORDERS05>")
+        self.assertEqual(receipt["STATUS"], "53")
+
     def test_message_type_selection(self):
         order = self.an_order()
 
