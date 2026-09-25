@@ -113,6 +113,7 @@ class MockSap:
                                           config.token_ttl, config.user)
         self.faults = Faults()
         self.idoc_posting = idoc.PostingRules()
+        self.bapi_behaviour = bapi.BehaviourRules()
         self.started = _dt.datetime.utcnow()
         self.rnd = random.Random(config.seed_value)
 
@@ -511,7 +512,7 @@ class Handler(BaseHTTPRequestHandler):
             raise SapError("The request body is not valid JSON: %s" % exc, 400)
         if not isinstance(params, dict):
             raise SapError("The request body must be a JSON object of import parameters", 400)
-        result = bapi.call(ctx, name, params, "json")
+        result = bapi.call(ctx, name, params, "json", self.mock.bapi_behaviour)
         return Response(body=result)
 
     def _rfc_soap(self, ctx, method, path, body) -> Response:
@@ -523,7 +524,7 @@ class Handler(BaseHTTPRequestHandler):
             if resolved is None:
                 raise SapError("Function module %s does not exist" % name, 500,
                                code="RFC_ERROR_FUNCTION_NOT_FOUND")
-            result = bapi.call(ctx, resolved, params, "soap")
+            result = bapi.call(ctx, resolved, params, "soap", self.mock.bapi_behaviour)
         except SapError as err:
             return Response(500 if err.status >= 500 else err.status,
                             body=bapi.soap_fault(err),
@@ -628,6 +629,7 @@ class Handler(BaseHTTPRequestHandler):
             mock.tokens.clear()
             mock.faults.clear()
             mock.idoc_posting.clear()
+            mock.bapi_behaviour.clear()
             return Response(body={"reset": True, "counts": counts})
         if rest == "requests":
             limit = int(opts.get("limit", 25))
@@ -672,6 +674,16 @@ class Handler(BaseHTTPRequestHandler):
                 return Response(body={"cleared": mock.idoc_posting.clear()})
             raise SapError(
                 "Method %s is not allowed on /_mock/idoc-posting" % method, 405)
+        if rest == "bapi-behaviour":
+            if method == "GET":
+                return Response(body={"results": mock.bapi_behaviour.rules,
+                                      "types": bapi.MESSAGE_TYPES})
+            if method == "POST":
+                return Response(201, body=mock.bapi_behaviour.add(payload))
+            if method == "DELETE":
+                return Response(body={"cleared": mock.bapi_behaviour.clear()})
+            raise SapError(
+                "Method %s is not allowed on /_mock/bapi-behaviour" % method, 405)
         raise SapError("Unknown mock endpoint '%s'" % rest, 404)
 
 
@@ -702,6 +714,7 @@ code{background:#f3f4f6;padding:.1rem .3rem;border-radius:3px}</style>
 <li><code>GET /_mock/health</code>, <code>/_mock/state</code>, <code>/_mock/services</code>,
     <code>/_mock/requests</code>, <code>/_mock/rfc-log</code>, <code>/_mock/idocs</code>,
     <code>/_mock/faults</code>, <code>/_mock/idoc-posting</code>,
+    <code>/_mock/bapi-behaviour</code>,
     <code>POST /_mock/reset</code></li>
 </ul>""" % (SYSTEM_ID, SYSTEM_ID, rows, functions)
 
