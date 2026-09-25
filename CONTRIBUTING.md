@@ -135,10 +135,40 @@ no API token anywhere. Running the `Publish` workflow by hand publishes to
 TestPyPI instead. Add the release to [`CHANGELOG.md`](CHANGELOG.md) in the same
 commit as the version bump.
 
-One practical note: PyPI's index propagates per edge node, so an install
-immediately after a release can still fetch the previous version. Pin the exact
-version when verifying (`pip install mock-sap==0.8.0`) rather than trusting a
-plain upgrade.
+Verify the release by installing the exact version into a clean environment:
+
+```bash
+pip install --no-cache-dir "mock-sap==0.9.1"
+```
+
+Both parts of that matter, and they fix different problems that look the same
+while you are watching them.
+
+**Pin the version.** PyPI's index propagates per edge node, so an install
+immediately after a release can still be served the previous one. A plain
+`pip install --upgrade` will take it and report success.
+
+**Pass `--no-cache-dir`.** pip caches the index page it fetched earlier, so a
+virtualenv that has installed this package before - which is exactly the one
+you reach for to verify a release - keeps being told the new version does not
+exist:
+
+```
+ERROR: Could not find a version that satisfies the requirement mock-sap==0.9.1
+       (from versions: 0.9.0)
+```
+
+That is not propagation, and waiting will not fix it. `--no-cache-dir` forces
+a fresh index fetch, not merely a fresh download.
+
+To tell the two apart, ask PyPI directly:
+
+```bash
+curl -s https://pypi.org/simple/mock-sap/ | grep 0.9.1
+```
+
+If the files are listed and pip still disagrees, it is pip's cache. If they
+are not listed yet, it is propagation, and waiting is the right move.
 
 ## Licence
 
