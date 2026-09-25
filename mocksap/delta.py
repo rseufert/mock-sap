@@ -75,8 +75,19 @@ def wants_tracking(headers: Dict[str, str]) -> bool:
 
 
 def changed_since(et: EntityType, since: _dt.datetime) -> Tuple[str, List[Any]]:
+    """Rows changed at or after ``since``.
+
+    At or after, not after: change timestamps are millisecond-resolution,
+    because that is all `/Date(ms)/` can carry, so a change made in the same
+    millisecond as the token is indistinguishable from the token's own instant.
+    Comparing with ``>`` drops it, and nothing ever reports it again - the
+    client is told nothing changed. ``>=`` may hand back a change the client
+    has already seen, which costs it an idempotent write it must be able to do
+    anyway. Losing one costs it the row. This is also what deletions_since has
+    always done.
+    """
     prop = require_change_property(et)
-    return '"%s" > ?' % prop.name, [since.isoformat()]
+    return '"%s" >= ?' % prop.name, [since.isoformat()]
 
 
 def deletions_since(conn, et: EntityType, since: _dt.datetime) -> List[Dict[str, Any]]:

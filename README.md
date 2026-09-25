@@ -495,6 +495,15 @@ everything. Deletions are remembered in a table of their own, because a deleted 
 leaves nothing behind for a reader to find; `POST /_mock/reset` forgets them along
 with the rest.
 
+**A delta read is at-least-once, and so is SAP's.** Change timestamps carry
+milliseconds and nothing finer, because that is all `/Date(ms)/` can express, so a
+change made in the token's own millisecond cannot be told apart from the token's
+instant. This mock reports it again rather than risk dropping it: the token is
+taken before the rows are read, and the comparison is *at or after*, not after.
+A client may therefore see a change it has already applied, which costs it an
+idempotent write it has to be capable of anyway. The alternative costs it the row,
+silently - it is told nothing changed, and nothing tells it otherwise.
+
 ## Warnings that do not fail the request
 
 SAP answers are not binary: a request can succeed and still carry messages. The
