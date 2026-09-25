@@ -25,6 +25,10 @@ MIT licensed. SAP, S/4HANA, ABAP, NetWeaver, BAPI and IDoc are trademarks of SAP
 this project is not affiliated with, endorsed by, or connected to SAP SE, and imitates
 publicly documented wire formats for testing purposes only.
 
+By [Rick Seufert](https://rickseufert.com). The [projects page](https://rickseufert.com/#projects)
+has this mock, [mock-edi](https://github.com/rseufert/mock-edi) and the worked examples
+that use them together.
+
 ---
 
 ## Quick start
@@ -686,3 +690,6 @@ middleware between SAP and a trading partner.
 uses the two mocks together: purchase orders out and confirmations in, then
 invoices checked against what was ordered and shipped, with the failure modes
 each test exercises.
+
+[rickseufert.com](https://rickseufert.com/#projects) lists both mocks side by
+side, with the worked examples and how to run each one.
