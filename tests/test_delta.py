@@ -1,6 +1,9 @@
 """Delta handling: what changed since the last read, deletions included."""
+import datetime
+import time
 import unittest
 
+from mocksap import delta as delta_module
 from support import MockServerCase, SRV
 
 V4 = "/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001"
@@ -75,6 +78,12 @@ class TestDeltaV4(DeltaCase):
         headers = self.csrf_token()
         first = self.create(V4 + "/SalesOrder")
 
+        # Step off the boundary deliberately. A delta read is at-least-once: a
+        # change sharing the next token's millisecond is reported again rather
+        # than risk being lost, so without this the assertion below is a race
+        # against the clock - which is how it used to fail one run in seven.
+        time.sleep(0.01)
+
         _, _, body = self.get(self.relative(link))
         self.assertEqual([r["SalesOrder"] for r in body["value"]], [first])
         second_link = body["@odata.deltaLink"]
@@ -84,6 +93,53 @@ class TestDeltaV4(DeltaCase):
         _, _, body = self.get(self.relative(second_link))
         self.assertEqual([r["SalesOrder"] for r in body["value"]], [second],
                          "the second read starts where the first one stopped")
+        self.assertNotIn(first, [r["SalesOrder"] for r in body["value"]],
+                         "and does not repeat what the first one reported")
+
+    def test_a_change_in_the_token_s_own_millisecond_is_not_lost(self):
+        """The boundary, asked for exactly rather than raced for.
+
+        Change timestamps carry milliseconds and nothing finer, so a change can
+        share the token's instant. Comparing with `>` dropped it and never
+        reported it again: the client was told nothing had changed. Here the
+        token is minted at the entity's own change instant, which is that case
+        every time instead of one run in seven.
+        """
+        order = self.create(V4 + "/SalesOrder")
+        _, _, entity = self.get(V4 + "/SalesOrder('%s')" % order)
+        changed_at = entity["LastChangeDate"]
+
+        # V4 hands the timestamp back as ISO; mint a token at that same instant
+        moment = datetime.datetime.strptime(
+            changed_at[:26].rstrip("Z"),
+            "%Y-%m-%dT%H:%M:%S.%f" if "." in changed_at else "%Y-%m-%dT%H:%M:%S")
+        token = delta_module.mint(moment)
+
+        status, _, body = self.get(V4 + "/SalesOrder?$deltatoken=" + token)
+        self.assertEqual(status, 200)
+        self.assertEqual([r["SalesOrder"] for r in body["value"]], [order],
+                         "a change at the token's own instant must still be reported, "
+                         "and nothing older than it should come with it")
+
+    def test_the_token_is_taken_before_the_rows_are_read(self):
+        """Otherwise a change between the query and the mint is never reported.
+
+        The link a tracked read hands back cannot be later than the moment the
+        read began, or the gap between them swallows changes silently.
+        """
+        before = datetime.datetime.utcnow()
+        link = self.first_read()
+        after = datetime.datetime.utcnow()
+
+        token = link.split("$deltatoken=")[1].split("&")[0]
+        minted = delta_module.read(token)
+        self.assertLessEqual(before.replace(microsecond=0), minted)
+        self.assertLessEqual(minted, after)
+
+        # the rows that read returned are not re-reported, so the token is not
+        # so early that every read repeats itself
+        _, _, body = self.get(self.relative(link))
+        self.assertEqual(body["value"], [])
 
     def test_a_filter_survives_in_the_link(self):
         status, _, body = self.get(

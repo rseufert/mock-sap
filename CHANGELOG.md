@@ -8,7 +8,23 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A delta read lost a change made in the same millisecond as the token.**
+  Change timestamps carry milliseconds and nothing finer - `/Date(ms)/` cannot
+  express more - and `changed_since` compared with `>`, so a change sharing the
+  token's instant was dropped and never reported again: the client was told
+  nothing had changed. Measured before the fix, 189 of 300 reads lost the change
+  they were asked for, every one of them with the row's timestamp exactly equal
+  to the token; after it, 0 of 300, with the boundary hit just as often. The
+  token was also minted *after* the rows were read, so a change landing in
+  between fell in the gap. It is now taken before the query, and the comparison
+  is `>=`, matching what `deletions_since` has always done. A delta read is
+  therefore at-least-once: a change at the boundary instant may be reported
+  twice, which costs a client an idempotent write it must be able to do anyway,
+  where losing one costs it the row. This is what surfaced as the intermittent
+  `test_the_link_moves_on` failure, about one suite run in seven.
+  ([#49])
 
 ## [0.11.0] - 2026-09-25
 
@@ -350,3 +366,4 @@ First release.
 [#37]: https://github.com/rseufert/mock-sap/pull/37
 [#45]: https://github.com/rseufert/mock-sap/issues/45
 [#46]: https://github.com/rseufert/mock-sap/issues/46
+[#49]: https://github.com/rseufert/mock-sap/issues/49
