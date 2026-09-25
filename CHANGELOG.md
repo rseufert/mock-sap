@@ -8,6 +8,14 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.10.0] - 2026-09-25
+
+Failure on demand, above the transport: an inbound IDoc the mock accepts and
+then declines to post. It found the bug it exists to find on the first try, in
+this package's own worked example.
+
 ### Added
 
 - **An inbound IDoc can be accepted and then fail to post.** Every failure this
@@ -20,7 +28,7 @@ says so where it does.
   it. A `DELVRY07` that does not post leaves the order's delivery status where it
   was and creates no delivery - a failed posting does nothing, which is the whole
   difference between `53` and `51`. `POST /_mock/reset` clears the rules.
-  ([#45](https://github.com/rseufert/mock-sap/issues/45))
+  ([#45])
 
 ### Fixed
 
@@ -288,7 +296,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/rseufert/mock-sap/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/rseufert/mock-sap/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/rseufert/mock-sap/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/rseufert/mock-sap/compare/v0.8.0...v0.9.0
@@ -317,3 +326,4 @@ First release.
 [#29]: https://github.com/rseufert/mock-sap/issues/29
 [#36]: https://github.com/rseufert/mock-sap/pull/36
 [#37]: https://github.com/rseufert/mock-sap/pull/37
+[#45]: https://github.com/rseufert/mock-sap/issues/45
