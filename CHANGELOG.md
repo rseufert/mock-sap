@@ -21,6 +21,13 @@ says so where it does.
   with, and the same invoice sent twice. CI runs it with the other documented
   examples.
 
+### Changed
+
+- The package's **Homepage** link on PyPI now points to
+  [rickseufert.com](https://rickseufert.com/#projects), which shows this mock,
+  its counterpart and the worked examples together. **Repository** still
+  points to GitHub.
+
 ## [0.9.1] - 2026-09-11
 
 Tooling only: the published package is unchanged from 0.9.0.
