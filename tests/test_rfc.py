@@ -79,6 +79,173 @@ class TestRfc(MockServerCase):
         self.assertEqual(status, 500)
         self.assertIn("Fault", raw.decode())
 
+class TestBapiBusinessErrors(MockServerCase):
+    """A valid call that fails for a business reason: 200, with E in RETURN."""
+
+    ORDER = {
+        "ORDER_HEADER_IN": {"DOC_TYPE": "OR", "SALES_ORG": "1710",
+                            "DISTR_CHAN": "10", "DIVISION": "00", "CURRENCY": "EUR"},
+        "ORDER_PARTNERS": [{"PARTN_ROLE": "AG", "PARTN_NUMB": "0001000001"}],
+        "ORDER_ITEMS_IN": [{"ITM_NUMBER": "000010", "MATERIAL": "TG11",
+                            "REQ_QTY": "10", "COND_VALUE": "5000.00"}],
+    }
+
+    def behaves(self, rule):
+        status, _, stored = self.request("POST", "/_mock/bapi-behaviour", body=rule)
+        self.assertEqual(status, 201, stored)
+        self.addCleanup(self.request, "DELETE", "/_mock/bapi-behaviour")
+        return stored
+
+    def order_count(self):
+        return self.get("/_mock/state")[2]["A_SalesOrder"]
+
+    def create(self, headers=None):
+        return self.request("POST", "/sap/bc/rfc/BAPI_SALESORDER_CREATEFROMDAT2",
+                            headers=headers or self.csrf_token(), body=self.ORDER)
+
+    def test_a_valid_order_can_fail_for_a_business_reason(self):
+        self.behaves({"function": "BAPI_SALESORDER_CREATEFROMDAT2", "type": "E",
+                      "id": "V1", "number": "849",
+                      "message": "Credit limit exceeded for customer 0000000001",
+                      "count": 1})
+        before = self.order_count()
+
+        status, _, body = self.create()
+
+        # the transport succeeded; the business did not
+        self.assertEqual(status, 200, "a business error is not a transport error")
+        [message] = body["RETURN"]
+        self.assertEqual((message["TYPE"], message["ID"], message["NUMBER"]),
+                         ("E", "V1", "849"))
+        self.assertEqual(message["MESSAGE"],
+                         "Credit limit exceeded for customer 0000000001")
+        self.assertNotIn("SALESDOCUMENT", body, "no document, so no number for one")
+
+        # counted from the mock's own state, not inferred from the answer above
+        self.assertEqual(self.order_count(), before, "nothing was created")
+
+    def test_the_document_the_failed_call_would_have_made_does_not_exist(self):
+        headers = self.csrf_token()
+        _, _, ok = self.create(headers)
+        created = ok["SALESDOCUMENT"]            # what a successful call returns
+
+        self.behaves({"function": "BAPI_SALESORDER_CREATEFROMDAT2", "type": "E",
+                      "message": "Material TG11 is blocked for sales"})
+        _, _, failed = self.create(headers)
+        self.assertEqual(failed["RETURN"][0]["TYPE"], "E")
+
+        # the number range did not move, so the next successful call takes the
+        # number the failed one would have had
+        self.request("DELETE", "/_mock/bapi-behaviour")
+        _, _, after = self.create(headers)
+        self.assertEqual(int(after["SALESDOCUMENT"]), int(created) + 1)
+
+    def test_a_business_error_over_soap_is_a_response_not_a_fault(self):
+        self.behaves({"function": "BAPI_MATERIAL_GET_DETAIL", "type": "E",
+                      "id": "M3", "number": "305",
+                      "message": "Material TG11 is not maintained in plant 1010"})
+        headers = self.csrf_token()
+        headers["Content-Type"] = "text/xml"
+        envelope = (
+            '<?xml version="1.0"?>'
+            '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">'
+            "<soapenv:Body>"
+            '<urn:MaterialGetDetail xmlns:urn="urn:sap-com:document:sap:soap:functions:mc-style">'
+            "<Material>TG11</Material></urn:MaterialGetDetail>"
+            "</soapenv:Body></soapenv:Envelope>")
+
+        status, _, raw = self.request(
+            "POST", "/sap/bc/srt/rfc/sap/materialgetdetail/100/materialgetdetail/binding",
+            body=envelope, headers=headers, raw=True)
+
+        self.assertEqual(status, 200)
+        payload = raw.decode()
+        self.assertNotIn("Fault", payload, "a business error is not a SOAP fault")
+        self.assertIn("MaterialGetDetailResponse", payload)
+        root = ET.fromstring(raw)
+        types = [e.text for e in root.iter() if e.tag.endswith("TYPE")]
+        messages = [e.text for e in root.iter() if e.tag.endswith("MESSAGE")]
+        self.assertEqual(types, ["E"])
+        self.assertEqual(messages, ["Material TG11 is not maintained in plant 1010"])
+
+    def test_a_warning_rides_along_with_a_call_that_worked(self):
+        # A client that treats any non-empty RETURN as failure has its own bug,
+        # and this is how you find out.
+        self.behaves({"function": "BAPI_SALESORDER_CREATEFROMDAT2", "type": "W",
+                      "id": "V4", "number": "233",
+                      "message": "Delivery date in the past, order accepted"})
+        before = self.order_count()
+
+        status, _, body = self.create()
+
+        self.assertEqual(status, 200)
+        self.assertRegex(body["SALESDOCUMENT"], r"^\d{10}$")
+        self.assertEqual(self.order_count(), before + 1, "the order was created")
+        types = [m["TYPE"] for m in body["RETURN"]]
+        self.assertEqual(types, ["S", "W"], "the success message, then the warning")
+
+        # and the order really is there
+        _, _, entity = self.get(
+            SRV + "/A_SalesOrder('%s')?$format=json" % body["SALESDOCUMENT"])
+        self.assertEqual(entity["d"]["SalesOrder"], body["SALESDOCUMENT"])
+
+    def test_a_rule_is_spent_after_its_count(self):
+        self.behaves({"function": "BAPI_SALESORDER_CREATEFROMDAT2", "type": "E",
+                      "message": "Posting period is not open", "count": 2})
+        headers = self.csrf_token()
+
+        first = self.create(headers)[2]
+        second = self.create(headers)[2]
+        third = self.create(headers)[2]
+
+        self.assertEqual(first["RETURN"][0]["TYPE"], "E")
+        self.assertEqual(second["RETURN"][0]["TYPE"], "E")
+        self.assertEqual(third["RETURN"][0]["TYPE"], "S", "the rule was good for two")
+        self.assertRegex(third["SALESDOCUMENT"], r"^\d{10}$")
+
+    def test_only_the_named_function_is_affected(self):
+        self.behaves({"function": "BAPI_PO_CREATE1", "type": "E",
+                      "message": "Vendor is blocked for purchasing"})
+
+        _, _, order = self.create()
+        self.assertEqual(order["RETURN"][0]["TYPE"], "S")
+
+    def test_a_function_with_no_return_table_is_refused(self):
+        # RFC_READ_TABLE is not a BAPI: a real one raises an ABAP exception.
+        status, _, body = self.request("POST", "/_mock/bapi-behaviour", body={
+            "function": "RFC_READ_TABLE", "type": "E", "message": "nope"})
+        self.assertEqual(status, 400)
+        self.assertIn("no RETURN table", body["error"]["message"]["value"])
+
+        status, _, body = self.request("POST", "/_mock/bapi-behaviour", body={
+            "function": "BAPI_NO_SUCH_THING", "type": "E", "message": "nope"})
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "RFC_ERROR_FUNCTION_NOT_FOUND")
+
+        status, _, body = self.request("POST", "/_mock/bapi-behaviour", body={
+            "function": "BAPI_PO_CREATE1", "type": "X", "message": "nope"})
+        self.assertEqual(status, 400)
+        self.assertIn("message type", body["error"]["message"]["value"])
+
+        status, _, body = self.request("POST", "/_mock/bapi-behaviour", body={
+            "function": "BAPI_PO_CREATE1", "type": "E"})
+        self.assertEqual(status, 400)
+        self.assertIn("Give the message", body["error"]["message"]["value"])
+
+        _, _, listing = self.get("/_mock/bapi-behaviour")
+        self.assertEqual(listing["results"], [], "no half-formed rule was kept")
+        self.assertEqual(sorted(listing["types"]), ["A", "E", "S", "W"])
+
+    def test_reset_clears_the_behaviour_rules(self):
+        self.request("POST", "/_mock/bapi-behaviour", body={
+            "function": "BAPI_SALESORDER_CREATEFROMDAT2", "type": "E",
+            "message": "Credit limit exceeded"})
+        self.request("POST", "/_mock/reset")
+
+        _, _, body = self.create()
+        self.assertEqual(body["RETURN"][0]["TYPE"], "S")
+
+
 class TestMasterDataReads(MockServerCase):
     def call(self, name, params):
         return self.request("POST", "/sap/bc/rfc/" + name, body=params,

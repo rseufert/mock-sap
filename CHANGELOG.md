@@ -8,7 +8,20 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **A BAPI can fail for a business reason.** The `E` rows the mock returned all
+  came from malformed input; a well-formed call could not be made to fail the way
+  production does. `POST /_mock/bapi-behaviour` sets what a function module
+  answers: `E` or `A` replaces the call, so no document is created and no number
+  is drawn from the range, and `W` or `S` rides along with a call that does its
+  work. The HTTP status stays `200` and SOAP returns a `<...Response>` envelope
+  rather than a fault, because a business error is not a transport error - which
+  is exactly the combination that gets a client to commit on a failure. Both
+  transports go through the same path, so both honour it. Function modules with
+  no `RETURN` table (`RFC_PING`, `STFC_CONNECTION`, `RFC_READ_TABLE`) are refused
+  with the reason, since a real one raises an ABAP exception instead.
+  ([#46])
 
 ## [0.10.0] - 2026-09-25
 
@@ -327,3 +340,4 @@ First release.
 [#36]: https://github.com/rseufert/mock-sap/pull/36
 [#37]: https://github.com/rseufert/mock-sap/pull/37
 [#45]: https://github.com/rseufert/mock-sap/issues/45
+[#46]: https://github.com/rseufert/mock-sap/issues/46

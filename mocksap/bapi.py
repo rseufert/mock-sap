@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+import threading
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
@@ -98,20 +99,28 @@ def _num(value, default=0.0) -> float:
 FUNCTIONS: Dict[str, dict] = {}
 
 
-def function(name: str, alias: str):
+def function(name: str, alias: str, bapiret: bool = True):
+    """Register a function module.
+
+    ``bapiret`` is False for the ones that are not BAPIs and so have no
+    ``RETURN`` table: a real `RFC_READ_TABLE` reports trouble by raising an
+    ABAP exception, not by filling a message table.
+    """
+
     def wrap(fn):
-        FUNCTIONS[name] = {"name": name, "alias": alias, "handler": fn}
+        FUNCTIONS[name] = {"name": name, "alias": alias, "handler": fn,
+                           "bapiret": bapiret}
         return fn
 
     return wrap
 
 
-@function("RFC_PING", "RfcPing")
+@function("RFC_PING", "RfcPing", bapiret=False)
 def _rfc_ping(ctx, params):
     return {}
 
 
-@function("STFC_CONNECTION", "StfcConnection")
+@function("STFC_CONNECTION", "StfcConnection", bapiret=False)
 def _stfc_connection(ctx, params):
     text = param(params, "REQUTEXT", "")
     return {
@@ -834,7 +843,7 @@ def _options_where(et, lines) -> tuple:
     return " ".join(sql), binds
 
 
-@function("RFC_READ_TABLE", "RfcReadTable")
+@function("RFC_READ_TABLE", "RfcReadTable", bapiret=False)
 def _rfc_read_table(ctx, params):
     requested = str(param(params, "QUERY_TABLE", "") or "").strip()
     if not requested:
@@ -920,14 +929,111 @@ def resolve(name: str) -> Optional[str]:
     return ALIASES.get(norm(name))
 
 
-def call(ctx, name: str, params: dict, protocol: str = "json") -> dict:
-    """Invoke a function module.  Raises SapError if it does not exist."""
+MESSAGE_TYPES = {
+    "E": "Error - the document was not created",
+    "A": "Abort - the call gave up",
+    "W": "Warning - the call worked and says something anyway",
+    "S": "Success - an extra message on a call that worked",
+}
+
+
+class BehaviourRules:
+    """What a function module answers, driven through ``/_mock/bapi-behaviour``.
+
+    A BAPI reports a business error by returning normally, with HTTP 200 and a
+    ``RETURN`` row of type ``E``: credit limit exceeded, posting period closed,
+    material blocked for sales. The obvious client reads the status code, sees
+    success, and commits. Nothing else in this mock can produce that
+    combination for a *valid* call -- the errors it raises by itself all come
+    from malformed input -- so a client that ignores ``RETURN`` could not be
+    caught by a test suite written against it.
+    """
+
+    def __init__(self):
+        self.rules: List[dict] = []
+        self._lock = threading.Lock()
+        self._next_id = 1
+
+    def add(self, rule: dict) -> dict:
+        name = str(rule.get("function") or rule.get("FUNCTION") or "")
+        resolved = resolve(name)
+        if resolved is None:
+            raise SapError(
+                "Function module %s does not exist in this mock" % (name.upper() or "?"),
+                400, code="RFC_ERROR_FUNCTION_NOT_FOUND")
+        if not FUNCTIONS[resolved]["bapiret"]:
+            raise SapError(
+                "%s has no RETURN table, so it cannot answer with a BAPIRET2 "
+                "message; a real one raises an ABAP exception instead. For a "
+                "failure on this function use the sap-mock-scenario header."
+                % resolved, 400)
+        msg_type = str(rule.get("type") or "E").upper()
+        if msg_type not in MESSAGE_TYPES:
+            raise SapError(
+                "A BAPIRET2 message type is one of %s, not %s"
+                % (", ".join(sorted(MESSAGE_TYPES)), msg_type), 400)
+        message = str(rule.get("message") or "")
+        if not message:
+            raise SapError(
+                "Give the message the %s row should carry; a business error "
+                "without its text is not worth returning" % msg_type, 400)
+        with self._lock:
+            stored = {
+                "id": self._next_id,
+                "function": resolved,
+                "type": msg_type,
+                "message": message,
+                "msg_id": str(rule.get("id") or rule.get("msg_id") or "SR"),
+                "number": str(rule.get("number") or "000"),
+                "count": int(rule.get("count") or 0),   # 0 = until cleared
+                "hits": 0,
+            }
+            self._next_id += 1
+            self.rules.append(stored)
+            return stored
+
+    def clear(self) -> int:
+        with self._lock:
+            count = len(self.rules)
+            self.rules = []
+            return count
+
+    def match(self, resolved: str) -> Optional[dict]:
+        with self._lock:
+            for rule in list(self.rules):
+                if rule["function"] != resolved:
+                    continue
+                rule["hits"] += 1
+                if rule["count"] and rule["hits"] >= rule["count"]:
+                    self.rules.remove(rule)
+                return rule
+        return None
+
+
+def call(ctx, name: str, params: dict, protocol: str = "json",
+         behaviour=None) -> dict:
+    """Invoke a function module.  Raises SapError if it does not exist.
+
+    ``behaviour`` is an optional :class:`BehaviourRules`. An ``E`` or ``A`` rule
+    answers instead of the handler, so nothing is created; a ``W`` or ``S`` rule
+    lets the call do its work and adds its message to what comes back.
+    """
     resolved = resolve(name)
     if resolved is None:
         raise SapError(
             "Function module %s does not exist (mock system %s)" % (name.upper(), SYSTEM_ID),
             404, code="RFC_ERROR_FUNCTION_NOT_FOUND")
-    result = FUNCTIONS[resolved]["handler"](ctx, params or {})
+    rule = behaviour.match(resolved) if behaviour else None
+    if rule and rule["type"] in ("E", "A"):
+        # The handler never runs, so no number is drawn and no row is written.
+        # This is a business error, not a transport one: the caller gets 200.
+        result = {"RETURN": [ret(rule["type"], rule["message"],
+                                rule["msg_id"], rule["number"])]}
+    else:
+        result = FUNCTIONS[resolved]["handler"](ctx, params or {})
+        if rule:
+            result.setdefault("RETURN", []).append(
+                ret(rule["type"], rule["message"], rule["msg_id"], rule["number"]))
     ctx.conn.execute(
         "INSERT INTO rfc_log(ts,function_name,protocol,request,response) VALUES(?,?,?,?,?)",
         (_dt.datetime.utcnow().isoformat(), resolved, protocol,

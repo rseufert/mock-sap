@@ -312,6 +312,37 @@ caller reaches SQL as text.
 SOAP uses the `urn:sap-com:document:sap:soap:functions:mc-style` namespace, returns
 `<…Response>` envelopes, and answers unknown functions with a SOAP fault.
 
+### A valid call that fails anyway
+
+The errors above come from malformed input. The ones production throws do not: a
+credit limit, a closed posting period, a material blocked for sales. They arrive
+as **HTTP 200 with `TYPE: "E"` in `RETURN`**, which is how an integration that
+checks the status code and commits comes to exist. Ask for one:
+
+```bash
+curl -X POST http://127.0.0.1:8000/_mock/bapi-behaviour \
+  -H 'Content-Type: application/json' \
+  -d '{"function":"BAPI_SALESORDER_CREATEFROMDAT2","type":"E","id":"V1","number":"849",
+       "message":"Credit limit exceeded for customer 0000000001","count":1}'
+```
+
+| Type | Effect |
+| --- | --- |
+| `E` | Error - the handler never runs, so no document and no number drawn |
+| `A` | Abort, the same way |
+| `W` | The call does its work and carries a warning as well |
+| `S` | The call does its work and carries an extra success message |
+
+The status stays `200` and SOAP returns a `<…Response>` envelope, not a fault - a
+business error is not a transport error. `W` and `S` are there because a client
+that treats any non-empty `RETURN` as failure has its own bug, and this is how you
+find out. `count` spends the rule, `GET` lists them, `DELETE` and
+`POST /_mock/reset` clear them.
+
+`RFC_PING`, `STFC_CONNECTION` and `RFC_READ_TABLE` are refused: they are not BAPIs
+and have no `RETURN` table, so a real one reports trouble by raising an ABAP
+exception. Use `sap-mock-scenario` for those.
+
 ## IDoc
 
 ```bash
@@ -532,7 +563,8 @@ Or globally, at startup: `--latency-ms 250 --error-rate 0.05`.
 
 Every one of these is a *transport* failure. For the application-level kind, where
 the response is a success and the payload says otherwise, see
-[Accepted is not posted](#accepted-is-not-posted).
+[A valid call that fails anyway](#a-valid-call-that-fails-anyway) for BAPIs and
+[Accepted is not posted](#accepted-is-not-posted) for IDocs.
 
 ## Inspecting what your client did
 
@@ -543,6 +575,7 @@ curl "http://127.0.0.1:8000/_mock/requests?limit=10"   # method, path, query, st
 curl  http://127.0.0.1:8000/_mock/rfc-log              # which BAPIs were called
 curl  http://127.0.0.1:8000/_mock/state                # row counts per entity
 curl  http://127.0.0.1:8000/_mock/idoc-posting         # how inbound IDocs will post
+curl  http://127.0.0.1:8000/_mock/bapi-behaviour       # what a BAPI will answer
 curl -X POST http://127.0.0.1:8000/_mock/reset \
      -H 'Content-Type: application/json' -d '{"seed":7,"orders":50}'
 ```
