@@ -8,6 +8,14 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.11.2] - 2026-09-25
+
+One fix, in what a token response says about its own lifetime. Nobody was being
+hurt by the old value, which was short by at most a second; it was simply not the
+number RFC 6749 asks for.
+
 ### Fixed
 
 - **A token response reported the lifetime left rather than the lifetime issued.**
@@ -353,7 +361,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/rseufert/mock-sap/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/rseufert/mock-sap/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/rseufert/mock-sap/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rseufert/mock-sap/compare/v0.9.2...v0.10.0
