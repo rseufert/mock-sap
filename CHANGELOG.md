@@ -8,6 +8,14 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.11.0] - 2026-09-25
+
+The other half of failure on demand: a BAPI that answers 200 and says no in the
+payload. With 0.10.0's IDoc statuses, both places this mock can lie to a client
+the way a real system does are now askable for.
+
 ### Added
 
 - **A BAPI can fail for a business reason.** The `E` rows the mock returned all
@@ -309,7 +317,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/rseufert/mock-sap/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rseufert/mock-sap/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/rseufert/mock-sap/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/rseufert/mock-sap/compare/v0.9.0...v0.9.1
