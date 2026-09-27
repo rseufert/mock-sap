@@ -41,6 +41,21 @@ says so where it does.
   `BLINE_DATE` and `PMTBLOCK` - so a line's due date follows from its terms
   rather than being supplied ready-made. ([#55])
 
+- **Supplier bank details, so the account to pay into comes from SAP.**
+  `A_BusinessPartnerBank` in `API_BUSINESS_PARTNER_SRV` and its V4 twin, reached
+  as `to_BusinessPartnerBank`, keyed by `BusinessPartner` + `BankIdentification`
+  and carrying `IBAN`, `SWIFTCode`, `BankCountryKey`, `BankNumber`,
+  `BankAccount`, `BankAccountHolderName` and `IBANValidityStartDate`. Without it
+  an integration keeps its own list of accounts, which is the shadow master data
+  that goes stale and pays the wrong one. **A mistyped IBAN is refused when it
+  is entered**, by ISO 13616's check digits rather than a length rule, on create
+  and on patch, and the seeded IBANs pass the same check a client's do. The seed
+  gives one supplier two accounts, because a client that pays whichever came
+  back first is right by luck until a supplier has two - and the suppliers
+  outside the IBAN countries carry a bank number and an account number and no
+  IBAN at all, because a US supplier is paid on a routing number and inventing a
+  US IBAN would be a shape no bank would take. ([#56])
+
 ## [0.11.2] - 2026-09-25
 
 One fix, in what a token response says about its own lifetime. Nobody was being
@@ -431,3 +446,4 @@ First release.
 [#51]: https://github.com/rseufert/mock-sap/issues/51
 [#54]: https://github.com/rseufert/mock-sap/issues/54
 [#55]: https://github.com/rseufert/mock-sap/issues/55
+[#56]: https://github.com/rseufert/mock-sap/issues/56

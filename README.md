@@ -85,6 +85,7 @@ bash examples/demo.sh
 | --- | --- |
 | Service catalog | `GET /sap/opu/odata/IWFND/CATALOGSERVICE;v=2/ServiceCollection` |
 | Business Partner | `/sap/opu/odata/sap/API_BUSINESS_PARTNER_SRV` |
+| Supplier bank details | `A_BusinessPartnerBank` in `API_BUSINESS_PARTNER_SRV` |
 | Product | `/sap/opu/odata/sap/API_PRODUCT_SRV` |
 | Sales Order | `/sap/opu/odata/sap/API_SALES_ORDER_SRV` |
 | Purchase Order | `/sap/opu/odata/sap/API_PURCHASEORDER_PROCESS_SRV` |
@@ -547,6 +548,35 @@ line for the customer side. The terms table is deliberately short - `0001` is
 payable at once, `NT30`/`NT45`/`NT60` are what they say - and a document that
 carries its own net payment days uses those instead.
 
+## Paying a supplier: the account on file
+
+A payment run needs the account to pay into, and if it cannot read it from SAP
+it keeps its own list somewhere else - the shadow master data that goes stale
+and pays the wrong account. `A_BusinessPartnerBank` puts it where it belongs:
+
+```bash
+curl "$BP_SRV/A_BusinessPartner('1000009')?\$expand=to_BusinessPartnerBank&\$format=json"
+```
+
+Keyed by `BusinessPartner` + `BankIdentification`, with `IBAN`, `SWIFTCode`,
+`BankCountryKey`, `BankNumber`, `BankAccount`, `BankAccountHolderName` and
+`IBANValidityStartDate`. A supplier invoice names which account to use in
+`BPBankAccountInternalID`, which is that `BankIdentification` - so the seed
+gives one supplier **two** accounts, because a client that pays whichever came
+back first is right by luck until then.
+
+**A wrong IBAN is refused when it is entered**, with its check digits tested the
+way ISO 13616 says: rearrange, letter-to-number, modulo 97. Catching it here is
+the difference between a payment run that reports a bad account and a bank that
+returns the payment a week later. Every IBAN the mock seeds passes the same
+check a client's does, and there is a test that says so.
+
+**Not every supplier has an IBAN.** The seeded suppliers outside the IBAN
+countries carry a bank number and an account number instead, because a US
+supplier is paid on a routing number and inventing a US IBAN would be a shape no
+bank would take. A payment run has to cope with that, so the mock makes it
+happen.
+
 ## Delta: what changed since last time
 
 A replication client reads once with `Prefer: odata.track-changes`, keeps the link
@@ -800,6 +830,7 @@ mocksap/service.py    OData request dispatcher
 mocksap/batch.py      $batch multipart and atomic changesets
 mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
 mocksap/documents.py  creating deliveries, invoices and journal entries
+mocksap/bank.py       IBAN and BIC checks, and the accounts the seed builds
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
 mocksap/messages.py   sap-message warnings, and the rules that produce them
 mocksap/oauth.py      the token store: grants, bearer validation, refresh
