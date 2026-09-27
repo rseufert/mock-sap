@@ -10,6 +10,23 @@ says so where it does.
 
 ### Added
 
+- **Posting a `FINSTA01` clears the open items it paid.** Reading the statement
+  said what it claimed; this acts on it. A debit line clears an open item when
+  the reference **and** the amount agree - the structured `E1EDP02` reference
+  first, the note to payee second, searched with its spaces removed as well
+  because a bank wraps the note at 70 characters wherever it falls and
+  `SUP-9001` can arrive as `SUP- 9001`. A credit line quoting a cleared item is
+  a returned payment: the clearing is reversed, the item is open again so a
+  payment run will try it once more, and `ClearingIsReversed` stays set so
+  *paid and returned* can still be told from *never paid*. **Every line it
+  cannot place is reported, not guessed at** - a wrong amount names both
+  numbers - because that is the reconciliation gap a treasury team works
+  through each morning. The clearing document clears its own supplier line, so
+  a payment does not leave a payable behind it; a statement is checked against
+  its own arithmetic and against the last one's closing balance, reported as
+  two different findings; an interim statement is not chained to the previous
+  one; and a statement that did not post clears nothing. ([#57])
+
 - **A `FINSTA01` bank statement can be read.** `mocksap/statement.py` turns one
   into its account, number, date, balances and lines, with amounts as
   `Decimal`, and checks that opening plus credits less debits is closing. The
@@ -470,3 +487,4 @@ First release.
 [#54]: https://github.com/rseufert/mock-sap/issues/54
 [#55]: https://github.com/rseufert/mock-sap/issues/55
 [#56]: https://github.com/rseufert/mock-sap/issues/56
+[#57]: https://github.com/rseufert/mock-sap/issues/57

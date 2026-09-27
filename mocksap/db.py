@@ -140,6 +140,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )"""
     )
     cur.execute(
+        """CREATE TABLE IF NOT EXISTS bank_statement (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account TEXT NOT NULL,
+            statement TEXT NOT NULL,
+            statement_date TEXT NOT NULL,
+            opening TEXT,
+            closing TEXT,
+            interim INTEGER NOT NULL DEFAULT 0,
+            findings TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    cur.execute(
         """CREATE TABLE IF NOT EXISTS rfc_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL,
@@ -157,7 +170,8 @@ def reset(conn: sqlite3.Connection) -> None:
     for et in ENTITY_TYPES.values():
         if owns_a_table(et):
             cur.execute('DELETE FROM "%s"' % et.name)
-    for t in ("number_range", "idoc", "rfc_log", "deleted_entity"):
+    for t in ("number_range", "idoc", "rfc_log", "deleted_entity",
+              "bank_statement"):
         cur.execute("DELETE FROM %s" % t)
     conn.commit()
 
