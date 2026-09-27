@@ -8,6 +8,19 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.12.0] - 2026-09-27
+
+The payable side of the document chain. Until now a sales order became money
+owed *to* you and nothing became money owed *by* you: an inbound `INVOIC` was
+filed and forgotten, there was no open item to select, and the account to pay
+into had to be kept somewhere outside SAP. Three of those are fixed here.
+
+Reconciliation is not: posting a `FINSTA01` statement to clear what was paid is
+[#57](https://github.com/rseufert/mock-sap/issues/57), and until it ships
+[mock-bank#16](https://github.com/rseufert/mock-bank/issues/16) stays blocked.
+
 ### Added
 
 - **An inbound `INVOIC` becomes a supplier invoice with an open payable.** It
@@ -407,7 +420,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/rseufert/mock-sap/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/rseufert/mock-sap/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/rseufert/mock-sap/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/rseufert/mock-sap/compare/v0.10.0...v0.11.0
