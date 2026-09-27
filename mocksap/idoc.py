@@ -202,6 +202,101 @@ def _apply_delivery(ctx, body: bytes) -> List[dict]:
     return applied
 
 
+def _idoc_date(value: str) -> str:
+    """YYYYMMDD off the wire, ISO in the database."""
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())[:8]
+    if len(digits) != 8:
+        return ""
+    return "%s-%s-%s" % (digits[:4], digits[4:6], digits[6:])
+
+
+def _apply_invoice(ctx, body: bytes) -> List[dict]:
+    """Post an inbound INVOIC as a supplier invoice with an open payable.
+
+    The segments are the ones this mock writes on the way out, read from the
+    other side: E1EDK01 carries the currency and the terms, an E1EDKA1 with
+    PARVW ``LF`` says who billed us, E1EDK02 ``009`` is the supplier's own
+    invoice number, the E1EDS01 sums are the totals, and each E1EDP01 names
+    the purchase order it bills against.
+    """
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return []
+
+    header, sums, partners, items = {}, {}, {}, []
+    references, dates = {}, {}
+    for element in root.iter():
+        tag = _local(element.tag)
+        values = {_local(child.tag): (child.text or "").strip()
+                  for child in element}
+        if tag == "E1EDK01":
+            header = values
+        elif tag == "E1EDKA1":
+            partners.setdefault(values.get("PARVW", ""), values)
+        elif tag == "E1EDK02":
+            references.setdefault(values.get("QUALF", ""), values)
+        elif tag == "E1EDK03":
+            dates.setdefault(values.get("IDDAT", ""), values)
+        elif tag == "E1EDS01":
+            sums[values.get("SUMID", "")] = values
+        elif tag == "E1EDP01":
+            item = dict(values)
+            for child in element:
+                if _local(child.tag) == "E1EDP19":
+                    item.setdefault("IDTNR", "")
+            items.append(item)
+
+    vendor = partners.get("LF") or partners.get("RS") or {}
+    supplier = (vendor.get("LIFNR") or vendor.get("PARTN") or "").strip()
+    if not supplier:
+        return []
+
+    def amount(sumid):
+        raw = (sums.get(sumid) or {}).get("SUMME", "")
+        try:
+            return float(raw)
+        except ValueError:
+            return 0.0
+
+    gross = amount("010")
+    net = amount("011") or gross
+    tax = amount("205")
+    if not gross:
+        # An invoice with no total is not an invoice. Say nothing was applied
+        # rather than post a document for nothing.
+        return []
+
+    invoice = {
+        "supplier": supplier,
+        "reference": (references.get("009", {}).get("BELNR")
+                      or header.get("BELNR") or ""),
+        "currency": header.get("CURCY") or "EUR",
+        "terms": header.get("ZTERM") or "",
+        "gross": gross, "net": net, "tax": tax,
+        "document_date": _idoc_date(dates.get("026", {}).get("DATUM")) or None,
+        "baseline_date": _idoc_date(dates.get("026", {}).get("DATUM")) or None,
+        "items": [{
+            "purchase_order": item.get("VGBEL", ""),
+            "purchase_order_item": item.get("VGPOS", ""),
+            "amount": item.get("NETWR") or 0,
+            "quantity": item.get("MENGE") or 0,
+            "unit": item.get("MENEE", ""),
+            "text": item.get("KTEXT", ""),
+        } for item in items],
+    }
+    posted = documents.post_supplier_invoice(ctx, invoice)
+    return [{
+        "SUPPLIERINVOICE": posted["supplier_invoice"],
+        "FISCALYEAR": posted["fiscal_year"],
+        "ACCOUNTINGDOCUMENT": posted["accounting_document"],
+        "INVOICINGPARTY": supplier,
+        "MESSAGE": "Supplier invoice %s posted; %s %.2f payable to %s"
+                   % (posted["supplier_invoice"], posted["currency"],
+                      posted["gross"], supplier),
+    }]
+
+
 def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
     """Store an inbound IDoc and return its status record.
 
@@ -246,6 +341,12 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
     # whole difference between status 53 and status 51.
     if status == "53" and is_xml and info.get("mestyp", "").upper().startswith("DELVRY"):
         applied = _apply_delivery(ctx, body)
+        if applied:
+            receipt["APPLIED"] = applied
+    # An INVOIC is a bill: posting it owes somebody money, and that payable is
+    # what a payment run later selects. A failed posting owes nobody anything.
+    if status == "53" and is_xml and info.get("mestyp", "").upper().startswith("INVOIC"):
+        applied = _apply_invoice(ctx, body)
         if applied:
             receipt["APPLIED"] = applied
     return receipt

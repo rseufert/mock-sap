@@ -813,6 +813,85 @@ _register(
 )
 
 # --------------------------------------------------------------------------
+# Supplier invoices.
+#
+# What an inbound INVOIC becomes.  The fields are the ones a payer reads:
+# who billed us, their own invoice number (which becomes the payment's
+# reference), what it comes to, and when it falls due.  The invoice records
+# the purchase order each line refers to, so a three-way match can be done
+# over OData rather than only inside an example.
+# --------------------------------------------------------------------------
+
+_register(
+    EntityType(
+        "A_SupplierInvoice",
+        label="Supplier Invoice",
+        props=[
+            S("SupplierInvoice", key=True, nullable=False, max_length=10,
+              label="Supplier Invoice", creatable=False),
+            S("FiscalYear", key=True, nullable=False, max_length=4,
+              label="Fiscal Year", creatable=False),
+            S("CompanyCode", max_length=4, label="Company Code"),
+            S("InvoicingParty", max_length=10, label="Invoicing Party"),
+            # the supplier's own number for this invoice: what a payment
+            # quotes back so the supplier can recognise it
+            S("SupplierInvoiceIDByInvcgParty", max_length=16,
+              label="Reference Document Number"),
+            DT("DocumentDate", label="Document Date"),
+            DT("PostingDate", label="Posting Date"),
+            DEC("InvoiceGrossAmount", precision=16, scale=2, label="Gross Amount"),
+            S("DocumentCurrency", max_length=5, label="Currency"),
+            S("PaymentTerms", max_length=4, label="Payment Terms"),
+            DT("DueCalculationBaseDate", label="Baseline Date"),
+            Prop("NetPaymentDays", "Edm.Int32", label="Net Payment Days"),
+            S("PaymentBlockingReason", max_length=1, label="Payment Block"),
+            S("PaymentMethod", max_length=1, label="Payment Method"),
+            # which of the supplier's accounts to pay into: the
+            # BankIdentification of A_BusinessPartnerBank
+            S("BPBankAccountInternalID", max_length=4, label="Bank Details ID"),
+            S("SupplierInvoiceStatus", max_length=1, label="Status"),
+            S("AccountingDocumentType", max_length=2, label="Document Type"),
+            S("SupplierInvoiceIsCreditMemo", max_length=1, label="Credit Memo"),
+            S("ReverseDocument", max_length=10, label="Reversal Document"),
+            S("ReverseDocumentFiscalYear", max_length=4, label="Reversal Year"),
+            # the accounting document this invoice posted, which is where its
+            # open item lives
+            S("AccountingDocument", max_length=10, label="Accounting Document"),
+            S("CreatedByUser", max_length=12, label="Created By",
+              creatable=False, updatable=False),
+            DT("CreationDate", label="Created On", creatable=False, updatable=False),
+        ],
+        navs=[
+            Nav("to_SuplrInvcItemPurOrdRef", "A_SuplrInvcItemPurOrdRef", "*",
+                [("SupplierInvoice", "SupplierInvoice"),
+                 ("FiscalYear", "FiscalYear")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_SuplrInvcItemPurOrdRef",
+        label="Supplier Invoice Item by Purchase Order",
+        props=[
+            S("SupplierInvoice", key=True, nullable=False, max_length=10),
+            S("FiscalYear", key=True, nullable=False, max_length=4),
+            S("SupplierInvoiceItem", key=True, nullable=False, max_length=6,
+              creatable=False),
+            S("PurchaseOrder", max_length=10, label="Purchase Order"),
+            S("PurchaseOrderItem", max_length=5, label="Purchase Order Item"),
+            S("DocumentCurrency", max_length=5),
+            DEC("SupplierInvoiceItemAmount", precision=16, scale=2, label="Amount"),
+            DEC("QuantityInPurchaseOrderUnit", precision=13, scale=3,
+                label="Quantity"),
+            S("PurchaseOrderQuantityUnit", max_length=3, label="Unit"),
+            S("SupplierInvoiceItemText", max_length=50, label="Item Text"),
+        ],
+    )
+)
+
+
+# --------------------------------------------------------------------------
 # The open-item cube.
 #
 # A payment run does not read journal entries; it reads open items - "what do
@@ -1404,6 +1483,15 @@ for _svc in [
         {
             "A_JournalEntry": "A_JournalEntry",
             "A_JournalEntryItem": "A_JournalEntryItem",
+        },
+    ),
+    Service(
+        "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "API_SUPPLIERINVOICE_PROCESS_SRV",
+        "Supplier Invoice (A2X)",
+        {
+            "A_SupplierInvoice": "A_SupplierInvoice",
+            "A_SuplrInvcItemPurOrdRef": "A_SuplrInvcItemPurOrdRef",
         },
     ),
     Service(
