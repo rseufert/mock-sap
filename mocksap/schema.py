@@ -138,6 +138,16 @@ class EntityType:
     # Gateway services name it plainly, BusinessPartner.
     edm_suffix: str = "Type"
     ui: Optional["UI"] = None
+    # Some SAP services publish a second view over rows another service owns:
+    # the open-item cube is the journal entry's own lines, selected the way a
+    # payment run wants them. Such a type stores nothing of its own - it reads
+    # and writes the owner's table - so the two can never disagree.
+    view_of: str = ""
+
+    @property
+    def table(self) -> str:
+        """The table this type's rows live in, which a view borrows."""
+        return self.view_of or self.name
 
     def columns(self) -> List[Tuple[str, Prop]]:
         """Every stored column: (column name, the property behind it).
@@ -803,6 +813,52 @@ _register(
 )
 
 # --------------------------------------------------------------------------
+# The open-item cube.
+#
+# A payment run does not read journal entries; it reads open items - "what do
+# I still owe this supplier, and when was it due".  In S/4 that is
+# API_OPLACCTGDOCITEMCUBE_SRV, and it is the same accounting document lines
+# seen from the payables side, which is why this is a view over
+# A_JournalEntryItem rather than a table of its own.  An item is open while
+# ClearingAccountingDocument is empty; clients filter on that, so it is a real
+# field and not a computed flag.
+# --------------------------------------------------------------------------
+
+_register(
+    EntityType(
+        "A_OperationalAcctgDocItemCube",
+        label="Operational Accounting Document Item",
+        view_of="A_JournalEntryItem",
+        props=[
+            S("AccountingDocument", key=True, nullable=False, max_length=10),
+            S("CompanyCode", key=True, nullable=False, max_length=4),
+            S("FiscalYear", key=True, nullable=False, max_length=4),
+            S("AccountingDocumentItem", key=True, nullable=False, max_length=6,
+              creatable=False),
+            S("AccountingDocumentItemType", max_length=1, label="Item Type"),
+            S("GLAccount", max_length=10, label="G/L Account"),
+            S("DebitCreditCode", max_length=1, label="Debit/Credit"),
+            DEC("AmountInTransactionCurrency", precision=16, scale=3, label="Amount"),
+            S("TransactionCurrency", max_length=5),
+            S("Supplier", max_length=10),
+            S("Customer", max_length=10),
+            DT("PostingDate", label="Posting Date"),
+            # what makes an item open, and what closes it
+            DT("NetDueDate", label="Net Due Date"),
+            S("PaymentTerms", max_length=4, label="Payment Terms"),
+            S("PaymentBlockingReason", max_length=1, label="Payment Block"),
+            S("ClearingAccountingDocument", max_length=10, label="Clearing Document"),
+            DT("ClearingDate", label="Clearing Date"),
+            DT("ClearingCreationDate", label="Clearing Entry Date"),
+            S("ClearingItem", max_length=6, label="Clearing Item"),
+            S("ClearingDocFiscalYear", max_length=4, label="Clearing Fiscal Year"),
+            BOOL("ClearingIsReversed", label="Clearing Reversed"),
+        ],
+    )
+)
+
+
+# --------------------------------------------------------------------------
 # GWSAMPLE_BASIC - the classic SAP Gateway demo service
 #
 # Every SAP OData tutorial uses this one, and it is where SAP's structured
@@ -1348,6 +1404,14 @@ for _svc in [
         {
             "A_JournalEntry": "A_JournalEntry",
             "A_JournalEntryItem": "A_JournalEntryItem",
+        },
+    ),
+    Service(
+        "API_OPLACCTGDOCITEMCUBE_SRV",
+        "API_OPLACCTGDOCITEMCUBE_SRV",
+        "Operational Accounting Document Items (open items)",
+        {
+            "A_OperationalAcctgDocItemCube": "A_OperationalAcctgDocItemCube",
         },
     ),
     Service(

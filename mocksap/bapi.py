@@ -399,6 +399,11 @@ def _delivery_create(ctx, params):
 def _acc_document_post(ctx, params):
     header = param(params, "DOCUMENTHEADER") or {}
     accounts = param(params, "ACCOUNTGL") or []
+    # A vendor or customer line is not a G/L line: it carries who is owed and
+    # on what terms, which is what makes it an open item. The real BAPI keeps
+    # them in tables of their own, and so does this.
+    payables = param(params, "ACCOUNTPAYABLE") or []
+    receivables = param(params, "ACCOUNTRECEIVABLE") or []
     amounts = {str(field(a, "ITEMNO_ACC", "")).strip(): a
                for a in (param(params, "CURRENCYAMOUNT") or [])}
 
@@ -407,7 +412,7 @@ def _acc_document_post(ctx, params):
         return {"OBJ_KEY": "", "RETURN": [ret(
             "E", "Enter a company code", "F5", "165", parameter="DOCUMENTHEADER",
             fld="COMP_CODE")]}
-    if not accounts:
+    if not accounts and not payables and not receivables:
         return {"OBJ_KEY": "", "RETURN": [ret(
             "E", "Enter at least one line item", "F5", "166", parameter="ACCOUNTGL")]}
 
@@ -430,6 +435,27 @@ def _acc_document_post(ctx, params):
             return {"OBJ_KEY": "", "RETURN": [ret(
                 "E", "No amount was supplied for item %s" % number, "F5", "167",
                 row=index, parameter="CURRENCYAMOUNT")]}
+
+    for who, rows in (("Supplier", payables), ("Customer", receivables)):
+        for index, row in enumerate(rows, start=1):
+            number = str(field(row, "ITEMNO_ACC", "")).strip()
+            if number not in amounts:
+                return {"OBJ_KEY": "", "RETURN": [ret(
+                    "E", "No amount was supplied for item %s" % number, "F5", "167",
+                    row=index, parameter="CURRENCYAMOUNT")]}
+            amount_row = amounts[number]
+            currency = str(field(amount_row, "CURRENCY", currency)) or currency
+            lines.append({
+                "GLAccount": str(field(row, "GL_ACCOUNT", "")),
+                "Amount": _num(field(amount_row, "AMT_DOCCUR", 0)),
+                "Text": str(field(row, "ITEM_TEXT", "")),
+                who: str(field(row, "VENDOR_NO" if who == "Supplier" else "CUSTOMER", "")),
+                # what the line is due on, and what stops it being paid
+                "PaymentTerms": str(field(row, "PMNTTRMS", "")),
+                "DueCalculationBaseDate": str(field(row, "BLINE_DATE", "")) or None,
+                "PaymentBlockingReason": str(field(row, "PMTBLOCK", "")),
+                "TransactionCurrency": currency,
+            })
 
     balance = documents.balance_of(lines)
     if balance:

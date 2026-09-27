@@ -69,13 +69,13 @@ def where_keys(et: EntityType, keys: Dict[str, Any]):
 def get(conn, et: EntityType, keys: Dict[str, Any]) -> Optional[sqlite3.Row]:
     clause, params = where_keys(et, keys)
     return conn.execute(
-        'SELECT * FROM "%s" WHERE %s' % (et.name, clause), params
+        'SELECT * FROM "%s" WHERE %s' % (et.table, clause), params
     ).fetchone()
 
 
 def query(conn, et: EntityType, where: str = "", params=(), order: str = "",
           top: Optional[int] = None, skip: Optional[int] = None) -> List[sqlite3.Row]:
-    sql = 'SELECT * FROM "%s"' % et.name
+    sql = 'SELECT * FROM "%s"' % et.table
     if where:
         sql += " WHERE " + where
     if order:
@@ -92,7 +92,7 @@ def query(conn, et: EntityType, where: str = "", params=(), order: str = "",
 
 
 def count(conn, et: EntityType, where: str = "", params=()) -> int:
-    sql = 'SELECT COUNT(*) AS c FROM "%s"' % et.name
+    sql = 'SELECT COUNT(*) AS c FROM "%s"' % et.table
     if where:
         sql += " WHERE " + where
     return conn.execute(sql, list(params)).fetchone()["c"]
@@ -103,7 +103,7 @@ def children(conn, parent_row, et: EntityType, nav, limit: Optional[int] = None)
     clause = " AND ".join("%s = ?" % _quote(remote) for _l, remote in nav.join)
     params = [parent_row[local] for local, _r in nav.join]
     sql = 'SELECT * FROM "%s" WHERE %s ORDER BY %s' % (
-        target.name, clause, ", ".join(_quote(k.name) for k in target.keys))
+        target.table, clause, ", ".join(_quote(k.name) for k in target.keys))
     if limit:
         sql += " LIMIT %d" % limit
     return conn.execute(sql, params).fetchall()
@@ -237,7 +237,7 @@ def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
 
     cols = ", ".join(_quote(c) for c in row)
     marks = ", ".join("?" for _ in row)
-    conn.execute('INSERT INTO "%s" (%s) VALUES (%s)' % (et.name, cols, marks),
+    conn.execute('INSERT INTO "%s" (%s) VALUES (%s)' % (et.table, cols, marks),
                  list(row.values()))
 
     for nav_name, items in deep.items():
@@ -266,7 +266,7 @@ def _next_child_number(conn, et: EntityType, row: Dict[str, Any], p) -> str:
     where = " AND ".join('"%s" = ?' % k.name for k in scope) or "1=1"
     cur = conn.execute(
         'SELECT MAX(CAST("%s" AS INTEGER)) m FROM "%s" WHERE %s'
-        % (p.name, et.name, where), [row.get(k.name) for k in scope]).fetchone()
+        % (p.name, et.table, where), [row.get(k.name) for k in scope]).fetchone()
     highest = cur["m"] or 0
     return str(highest + step).zfill(width)
 
@@ -318,7 +318,7 @@ def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
         return
     clause, kparams = where_keys(et, keys)
     sets = ", ".join("%s = ?" % _quote(c) for c in values)
-    conn.execute('UPDATE "%s" SET %s WHERE %s' % (et.name, sets, clause),
+    conn.execute('UPDATE "%s" SET %s WHERE %s' % (et.table, sets, clause),
                  list(values.values()) + kparams)
     conn.commit()
     merged = dict(existing)
@@ -346,7 +346,7 @@ def delete(conn, et: EntityType, keys: Dict[str, Any]) -> None:
         raise SapError("Resource not found for the segment '%s'" % et.name, 404)
     record_deletion(conn, et, existing)
     clause, params = where_keys(et, keys)
-    conn.execute('DELETE FROM "%s" WHERE %s' % (et.name, clause), params)
+    conn.execute('DELETE FROM "%s" WHERE %s' % (et.table, clause), params)
     # cascade along to-many navigations, as deleting a document does in SAP
     for nav in et.navs:
         if nav.multiplicity != "*":
@@ -355,8 +355,8 @@ def delete(conn, et: EntityType, keys: Dict[str, Any]) -> None:
         cclause = " AND ".join("%s = ?" % _quote(remote) for _l, remote in nav.join)
         cparams = [existing[local] for local, _r in nav.join]
         for child in conn.execute(
-                'SELECT * FROM "%s" WHERE %s' % (target.name, cclause), cparams).fetchall():
+                'SELECT * FROM "%s" WHERE %s' % (target.table, cclause), cparams).fetchall():
             record_deletion(conn, target, child)
-        conn.execute('DELETE FROM "%s" WHERE %s' % (target.name, cclause), cparams)
+        conn.execute('DELETE FROM "%s" WHERE %s' % (target.table, cclause), cparams)
     conn.commit()
     _recalculate_totals(conn, et, dict(existing))

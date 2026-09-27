@@ -57,8 +57,18 @@ def forget(conn: sqlite3.Connection) -> None:
 
 
 def ddl_for(et: EntityType) -> str:
+    """The table for a type, wide enough for the views over it.
+
+    A view declares properties its owner does not publish - the open-item
+    fields are read through the cube, not through the journal entry service -
+    so the columns come from the owner and every view of it, once each.
+    """
     cols = []
-    for name, p in et.columns():
+    seen = set()
+    for name, p in _columns_with_views(et):
+        if name in seen:
+            continue
+        seen.add(name)
         col = '"%s" %s' % (name, p.sql_type)
         if p.key:
             col += " NOT NULL"
@@ -68,10 +78,26 @@ def ddl_for(et: EntityType) -> str:
     return 'CREATE TABLE IF NOT EXISTS "%s" (\n  %s\n)' % (et.name, ",\n  ".join(cols))
 
 
+def _columns_with_views(et: EntityType):
+    """The owner's columns, then any a view over it adds."""
+    for pair in et.columns():
+        yield pair
+    for other in ENTITY_TYPES.values():
+        if other.view_of == et.name:
+            for pair in other.columns():
+                yield pair
+
+
+def owns_a_table(et: EntityType) -> bool:
+    """A view stores nothing: its rows belong to the type it reads."""
+    return not et.view_of
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     for et in ENTITY_TYPES.values():
-        cur.execute(ddl_for(et))
+        if owns_a_table(et):
+            cur.execute(ddl_for(et))
     cur.execute(
         """CREATE TABLE IF NOT EXISTS number_range (
             object TEXT PRIMARY KEY,
@@ -128,7 +154,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
 def reset(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     for et in ENTITY_TYPES.values():
-        cur.execute('DELETE FROM "%s"' % et.name)
+        if owns_a_table(et):
+            cur.execute('DELETE FROM "%s"' % et.name)
     for t in ("number_range", "idoc", "rfc_log", "deleted_entity"):
         cur.execute("DELETE FROM %s" % t)
     conn.commit()
@@ -586,6 +613,10 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
             ("000003", "0022000000", "H", tax, "Output tax", "", ""),
         ]
         for number, account, side, amount, text, customer, supplier in lines:
+            # A receivable line is an open item from the moment it posts: it
+            # is owed, it is due, and nothing has cleared it. A G/L line is
+            # not owed to anybody, so it carries none of that.
+            owed = bool(customer or supplier)
             ins("A_JournalEntryItem", dict(
                 AccountingDocument=accounting, CompanyCode="1710",
                 FiscalYear=fiscal_year, AccountingDocumentItem=number,
@@ -593,7 +624,16 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
                 AmountInTransactionCurrency=amount,
                 TransactionCurrency=order["TransactionCurrency"],
                 DocumentItemText=text, CostCenter="", ProfitCenter="YB110",
-                Customer=customer, Supplier=supplier))
+                Customer=customer, Supplier=supplier,
+                AccountingDocumentItemType=(
+                    "D" if customer else "K" if supplier else "S"),
+                PostingDate=_iso(billed),
+                PaymentTerms="NT30" if owed else "",
+                PaymentBlockingReason="",
+                NetDueDate=_iso(billed + _dt.timedelta(days=30)) if owed else None,
+                ClearingAccountingDocument="", ClearingDate=None,
+                ClearingCreationDate=None, ClearingItem="",
+                ClearingDocFiscalYear="", ClearingIsReversed=False))
 
     for obj, value in (("DELIVERY", delivery_no - 1), ("BILLINGDOCUMENT", billing_no - 1),
                        ("ACCOUNTINGDOCUMENT", accounting_no - 1)):
@@ -695,8 +735,11 @@ def seed_gwsample(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date)
 def counts(conn: sqlite3.Connection) -> dict:
     cur = conn.cursor()
     out = {}
-    for name in ENTITY_TYPES:
-        out[name] = cur.execute('SELECT COUNT(*) c FROM "%s"' % name).fetchone()["c"]
+    for name, et in ENTITY_TYPES.items():
+        # a view is counted under the type whose rows it reads
+        if owns_a_table(et):
+            out[name] = cur.execute(
+                'SELECT COUNT(*) c FROM "%s"' % name).fetchone()["c"]
     for name in ("idoc", "rfc_log", "request_log"):
         out[name] = cur.execute("SELECT COUNT(*) c FROM %s" % name).fetchone()["c"]
     return out
