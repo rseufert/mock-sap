@@ -203,6 +203,108 @@ def _open_item(line: Dict[str, Any], posting: str) -> Dict[str, Any]:
     return state
 
 
+def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
+    """File a supplier invoice and post the payable it creates.
+
+    This is the half of the document chain that runs the other way. A sales
+    order becomes a delivery, an invoice and money owed *to* us; a supplier's
+    invoice becomes an accounting document and money owed *by* us, and that
+    payable is what a payment run later selects, pays and clears.
+
+    The invoice is recorded whatever it says; the open item is what makes it
+    payable. Nothing here checks the invoice against a purchase order - that
+    is the payer's job, and `examples/invoice_check.py` does it. A mock that
+    silently refused a mismatched invoice would hide the bug its user is
+    looking for.
+    """
+    supplier = str(invoice.get("supplier") or "")
+    if not supplier:
+        raise SapError("An invoice with no invoicing party cannot be posted", 400)
+
+    posting = str(invoice.get("posting_date") or _today())[:10]
+    year = posting[:4]
+    currency = str(invoice.get("currency") or "EUR")
+    gross = round(float(invoice.get("gross") or 0), 2)
+    net = round(float(invoice.get("net") or gross), 2)
+    tax = round(float(invoice.get("tax") if invoice.get("tax") is not None
+                      else gross - net), 2)
+    terms = str(invoice.get("terms") or "")
+    baseline = str(invoice.get("baseline_date") or posting)[:10]
+
+    # The payable is a credit to the supplier; the expense and the input tax
+    # are the debits that balance it. Same shape as the entry a real invoice
+    # posts, which is what makes the open item look like a real one.
+    lines = [{
+        "Supplier": supplier,
+        "Amount": -gross,
+        "Text": "Invoice %s" % (invoice.get("reference") or ""),
+        "PaymentTerms": terms,
+        "DueCalculationBaseDate": baseline,
+        "PaymentBlockingReason": str(invoice.get("payment_block") or ""),
+        "NetPaymentDays": invoice.get("net_payment_days"),
+        "TransactionCurrency": currency,
+    }, {
+        "GLAccount": "0000400000", "Amount": net, "Text": "Expense",
+        "TransactionCurrency": currency,
+    }]
+    if tax:
+        lines.append({"GLAccount": "0000154000", "Amount": tax,
+                      "Text": "Input tax", "TransactionCurrency": currency})
+
+    document, company, fiscal = post_journal_entry(ctx, {
+        "CompanyCode": invoice.get("company_code") or "1710",
+        "AccountingDocumentType": "RE",      # a supplier invoice, in FI terms
+        "DocumentDate": invoice.get("document_date") or posting,
+        "PostingDate": posting,
+        "TransactionCurrency": currency,
+        "HeaderText": "Invoice %s" % (invoice.get("reference") or ""),
+        "ReferenceDocument": str(invoice.get("reference") or ""),
+    }, lines)
+
+    number = db.next_number(ctx.conn, "SUPPLIERINVOICE", 10)
+    store.insert(ctx.conn, ENTITY_TYPES["A_SupplierInvoice"], {
+        "SupplierInvoice": number, "FiscalYear": fiscal, "CompanyCode": company,
+        "InvoicingParty": supplier,
+        "SupplierInvoiceIDByInvcgParty": str(invoice.get("reference") or ""),
+        "DocumentDate": str(invoice.get("document_date") or posting)[:10],
+        "PostingDate": posting,
+        "InvoiceGrossAmount": gross,
+        "DocumentCurrency": currency,
+        "PaymentTerms": terms,
+        "DueCalculationBaseDate": baseline,
+        "NetPaymentDays": int(invoice.get("net_payment_days")
+                              if invoice.get("net_payment_days") not in (None, "")
+                              else PAYMENT_TERMS.get(terms.upper(), 0)),
+        "PaymentBlockingReason": str(invoice.get("payment_block") or ""),
+        "PaymentMethod": str(invoice.get("payment_method") or ""),
+        # which account to pay into. A supplier's first account unless the
+        # invoice named another; see A_BusinessPartnerBank.
+        "BPBankAccountInternalID": str(invoice.get("bank_details") or "0001"),
+        "SupplierInvoiceStatus": "5",        # RBSTAT 5: posted
+        "AccountingDocumentType": "RE",
+        "SupplierInvoiceIsCreditMemo": "",
+        "ReverseDocument": "", "ReverseDocumentFiscalYear": "",
+        "AccountingDocument": document,
+    }, user=ctx.user)
+
+    for index, item in enumerate(invoice.get("items") or [], start=1):
+        store.insert(ctx.conn, ENTITY_TYPES["A_SuplrInvcItemPurOrdRef"], {
+            "SupplierInvoice": number, "FiscalYear": fiscal,
+            "SupplierInvoiceItem": str(index).zfill(6),
+            "PurchaseOrder": str(item.get("purchase_order") or ""),
+            "PurchaseOrderItem": str(item.get("purchase_order_item") or ""),
+            "DocumentCurrency": currency,
+            "SupplierInvoiceItemAmount": round(float(item.get("amount") or 0), 2),
+            "QuantityInPurchaseOrderUnit": float(item.get("quantity") or 0),
+            "PurchaseOrderQuantityUnit": str(item.get("unit") or ""),
+            "SupplierInvoiceItemText": str(item.get("text") or "")[:50],
+        }, user=ctx.user)
+
+    return {"supplier_invoice": number, "fiscal_year": fiscal,
+            "accounting_document": document, "company_code": company,
+            "gross": gross, "currency": currency}
+
+
 def balance_of(lines: List[Dict[str, Any]]) -> float:
     """What the debits and credits come to.  Zero, or the document is not postable."""
     return round(sum(float(line.get("Amount") or 0) for line in lines), 2)

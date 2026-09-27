@@ -91,6 +91,7 @@ bash examples/demo.sh
 | Outbound Delivery | `/sap/opu/odata/sap/API_OUTBOUND_DELIVERY_SRV` |
 | Billing Document | `/sap/opu/odata/sap/API_BILLING_DOCUMENT_SRV` |
 | Journal Entry | `/sap/opu/odata/sap/API_JOURNALENTRY_SRV` |
+| Supplier Invoice | `/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV` |
 | Open items (accounting document item cube) | `/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV` |
 | GWSAMPLE_BASIC (the classic demo service) | `/sap/opu/odata/IWBEP/GWSAMPLE_BASIC` |
 | Sales Order, **OData V4** | `/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001` |
@@ -470,6 +471,43 @@ counting down, which is what a listing of live tokens is for.
 memory, and a SAML assertion is read for its `NameID` and otherwise believed - no
 signature is checked, no issuer is verified. It exists so a client can exercise
 fetch, use, expire, refresh and retry, not to stand in for an authorization server.
+
+## A supplier's invoice, and what it owes
+
+The document chain runs both ways. A sales order becomes a delivery, an invoice
+and money owed **to** us; an inbound `INVOIC` becomes a supplier invoice and
+money owed **by** us:
+
+```bash
+curl -X POST http://127.0.0.1:8000/sap/bc/idoc \
+  -H "X-CSRF-Token: $TOKEN" -H 'Content-Type: application/xml' \
+  -H 'Accept: application/json' --data-binary @supplier-invoice.xml
+```
+
+```json
+{"STATUS": "53", "APPLIED": [{"SUPPLIERINVOICE": "5100000001",
+  "ACCOUNTINGDOCUMENT": "0100000007", "INVOICINGPARTY": "1000009",
+  "MESSAGE": "Supplier invoice 5100000001 posted; EUR 1190.00 payable to 1000009"}]}
+```
+
+The invoice is readable at `API_SUPPLIERINVOICE_PROCESS_SRV` with the supplier's
+own number in `SupplierInvoiceIDByInvcgParty` - the reference a payment quotes
+back - and the purchase order each line bills against under
+`to_SuplrInvcItemPurOrdRef`, so a three-way match can be done over OData rather
+than only inside an example. The accounting document it posts leaves an **open
+payable**, which is what a payment run then selects.
+
+Three things it deliberately does not do:
+
+- **It does not check the invoice against the purchase order.** That is the
+  payer's job, and [`examples/invoice_check.py`](examples/invoice_check.py) does
+  it. A mock that silently refused a mismatched invoice would hide the bug its
+  user is looking for.
+- **It does not deduplicate.** The same invoice sent twice creates two, because
+  SAP's duplicate check is configuration and inventing one here would hide the
+  commonest way companies pay twice.
+- **An IDoc that does not post owes nobody anything.** Under a `51` posting rule
+  there is no invoice and no payable, which the tests assert by counting.
 
 ## Open items: what is still owed
 

@@ -10,6 +10,20 @@ says so where it does.
 
 ### Added
 
+- **An inbound `INVOIC` becomes a supplier invoice with an open payable.** It
+  used to be filed and nothing else, so an invoice `invoice_check` had approved
+  left nothing to pay. Now it posts: `API_SUPPLIERINVOICE_PROCESS_SRV` serves
+  `A_SupplierInvoice` with the supplier's own number in
+  `SupplierInvoiceIDByInvcgParty` (the reference a payment quotes back),
+  `BPBankAccountInternalID` naming which of the supplier's accounts to pay, and
+  `to_SuplrInvcItemPurOrdRef` recording the purchase order each line bills
+  against, so a three-way match can be done over OData. The accounting document
+  it posts balances and leaves an open payable for a payment run to select.
+  **A failed posting creates nothing** - under a `51` rule there is no invoice
+  and no payable - and **the same invoice twice creates two**, because SAP's
+  duplicate check is configuration and inventing one would hide the commonest
+  way companies pay twice. ([#54])
+
 - **Open items: what is still owed, and what cleared it.** A payment run does
   not read journal entries, it asks what it still owes and whether it was due,
   so this serves `API_OPLACCTGDOCITEMCUBE_SRV` with `A_OperationalAcctgDocItemCube`
@@ -415,4 +429,5 @@ First release.
 [#46]: https://github.com/rseufert/mock-sap/issues/46
 [#49]: https://github.com/rseufert/mock-sap/issues/49
 [#51]: https://github.com/rseufert/mock-sap/issues/51
+[#54]: https://github.com/rseufert/mock-sap/issues/54
 [#55]: https://github.com/rseufert/mock-sap/issues/55
