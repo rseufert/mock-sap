@@ -91,6 +91,7 @@ bash examples/demo.sh
 | Outbound Delivery | `/sap/opu/odata/sap/API_OUTBOUND_DELIVERY_SRV` |
 | Billing Document | `/sap/opu/odata/sap/API_BILLING_DOCUMENT_SRV` |
 | Journal Entry | `/sap/opu/odata/sap/API_JOURNALENTRY_SRV` |
+| Open items (accounting document item cube) | `/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV` |
 | GWSAMPLE_BASIC (the classic demo service) | `/sap/opu/odata/IWBEP/GWSAMPLE_BASIC` |
 | Sales Order, **OData V4** | `/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001` |
 | Business Partner, **OData V4** | `/sap/opu/odata4/sap/api_businesspartner/srvd_a2x/sap/api_businesspartner/0001` |
@@ -469,6 +470,44 @@ counting down, which is what a listing of live tokens is for.
 memory, and a SAML assertion is read for its `NameID` and otherwise believed - no
 signature is checked, no issuer is verified. It exists so a client can exercise
 fetch, use, expire, refresh and retry, not to stand in for an authorization server.
+
+## Open items: what is still owed
+
+A payment run does not read journal entries. It asks a narrower question - what
+do I still owe, to whom, and was it due - and in S/4 that is
+`API_OPLACCTGDOCITEMCUBE_SRV`. The whole selection is one filter:
+
+```bash
+curl "$SRV/A_OperationalAcctgDocItemCube?\$filter=\
+AccountingDocumentItemType%20eq%20'K'%20and%20\
+ClearingAccountingDocument%20eq%20''%20and%20\
+PaymentBlockingReason%20eq%20''%20and%20\
+NetDueDate%20le%20datetime'2026-09-30T00:00:00'&\$format=json"
+```
+
+| Field | Means |
+| --- | --- |
+| `AccountingDocumentItemType` | `K` supplier, `D` customer, `S` G/L - SAP's account type |
+| `NetDueDate` | the baseline date plus what the terms allow |
+| `PaymentTerms`, `PaymentBlockingReason` | why it may not be paid yet |
+| `ClearingAccountingDocument`, `ClearingDate`, `ClearingItem` | what paid it, once something has |
+| `ClearingIsReversed` | the clearing was undone - a returned payment, not an unpaid invoice |
+
+**An item is open while `ClearingAccountingDocument` is blank**, and blank is a
+real empty string rather than a missing field, because that is what clients
+filter on. A mock that left it null would answer `eq ''` with nothing at all and
+a payment run would quietly find no work to do.
+
+**This is a view, not a copy.** The cube reads the same rows as
+`A_JournalEntryItem`, so the two services cannot disagree; it stores nothing of
+its own and `/_mock/state` does not count it. The journal entry service does not
+publish the open-item fields, which is also true of the real one.
+
+Post a payable with `BAPI_ACC_DOCUMENT_POST` and an `ACCOUNTPAYABLE` line
+(`VENDOR_NO`, `PMNTTRMS`, `BLINE_DATE`, `PMTBLOCK`), or an `ACCOUNTRECEIVABLE`
+line for the customer side. The terms table is deliberately short - `0001` is
+payable at once, `NT30`/`NT45`/`NT60` are what they say - and a document that
+carries its own net payment days uses those instead.
 
 ## Delta: what changed since last time
 

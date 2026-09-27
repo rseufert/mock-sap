@@ -8,7 +8,24 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Open items: what is still owed, and what cleared it.** A payment run does
+  not read journal entries, it asks what it still owes and whether it was due,
+  so this serves `API_OPLACCTGDOCITEMCUBE_SRV` with `A_OperationalAcctgDocItemCube`
+  - `NetDueDate`, `PaymentTerms`, `PaymentBlockingReason`,
+  `ClearingAccountingDocument`, `ClearingDate`, `ClearingItem`,
+  `ClearingIsReversed` - and the whole selection a payment run makes is one
+  `$filter`. An item is open while its clearing document is **blank**, which is
+  an empty string and not a missing field, because that is what clients filter
+  on. **The cube is a view, not a copy:** it reads `A_JournalEntryItem`'s own
+  rows, so the two services cannot disagree, it stores nothing of its own, and
+  `/_mock/state` does not count it. An entity type can now declare `view_of`,
+  which is how SAP publishes more than one read of the same document.
+  `BAPI_ACC_DOCUMENT_POST` gained `ACCOUNTPAYABLE` and `ACCOUNTRECEIVABLE`, the
+  tables a real one uses for the lines that are owed, carrying `PMNTTRMS`,
+  `BLINE_DATE` and `PMTBLOCK` - so a line's due date follows from its terms
+  rather than being supplied ready-made. ([#55])
 
 ## [0.11.2] - 2026-09-25
 
@@ -398,3 +415,4 @@ First release.
 [#46]: https://github.com/rseufert/mock-sap/issues/46
 [#49]: https://github.com/rseufert/mock-sap/issues/49
 [#51]: https://github.com/rseufert/mock-sap/issues/51
+[#55]: https://github.com/rseufert/mock-sap/issues/55

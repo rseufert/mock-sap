@@ -81,6 +81,38 @@ def apply_delivery_status(ctx, order, delivered: Dict[str, float]) -> str:
     return status
 
 
+# T052 in miniature. A supplier or customer line is due a number of days after
+# its baseline date, and which number is configuration in a real system - so
+# this table is deliberately short, and a document that carries its own
+# NetPaymentDays (a purchase order does) should pass that instead of a key.
+PAYMENT_TERMS = {
+    "": 0,        # no terms: payable at once, as a blank ZTERM means in SAP
+    "0001": 0,    # payable immediately due net
+    "NT30": 30,
+    "NT45": 45,
+    "NT60": 60,
+}
+
+# The account type a line posts to, SAP's KOART: a G/L line, a customer line,
+# a supplier line. Only the last two can be open items, because only they are
+# owed to or by somebody.
+ITEM_TYPE_GL = "S"
+ITEM_TYPE_CUSTOMER = "D"
+ITEM_TYPE_SUPPLIER = "K"
+
+
+def net_due_date(baseline: str, terms: str = "", days=None) -> str:
+    """When a line falls due: its baseline date plus the days its terms allow.
+
+    ``days`` wins when the document carries its own net payment days, because
+    that is the document's own answer rather than a lookup.
+    """
+    allowed = int(days) if days not in (None, "") else PAYMENT_TERMS.get(
+        (terms or "").strip().upper(), 0)
+    start = _dt.date.fromisoformat(str(baseline)[:10])
+    return (start + _dt.timedelta(days=allowed)).isoformat()
+
+
 def post_journal_entry(ctx, header: Dict[str, Any],
                        lines: List[Dict[str, Any]]) -> Tuple[str, str, str]:
     """Post a journal entry.  `lines` carry a signed amount: + debit, - credit.
@@ -119,7 +151,56 @@ def post_journal_entry(ctx, header: Dict[str, Any],
             "Customer": line.get("Customer") or "",
             "Supplier": line.get("Supplier") or "",
         }, user=ctx.user)
+        # The journal entry service writes the fields it publishes; the open
+        # item view writes the ones it publishes. Same row, same keys - each
+        # write checked against a type that actually declares its fields,
+        # rather than letting either service store what it does not serve.
+        store.update(ctx.conn, ENTITY_TYPES["A_OperationalAcctgDocItemCube"], {
+            "AccountingDocument": document, "CompanyCode": company,
+            "FiscalYear": year, "AccountingDocumentItem": str(index).zfill(6),
+        }, _open_item(line, posting), user=ctx.user)
     return document, company, year
+
+
+def _open_item(line: Dict[str, Any], posting: str) -> Dict[str, Any]:
+    """What an open item carries the moment it is posted, and nothing more.
+
+    A G/L line is not owed to anyone, so it has no due date and no clearing.
+    A supplier or customer line is open from the start: it has a date it falls
+    due, and the clearing fields stay empty until something pays it. Empty is
+    the whole test - clients select open items by asking for a blank clearing
+    document, so this must be blank rather than absent.
+    """
+    supplier = line.get("Supplier") or ""
+    customer = line.get("Customer") or ""
+    if supplier:
+        item_type = ITEM_TYPE_SUPPLIER
+    elif customer:
+        item_type = ITEM_TYPE_CUSTOMER
+    else:
+        item_type = ITEM_TYPE_GL
+    state = {
+        "AccountingDocumentItemType": item_type,
+        "PostingDate": posting,
+        "PaymentTerms": "",
+        "PaymentBlockingReason": "",
+        "NetDueDate": None,
+        "ClearingAccountingDocument": "",
+        "ClearingDate": None,
+        "ClearingCreationDate": None,
+        "ClearingItem": "",
+        "ClearingDocFiscalYear": "",
+        "ClearingIsReversed": False,
+    }
+    if item_type == ITEM_TYPE_GL:
+        return state
+    terms = str(line.get("PaymentTerms") or "")
+    state["PaymentTerms"] = terms
+    state["PaymentBlockingReason"] = str(line.get("PaymentBlockingReason") or "")
+    state["NetDueDate"] = net_due_date(
+        str(line.get("DueCalculationBaseDate") or posting), terms,
+        line.get("NetPaymentDays"))
+    return state
 
 
 def balance_of(lines: List[Dict[str, Any]]) -> float:
