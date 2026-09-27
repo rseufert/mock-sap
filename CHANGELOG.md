@@ -8,7 +8,16 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **A `FINSTA01` bank statement can be read.** `mocksap/statement.py` turns one
+  into its account, number, date, balances and lines, with amounts as
+  `Decimal`, and checks that opening plus credits less debits is closing. The
+  balances are SAP's own `EDIF5025` qualifiers (`019`-`024`), not the UN/EDIFACT
+  codes. Which side a line is on is left unset, because nothing verified says;
+  lockbox (`LOCKBX`) and flat-file statements are refused. Nothing acts on a
+  statement yet - clearing the open items it pays is the rest of
+  [#57](https://github.com/rseufert/mock-sap/issues/57).
 
 ## [0.12.0] - 2026-09-27
 

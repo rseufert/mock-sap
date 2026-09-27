@@ -577,6 +577,35 @@ supplier is paid on a routing number and inventing a US IBAN would be a shape no
 bank would take. A payment run has to cope with that, so the mock makes it
 happen.
 
+## A bank statement: what it claims
+
+A bank statement arrives as a `FINSTA01` IDoc with message type `FINSTA`.
+`mocksap/statement.py` reads one into the account it is for (`E1IDB02`), its
+number (`E1IDKU1.BGMREF`) and date, its balances, and each statement line
+(`E1IDPF1`) with its structured reference (`E1EDP02`), its note to payee
+(`E1IDT01`, fourteen lines of 70 characters) and its amounts (`E1IDPU5`).
+Amounts are decimals, never floats.
+
+**The balances use SAP's own amount qualifiers**, the fixed values of domain
+`EDIF5025`: `019`/`021` opening and closing, `020`/`022` the same for an interim
+statement, `023`/`024` total debits and credits. These are *not* the UN/EDIFACT
+5025 codes the domain is named after, and an EDIFACT `174` or `300` is not read
+as a balance. With all four figures present, a statement can be checked against
+itself - opening plus credits less debits must be closing - which catches a
+corrupt or partial file, and is a different failure from a statement that does
+not follow the one before.
+
+**What it does not know, it does not guess.** Nothing in SAP's dictionary says
+how a statement line marks a debit or a credit, so the reader leaves that
+unset rather than inventing a convention; and a line carrying several qualified
+amounts keeps all of them rather than having one picked for it.
+
+**Lockbox is not supported.** `FINSTA01` also carries message type `LOCKBX`,
+and the `E1IDLB1`/`E1IDLB2` subtree belongs to it. The mock reads bank
+statements only, and refuses a `LOCKBX` IDoc rather than misread it. A statement
+must be IDoc XML; a flat-file `FINSTA01` is refused, since reading one needs
+every segment's fixed-width layout.
+
 ## Delta: what changed since last time
 
 A replication client reads once with `Prefer: odata.track-changes`, keeps the link
@@ -831,6 +860,7 @@ mocksap/batch.py      $batch multipart and atomic changesets
 mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
 mocksap/documents.py  creating deliveries, invoices and journal entries
 mocksap/bank.py       IBAN and BIC checks, and the accounts the seed builds
+mocksap/statement.py  reading a FINSTA01 bank statement, and checking its sums
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
 mocksap/messages.py   sap-message warnings, and the rules that produce them
 mocksap/oauth.py      the token store: grants, bearer validation, refresh
