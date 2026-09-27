@@ -6,12 +6,23 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from . import db
+from . import bank, db
 from .odata import SapError, to_db_value
 from .schema import COMPLEX_TYPES, ENTITY_TYPES, EntityType
 
 # Entity types whose key is drawn from a number range on create (as in SAP,
 # where the document number is assigned by the system, not by the caller).
+# Types whose rows are checked beyond what their properties can say: an IBAN's
+# check digits are arithmetic, not a length or a nullable flag.
+VALIDATORS = {
+    "A_BusinessPartnerBank": bank.check_bank_details,
+}
+
+
+def validator_for(et: EntityType):
+    return VALIDATORS.get(et.name)
+
+
 AUTO_KEY = {
     "A_SalesOrder": ("SalesOrder", "SALESORDER", 10),
     "A_PurchaseOrder": ("PurchaseOrder", "PURCHASEORDER", 10),
@@ -235,6 +246,10 @@ def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
         raise SapError(
             "An entity with the same key already exists in '%s'" % et.name, 409)
 
+    check = validator_for(et)
+    if check:
+        check(row)
+
     cols = ", ".join(_quote(c) for c in row)
     marks = ", ".join("?" for _ in row)
     conn.execute('INSERT INTO "%s" (%s) VALUES (%s)' % (et.table, cols, marks),
@@ -316,6 +331,11 @@ def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
         values["LastChangedByUser"] = ctx["user"]
     if not values:
         return
+    check = validator_for(et)
+    if check:
+        # against the row as it will be, not the fields that arrived: a PATCH
+        # of one field still has to leave the whole account valid
+        check(dict(existing, **values))
     clause, kparams = where_keys(et, keys)
     sets = ", ".join("%s = ?" % _quote(c) for c in values)
     conn.execute('UPDATE "%s" SET %s WHERE %s' % (et.table, sets, clause),

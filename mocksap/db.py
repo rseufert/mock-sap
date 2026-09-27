@@ -12,6 +12,7 @@ import threading
 import uuid
 from typing import Optional
 
+from . import bank
 from .schema import ENTITY_TYPES, EntityType
 
 _MEMORY_URI = "file:mocksap?mode=memory&cache=shared"
@@ -250,6 +251,7 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
 
     # ---- business partners -------------------------------------------------
     customers, suppliers = [], []
+    seeded_bank_accounts = False
     bp_no = 1000000
     for i, org in enumerate(_ORGS):
         bp_no += 1
@@ -296,6 +298,43 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
                 EmailAddress="info@%s.example" % org.split()[0].lower(),
             ),
         )
+        if is_supplier:
+            # Every supplier has an account to be paid into, because a payment
+            # run that has to look one up somewhere else is the shadow master
+            # data this mock exists to make unnecessary. The first supplier
+            # gets a second account as well: a client that pays whichever came
+            # back first, rather than the one the invoice names, is right by
+            # luck until a supplier has two.
+            accounts = [("0001", "Operating account")]
+            if not seeded_bank_accounts:
+                accounts.append(("0002", "Account closed at the bank"))
+            seeded_bank_accounts = True
+            for index, (identification, note) in enumerate(accounts):
+                bban = "%08d%010d" % (37040044 + index, int(bp) * 7 + index)
+                ins(
+                    "A_BusinessPartnerBank",
+                    dict(
+                        BusinessPartner=bp,
+                        BankIdentification=identification,
+                        BankCountryKey=country,
+                        BankName=rnd.choice(["Deutsche Bank", "Commerzbank",
+                                             "Sparkasse Heidelberg"]),
+                        BankNumber=bban[:8],
+                        SWIFTCode=rnd.choice(["DEUTDEFF", "COBADEFFXXX",
+                                              "SOLADES1HDB"]),
+                        BankControlKey="",
+                        BankAccountHolderName=org[:60],
+                        BankAccountName=note,
+                        # A supplier outside the IBAN countries is paid on a
+                        # bank number and an account number, and has no IBAN
+                        # to give - which a payment run has to cope with.
+                        IBAN=(bank.iban(country, bban)
+                              if bank.uses_iban(country) else ""),
+                        IBANValidityStartDate=_iso(created),
+                        BankAccount=bban[8:],
+                        BankAccountReferenceText=note[:20],
+                    ),
+                )
         ins(
             "A_BusinessPartnerRole",
             dict(

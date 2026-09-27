@@ -284,6 +284,7 @@ _register(
         navs=[
             Nav("to_BusinessPartnerAddress", "A_BusinessPartnerAddress", "*", [("BusinessPartner", "BusinessPartner")]),
             Nav("to_BusinessPartnerRole", "A_BusinessPartnerRole", "*", [("BusinessPartner", "BusinessPartner")]),
+            Nav("to_BusinessPartnerBank", "A_BusinessPartnerBank", "*", [("BusinessPartner", "BusinessPartner")]),
         ],
     )
 )
@@ -307,6 +308,35 @@ _register(
         ],
     )
 )
+
+_register(
+    EntityType(
+        "A_BusinessPartnerBank",
+        label="Business Partner Bank Details",
+        props=[
+            S("BusinessPartner", key=True, nullable=False, max_length=10,
+              label="Business Partner", updatable=False),
+            # SAP's "bank details ID": which of a partner's accounts this is.
+            # A supplier invoice names it in BPBankAccountInternalID, so a
+            # payment run pays the account the invoice chose rather than
+            # whichever came back first.
+            S("BankIdentification", key=True, nullable=False, max_length=4,
+              label="Bank Details ID", updatable=False),
+            S("BankCountryKey", max_length=3, label="Bank Country"),
+            S("BankName", max_length=60, label="Bank Name"),
+            S("BankNumber", max_length=15, label="Bank Number"),
+            S("SWIFTCode", max_length=11, label="SWIFT/BIC"),
+            S("BankControlKey", max_length=2, label="Bank Control Key"),
+            S("BankAccountHolderName", max_length=60, label="Account Holder"),
+            S("BankAccountName", max_length=40, label="Account Name"),
+            S("IBAN", max_length=34, label="IBAN"),
+            DT("IBANValidityStartDate", label="IBAN Valid From"),
+            S("BankAccount", max_length=18, label="Bank Account Number"),
+            S("BankAccountReferenceText", max_length=20, label="Reference Details"),
+        ],
+    )
+)
+
 
 _register(
     EntityType(
@@ -1432,6 +1462,7 @@ for _svc in [
             "A_BusinessPartner": "A_BusinessPartner",
             "A_BusinessPartnerAddress": "A_BusinessPartnerAddress",
             "A_BusinessPartnerRole": "A_BusinessPartnerRole",
+            "A_BusinessPartnerBank": "A_BusinessPartnerBank",
         },
     ),
     Service(
@@ -1572,6 +1603,7 @@ for _svc in [
             "BusinessPartner": "A_BusinessPartner",
             "BusinessPartnerAddress": "A_BusinessPartnerAddress",
             "BusinessPartnerRole": "A_BusinessPartnerRole",
+            "BusinessPartnerBank": "A_BusinessPartnerBank",
         },
         version=4,
     ),
