@@ -21,19 +21,20 @@ The segment layout is SAP's FINSTA01 definition, not a guess:
 UN/EDIFACT 5025 code list: 019/021 are the opening and closing balance,
 020/022 the same for an interim statement, 023/024 total debits and credits.
 
-Two things are deliberately left unanswered rather than invented, and each is
-returned as ``None`` so that a consumer cannot mistake a gap for a value:
+**Which amount is a line's amount** is left unanswered rather than invented
+when a line carries several qualified ones: with exactly one, that is the
+amount; with more, ``amount`` is ``None`` and every one is in ``amounts``.
 
-- **Which side a line is on.** Nothing verified says how FINSTA01 marks a debit
-  or a credit, so ``side`` is ``None``.
-- **Which amount is a line's amount** when it carries several qualified ones.
-  With exactly one, that is the amount; with more, ``amount`` is ``None`` and
-  every qualified amount is in ``amounts``.
-
-Nothing in SAP's dictionary settles the first: ``E1IDPF1-LINACTION`` (domain
-``EDIF1229``) has no fixed values, and ``E1IDPU5-MOABETR`` (``EDIF5004``) is
-18 characters of text.  A sign on the amount is kept as written - SAP puts a
-minus after the number - but is not read as a side.
+**Which side a line is on is this mock's convention, not SAP's.** SAP pins
+nothing for it - checked: ``E1IDPF1-LINACTION`` (domain ``EDIF1229``) has no
+fixed values, and ``E1IDPU5-MOABETR`` (``EDIF5004``) is 18 characters of text.
+No ``EDIF5025`` qualifier means debit or credit either; an outgoing payment and
+an incoming one are both payments.  So the direction is the amount's sign,
+written the way SAP writes a negative number, with the minus after it:
+negative is a **debit** (money out - the payment that clears an invoice),
+positive a **credit** (money in - a return among them).  ``side`` is derived
+from the signed ``amount``, and is ``None`` when the amount is.  Any writer
+producing a FINSTA01 for this mock has to follow the same convention.
 
 ``E1IDLB1``/``E1IDLB2`` and everything under them are lockbox - message type
 ``LOCKBX`` on the same basic type - and are skipped.  A ``LOCKBX`` IDoc is
@@ -88,6 +89,13 @@ def _date(raw: str) -> Optional[str]:
     if len(digits) != 8:
         return None
     return "%s-%s-%s" % (digits[:4], digits[4:6], digits[6:])
+
+
+def _side(amount: Optional[Decimal]) -> Optional[str]:
+    """This mock's convention, not SAP's: see the module docstring."""
+    if amount is None or amount == 0:
+        return None
+    return "debit" if amount < 0 else "credit"
 
 
 def _qualified_amounts(line) -> List[dict]:
@@ -175,7 +183,7 @@ def parse(body: bytes) -> dict:
             "currency": (single["currency"] if single else "")
                         or bank.get("FIIKWAER", ""),
             "amounts": movements,
-            "side": None,     # not verified; see the module docstring
+            "side": _side(single["amount"] if single else None),
         })
 
     interim = OPENING not in balances and CLOSING not in balances and (

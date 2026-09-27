@@ -14,8 +14,8 @@ says so where it does.
   into its account, number, date, balances and lines, with amounts as
   `Decimal`, and checks that opening plus credits less debits is closing. The
   balances are SAP's own `EDIF5025` qualifiers (`019`-`024`), not the UN/EDIFACT
-  codes. Which side a line is on is left unset, because nothing verified says;
-  lockbox (`LOCKBX`) and flat-file statements are refused. Nothing acts on a
+  codes. Which side a line is on is the mock's own convention - the amount's
+  sign, `1190.00-` a debit - because SAP pins no values for it; lockbox (`LOCKBX`) and flat-file statements are refused. Nothing acts on a
   statement yet - clearing the open items it pays is the rest of
   [#57](https://github.com/rseufert/mock-sap/issues/57).
 

@@ -595,10 +595,15 @@ itself - opening plus credits less debits must be closing - which catches a
 corrupt or partial file, and is a different failure from a statement that does
 not follow the one before.
 
-**What it does not know, it does not guess.** Nothing in SAP's dictionary says
-how a statement line marks a debit or a credit, so the reader leaves that
-unset rather than inventing a convention; and a line carrying several qualified
-amounts keeps all of them rather than having one picked for it.
+**Debit or credit is the mock's convention, not SAP's.** SAP's dictionary pins
+nothing for it - `E1IDPF1-LINACTION` (domain `EDIF1229`) has no fixed values,
+`E1IDPU5-MOABETR` (`EDIF5004`) is plain text, and no `EDIF5025` qualifier means
+a direction - so the reader takes it from the amount's sign, written SAP's way
+with the minus after the number: `1190.00-` is a **debit**, money out, the
+payment that clears an invoice; `1190.00` is a **credit**, money in, a returned
+payment among them. **Any writer producing a `FINSTA01` for the mock has to
+follow the same convention.** A line carrying several qualified amounts keeps
+all of them, and has neither an amount nor a side picked for it.
 
 **Lockbox is not supported.** `FINSTA01` also carries message type `LOCKBX`,
 and the `E1IDLB1`/`E1IDLB2` subtree belongs to it. The mock reads bank
