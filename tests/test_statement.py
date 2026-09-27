@@ -88,8 +88,8 @@ class TestACleanStatement(unittest.TestCase):
         self.assertEqual(only["amount"], Decimal("1190.00"))
         self.assertEqual(only["currency"], "EUR")
 
-    def test_the_side_is_unknown_rather_than_guessed(self):
-        self.assertIsNone(self.statement["lines"][0]["side"])
+    def test_a_positive_amount_is_a_credit(self):
+        self.assertEqual(self.statement["lines"][0]["side"], "credit")
 
     def test_it_adds_up(self):
         self.assertIsNone(balances_add_up(self.statement))
@@ -163,9 +163,17 @@ class TestSeveralAmountsOnOneLine(unittest.TestCase):
         self.assertEqual([(a["qualifier"], a["amount"]) for a in only["amounts"]],
                          [("001", Decimal("1190.00")), ("009", Decimal("2.50"))])
 
-    def test_a_trailing_minus_is_a_negative_amount(self):
+    def test_a_trailing_minus_is_a_negative_amount_and_a_debit(self):
+        # Money out: the payment that clears an invoice.
         only = parse(finsta(line("000001", value="1190.00-")))["lines"][0]
         self.assertEqual(only["amount"], Decimal("-1190.00"))
+        self.assertEqual(only["side"], "debit")
+
+    def test_no_side_without_one_amount(self):
+        statement = parse(finsta(
+            '<E1IDPF1 SEGMENT="1"><LINLINEIT>000001</LINLINEIT>%s%s</E1IDPF1>'
+            % (amount("001", "1190.00-"), amount("009", "2.50"))))
+        self.assertIsNone(statement["lines"][0]["side"])
 
 
 class TestWhatIsNotAStatement(unittest.TestCase):
