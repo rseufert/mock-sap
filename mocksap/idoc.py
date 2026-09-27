@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-from . import db, documents, store
+from . import db, documents, reconcile, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -349,6 +349,12 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
         applied = _apply_invoice(ctx, body)
         if applied:
             receipt["APPLIED"] = applied
+    # A FINSTA is the bank telling us what happened to the money. Posting it
+    # clears what it paid and reopens what came back; a failed posting clears
+    # nothing, because an item cleared by an IDoc that did not post would be
+    # an invoice nobody can find and nobody will pay again.
+    if status == "53" and is_xml and info.get("mestyp", "").upper().startswith("FINSTA"):
+        receipt["APPLIED"] = [reconcile.apply_statement(ctx, body)]
     return receipt
 
 

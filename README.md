@@ -611,6 +611,58 @@ statements only, and refuses a `LOCKBX` IDoc rather than misread it. A statement
 must be IDoc XML; a flat-file `FINSTA01` is refused, since reading one needs
 every segment's fixed-width layout.
 
+## Posting a statement: clearing what it paid
+
+Reading the file is half of it. Posting one does what electronic bank statement
+processing does, in miniature:
+
+```json
+{"STATEMENT": "00042", "ACCOUNT": "0007000063",
+ "CLEARED":   [{"LINE": "000001", "REFERENCE": "SUP-A1",
+                "ACCOUNTINGDOCUMENT": "0100000008",
+                "CLEARINGDOCUMENT": "0100000009", "AMOUNT": "1190.00"}],
+ "REOPENED":  [],
+ "UNPROCESSED": [{"LINE": "000002",
+                  "REASON": "reference SUP-E1 is item 0100000008 for 1190.00, "
+                            "but the line is for 1000.00"}],
+ "FINDINGS":  []}
+```
+
+**A debit clears an open item when the reference *and* the amount agree.** The
+structured reference (`E1EDP02`) is matched first and the note to payee second,
+searched both as written and with its spaces removed - a bank wraps the note at
+70 characters wherever it falls, so `SUP-9001` can arrive as `SUP- 9001` and an
+exact search would quietly miss it.
+
+**Everything else is left alone and listed.** A line that matches nothing, or
+matches a reference but not the amount, clears nothing and says why, naming both
+numbers. That is not a gap in the mock: it is the reconciliation gap a treasury
+team works through every morning, and guessing at those lines would invent the
+answer they are paid to find.
+
+**A credit that quotes a cleared item is a returned payment.** The clearing is
+reversed and the item is open again, so a payment run will try it again. The
+clearing document is removed from the item - the way reversing a clearing in SAP
+puts it back among the open items - but `ClearingIsReversed` stays set, so
+*paid and returned* can still be told from *never paid*. Without that they look
+identical, and telling them apart is the whole job.
+
+Two checks on the statement itself, reported separately because they are
+different failures:
+
+| Finding | Means |
+| --- | --- |
+| `does not add up` | `opening + credits - debits` is not `closing`: a corrupt or partial file |
+| `a statement is missing` | its opening balance does not follow the last closing balance |
+
+An interim statement (balances under `020`/`022`) is not chained to the previous
+one, because it is a snapshot inside a period rather than the next in sequence,
+and treating it as the next would invent a gap that is not there.
+
+**A statement that did not post clears nothing**, under the `51` posting rules -
+an item cleared by an IDoc that never posted would be an invoice nobody can find
+and nobody will pay again.
+
 ## Delta: what changed since last time
 
 A replication client reads once with `Prefer: odata.track-changes`, keeps the link
@@ -866,6 +918,7 @@ mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
 mocksap/documents.py  creating deliveries, invoices and journal entries
 mocksap/bank.py       IBAN and BIC checks, and the accounts the seed builds
 mocksap/statement.py  reading a FINSTA01 bank statement, and checking its sums
+mocksap/reconcile.py  matching a statement to the open items it pays
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
 mocksap/messages.py   sap-message warnings, and the rules that produce them
 mocksap/oauth.py      the token store: grants, bearer validation, refresh
