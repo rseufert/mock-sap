@@ -103,14 +103,16 @@ class SupplierInvoices(unittest.TestCase):
         self.assertEqual((idoc["docnum"], idoc["status"]), (result["idoc"], "53"))
 
     def test_a_posted_invoice_leaves_money_owed(self):
-        """The assertion whose absence let this example post nothing for a year.
+        """A posted invoice has to leave money owed, or nothing was posted.
 
         Every test here asserted what SAP *received* - the IDoc and its status -
-        and none asserted what posting it created. So when the IDoc stopped
-        naming the supplier, SAP created no supplier invoice and no payable,
-        answered status 53 anyway, and five green tests said it was fine. A
-        payment run then had nothing to pay: the invoice was approved, posted,
-        and owed to nobody (mock-sap#67, #68).
+        and none asserted what posting it created. The IDoc never named the
+        supplier, so SAP created no supplier invoice and no payable and answered
+        status 53 anyway, and five green tests said it was fine. It went
+        unnoticed until there were payables to miss: 0.12.0 added them, and the
+        first run of all three mocks together found this the next day. A payment
+        run had nothing to pay - the invoice was approved, posted, and owed to
+        nobody (mock-sap#67, #68).
         """
         po = self.order()
 
@@ -134,10 +136,11 @@ class SupplierInvoices(unittest.TestCase):
         self.assertEqual(items[0]["TransactionCurrency"], "USD")
 
     def test_the_payable_lines_carry_the_amounts_and_the_order(self):
-        """A payable whose total is right and whose lines are worth nothing is
-        still wrong: three-way matching in SAP happens per item, against the
-        purchase order line. NETWR and VGBEL/VGPOS on each E1EDP01 are what put
-        them there.
+        """A payable's lines carry the amounts, not just its total.
+
+        A total that is right over lines worth nothing is still wrong: matching
+        in SAP happens per item, against the purchase order line. NETWR and
+        VGBEL/VGPOS on each E1EDP01 are what put them there.
         """
         po = self.order()
 
