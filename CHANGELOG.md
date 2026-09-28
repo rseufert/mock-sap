@@ -10,6 +10,23 @@ says so where it does.
 
 ### Fixed
 
+- **An inbound IDoc that posted nothing reported status 53.** `53` is
+  *Application document posted*, and an `INVOIC` naming no supplier, or no
+  total, applied nothing and still reported it - so a client doing exactly the
+  right thing, reading the status rather than trusting the `201`, was told the
+  invoice posted and owed nobody anything. The whole point of
+  `/_mock/idoc-posting` is that an accepted IDoc is not a posted one; this was
+  the mock making the same mistake it exists to expose. Such an IDoc is now
+  **51**, *Application document not posted*, with a status text naming the
+  segment that was missing, and the status is decided before the IDoc is filed
+  so the stored record is the one that happened. A `DELVRY` naming no order
+  line is the same and behaves the same, as is any of the three sent as a flat
+  file, which cannot be posted because this mock has no fixed-width layout for
+  the segments. An `ORDERS05`, which has no application step at all, still posts
+  `53` in either dialect. Found on the first attempt to run all three mocks end
+  to end: the payment run had nothing to pay, and nothing anywhere said why.
+  The IDoc that prompted it is the one below. ([#67])
+
 - **`examples/invoice_check.py` posted invoices that owed nobody anything.**
   `invoic_idoc()` built an `INVOIC02` that named the document but not the
   supplier: no `E1EDKA1` with `PARVW` `LF`, so SAP had nobody to owe and created
@@ -27,8 +44,10 @@ says so where it does.
   *received* - the IDoc and its status - and none asserted what posting it
   created. There are now tests for the supplier invoice, its item amounts and
   purchase-order references, the open payable, and the due date the invoice's
-  own terms give it. ([#68])
+  own terms give it. Had the mock not been reporting `53` for it, this would
+  have been loud from the day payables arrived in 0.12.0. ([#68])
 
+[#67]: https://github.com/rseufert/mock-sap/issues/67
 [#68]: https://github.com/rseufert/mock-sap/issues/68
 
 ## [0.13.1] - 2026-09-27

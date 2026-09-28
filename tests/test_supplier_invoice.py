@@ -143,21 +143,62 @@ class TestWhatDoesNotPost(SupplierInvoiceCase):
         self.assertEqual(len(self.invoices()), before,
                          "an IDoc that did not post owes nobody anything")
 
-    def test_an_invoice_with_no_invoicing_party_posts_nothing(self):
+    def test_an_invoice_with_no_invoicing_party_is_not_posted(self):
+        """51, not 53, and the text says what was missing.
+
+        Status 53 is *Application document posted*. Reporting it for an IDoc
+        that posted nothing tells a client the opposite of what happened, and
+        leaves it nothing to check: a client that reads the status rather than
+        trusting the 201 - the whole lesson of /_mock/idoc-posting - is still
+        told the invoice posted. That the IDoc *arrived* is the 201 and the
+        document number, both asserted here, and is not what 53 says.
+        """
         before = len(self.invoices())
         body = invoic().replace("<PARVW>LF</PARVW>", "<PARVW>XX</PARVW>")
         receipt = self.send(body=body)
 
-        self.assertEqual(receipt["STATUS"], "53", "the IDoc was still received")
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("E1EDKA1", receipt["STATUS_TEXT"], receipt["STATUS_TEXT"])
+        self.assertTrue(receipt["DOCNUM"], "the IDoc was still received and filed")
         self.assertNotIn("APPLIED", receipt)
         self.assertEqual(len(self.invoices()), before)
 
-    def test_an_invoice_with_no_total_posts_nothing(self):
+    def test_the_filed_idoc_carries_the_status_that_happened(self):
+        """Not just the receipt: the IDoc in the database says 51 too.
+
+        The status used to be decided before the application ran, so what was
+        filed could disagree with what happened. Anyone reading the IDoc back -
+        which is how a person looks at this in SAP - would see "posted".
+        """
+        body = invoic(reference="SUP-NOPARTY").replace(
+            "<PARVW>LF</PARVW>", "<PARVW>XX</PARVW>")
+        receipt = self.send(body=body)
+
+        _, _, listing = self.get("/sap/bc/idoc?mestyp=INVOIC")
+        filed = [row for row in listing["results"]
+                 if row["docnum"] == receipt["DOCNUM"]]
+        self.assertEqual(len(filed), 1, listing["results"])
+        self.assertEqual(filed[0]["status"], "51")
+        self.assertIn("E1EDKA1", filed[0]["status_text"])
+
+    def test_an_invoice_with_no_total_is_not_posted(self):
         before = len(self.invoices())
         body = invoic().replace("<SUMID>010</SUMID><SUMME>1190.00</SUMME>",
                                 "<SUMID>010</SUMID><SUMME></SUMME>")
-        self.send(body=body)
+        receipt = self.send(body=body)
+
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("SUMID 010", receipt["STATUS_TEXT"], receipt["STATUS_TEXT"])
         self.assertEqual(len(self.invoices()), before)
+
+    def test_a_well_formed_invoice_still_posts(self):
+        """The regression that matters: none of the above changed the good path."""
+        receipt = self.send(reference="SUP-STILL-GOOD")
+
+        self.assertEqual(receipt["STATUS"], "53")
+        self.assertEqual(receipt["STATUS_TEXT"], "Application document posted")
+        self.assertEqual(len(receipt["APPLIED"]), 1)
+        self.assertTrue(receipt["APPLIED"][0]["SUPPLIERINVOICE"])
 
     def test_the_same_invoice_twice_creates_two(self):
         """SAP's duplicate check is configuration, not arithmetic.

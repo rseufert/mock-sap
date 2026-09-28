@@ -34,6 +34,21 @@ STATUS_TEXT = {
 INBOUND_STATUSES = ("53", "51", "56", "68")
 
 
+class NotPosted(Exception):
+    """The IDoc arrived and the application declined to post it.
+
+    Raised by the ``_apply_*`` functions when they cannot do what posting the
+    IDoc means: an ``INVOIC`` that names no supplier owes nobody money, and a
+    ``DELVRY`` that names no order line delivers nothing.  ``receive`` turns
+    this into status 51 with the reason as its text, because reporting 53 --
+    *Application document posted* -- for an IDoc that posted nothing tells a
+    client the opposite of what happened, and leaves it no way to find out.
+
+    This is the mock being honest about its own limits, not a fault injected on
+    request.  A client that wants a refusal on demand uses ``/_mock/idoc-posting``.
+    """
+
+
 class PostingRules:
     """What the application does with an inbound IDoc, driven through
     ``/_mock/idoc-posting``.
@@ -141,8 +156,8 @@ def _apply_delivery(ctx, body: bytes) -> List[dict]:
     """
     try:
         root = ET.fromstring(body)
-    except ET.ParseError:
-        return []
+    except ET.ParseError as exc:
+        raise NotPosted("The DELVRY is not well-formed XML: %s" % exc)
 
     delivered: Dict[str, Dict[str, float]] = {}
     for element in root.iter():
@@ -167,6 +182,10 @@ def _apply_delivery(ctx, body: bytes) -> List[dict]:
                 if _local(child.tag) == "VBELN":
                     announced = (child.text or "").strip()
             break
+
+    if not delivered:
+        raise NotPosted("No E1EDL24 item segment names a document and position "
+                        "(VGBEL/VGPOS), so this DELVRY delivers nothing")
 
     applied = []
     for order, positions in delivered.items():
@@ -221,8 +240,8 @@ def _apply_invoice(ctx, body: bytes) -> List[dict]:
     """
     try:
         root = ET.fromstring(body)
-    except ET.ParseError:
-        return []
+    except ET.ParseError as exc:
+        raise NotPosted("The INVOIC is not well-formed XML: %s" % exc)
 
     header, sums, partners, items = {}, {}, {}, []
     references, dates = {}, {}
@@ -250,7 +269,8 @@ def _apply_invoice(ctx, body: bytes) -> List[dict]:
     vendor = partners.get("LF") or partners.get("RS") or {}
     supplier = (vendor.get("LIFNR") or vendor.get("PARTN") or "").strip()
     if not supplier:
-        return []
+        raise NotPosted("No E1EDKA1 segment with PARVW LF or RS names the "
+                        "supplier who billed us, so there is nobody to owe")
 
     def amount(sumid):
         raw = (sums.get(sumid) or {}).get("SUMME", "")
@@ -263,9 +283,10 @@ def _apply_invoice(ctx, body: bytes) -> List[dict]:
     net = amount("011") or gross
     tax = amount("205")
     if not gross:
-        # An invoice with no total is not an invoice. Say nothing was applied
-        # rather than post a document for nothing.
-        return []
+        # An invoice with no total is not an invoice: posting one would owe the
+        # supplier nothing, which is indistinguishable from not posting it.
+        raise NotPosted("No E1EDS01 segment with SUMID 010 gives an invoice "
+                        "total, so this INVOIC bills nothing")
 
     invoice = {
         "supplier": supplier,
@@ -314,6 +335,18 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
     rule = posting.match(info.get("mestyp", ""), info.get("idoctyp", "")) if posting else None
     status = rule["status"] if rule else "53"
     status_text = (rule and rule["message"]) or STATUS_TEXT[status]
+
+    # Post before the IDoc is filed, so the status stored is the one that
+    # happened. An application that declines says why, and 51 carries the
+    # reason; deciding the status first and applying afterwards is how an IDoc
+    # that posted nothing came to be filed as "Application document posted".
+    applied = None
+    if status == "53":
+        try:
+            applied = _apply(ctx, info, body, is_xml)
+        except NotPosted as declined:
+            status, status_text = "51", str(declined)
+
     now = _dt.datetime.utcnow().replace(microsecond=0)
     ctx.conn.execute(
         "INSERT INTO idoc(docnum,direction,idoctyp,mestyp,status,status_text,"
@@ -336,26 +369,45 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
         "MANDT": ctx.client,
     }
 
+    if applied:
+        receipt["APPLIED"] = applied
+    return receipt
+
+
+def _apply(ctx, info: dict, body: bytes, is_xml: bool) -> Optional[List[dict]]:
+    """Do what posting this IDoc means, or raise NotPosted saying why not.
+
+    Only the message types with something to post are here. An ORDERS05 is
+    filed and nothing else, so it has no entry and posts as 53 on its own.
+
+    Posting reads the segments, and reading them needs the XML: a flat-file
+    IDoc would need every segment's fixed-width layout, which this mock does
+    not have. So a flat one that would post something is refused by name rather
+    than filed as posted, the way ``statement.parse`` already refuses a flat
+    FINSTA01.
+    """
+    mestyp = info.get("mestyp", "").upper()
+    posts = ("DELVRY", "INVOIC", "FINSTA")
+    if not is_xml and mestyp.startswith(posts):
+        raise NotPosted("A %s can only be posted as IDoc XML; this one arrived "
+                        "as a flat file, whose segment layouts this mock does "
+                        "not have" % mestyp)
     # A delivery is not just filed: posting it moves the order it came from.
     # An IDoc that did not post has done nothing to the order, which is the
     # whole difference between status 53 and status 51.
-    if status == "53" and is_xml and info.get("mestyp", "").upper().startswith("DELVRY"):
-        applied = _apply_delivery(ctx, body)
-        if applied:
-            receipt["APPLIED"] = applied
+    if mestyp.startswith("DELVRY"):
+        return _apply_delivery(ctx, body)
     # An INVOIC is a bill: posting it owes somebody money, and that payable is
     # what a payment run later selects. A failed posting owes nobody anything.
-    if status == "53" and is_xml and info.get("mestyp", "").upper().startswith("INVOIC"):
-        applied = _apply_invoice(ctx, body)
-        if applied:
-            receipt["APPLIED"] = applied
+    if mestyp.startswith("INVOIC"):
+        return _apply_invoice(ctx, body)
     # A FINSTA is the bank telling us what happened to the money. Posting it
     # clears what it paid and reopens what came back; a failed posting clears
     # nothing, because an item cleared by an IDoc that did not post would be
     # an invoice nobody can find and nobody will pay again.
-    if status == "53" and is_xml and info.get("mestyp", "").upper().startswith("FINSTA"):
-        receipt["APPLIED"] = [reconcile.apply_statement(ctx, body)]
-    return receipt
+    if mestyp.startswith("FINSTA"):
+        return [reconcile.apply_statement(ctx, body)]
+    return None
 
 
 def receipt_xml(receipt: dict) -> str:
