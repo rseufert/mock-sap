@@ -8,6 +8,21 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.13.2] - 2026-09-28
+
+Two fixes, both found on the first attempt to run all three mocks end to
+end, and both the same fault: a mock that reported having done something it
+had not. The loop the projects page describes - an EDI invoice approved into
+SAP, then paid and cleared - had not run through since 0.12.0 added payables,
+and four worked examples using two mocks each could not see it, because every
+one of them asserted what SAP received rather than what posting it created.
+
+**This release can turn a passing test red.** If you assert status `53` on an
+inbound `INVOIC` or `DELVRY` that posts nothing, you will now get `51`. That
+is the fix: `53` means *Application document posted*, and nothing was.
+
 ### Fixed
 
 - **An inbound IDoc that posted nothing reported status 53.** `53` is
@@ -536,7 +551,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/rseufert/mock-sap/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/rseufert/mock-sap/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/rseufert/mock-sap/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rseufert/mock-sap/compare/v0.11.2...v0.12.0
