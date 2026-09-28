@@ -45,12 +45,12 @@ class SupplierInvoices(unittest.TestCase):
         self.sap = Sap(SAP)
         self.check = InvoiceCheck(self.sap, EDI, our_id="ACME")
 
-    def order(self, widget_price="12.50"):
+    def order(self, widget_price="12.50", currency="USD"):
         """A PO in SAP for 100 widgets and 40 brackets, sent to the supplier."""
         po = self.sap.request("POST", PO_SERVICE + "/A_PurchaseOrder", {
             "PurchaseOrderType": "NB", "CompanyCode": "1710",
             "PurchasingOrganization": "1710", "PurchasingGroup": "001",
-            "Supplier": "1000012", "DocumentCurrency": "USD",
+            "Supplier": "1000012", "DocumentCurrency": currency,
             "to_PurchaseOrderItem": [
                 {"Material": "TG11", "OrderQuantity": "100", "NetPriceAmount": widget_price,
                  "PurchaseOrderQuantityUnit": "PC", "Plant": "1010"},
@@ -186,6 +186,64 @@ class SupplierInvoices(unittest.TestCase):
 
         [result] = self.check.run()
         self.assertEqual(result["status"], "posted")
+
+    def test_an_invoice_in_the_wrong_currency_is_blocked(self):
+        """The same number in another currency is not the same price.
+
+        Every other check subtracts and compares bare decimals, so a USD invoice
+        against a EUR order passes all of them: the figures agree and mean
+        different things. This drives `problems` directly rather than arranging a
+        supplier that misbills, because the check is the thing under test and an
+        810 in the wrong currency is not something mock-edi will send once the
+        850 has declared one.
+        """
+        po_number = self.order(currency="EUR")
+        po = self.sap.purchase_order(po_number)
+        invoice = {"number": "INV-FX", "po": po_number, "currency": "USD",
+                   "lines": {"00010": (Decimal("100"), Decimal("12.50"))},
+                   "total": Decimal("1250.00")}
+
+        problems = self.check.problems(invoice, po)
+
+        self.assertTrue(any("is in USD" in p and "is in EUR" in p for p in problems),
+                        problems)
+
+    def test_an_invoice_that_names_no_currency_is_not_blocked_for_it(self):
+        """Absence is not disagreement.
+
+        CUR is optional in an 810, and a partner that omits it is not telling us
+        the price is in the wrong money. Blocking for a missing segment would
+        reject invoices that are fine, so the check needs both sides before it
+        says anything - which is the guard this asserts.
+        """
+        po_number = self.order(currency="EUR")
+        po = self.sap.purchase_order(po_number)
+        invoice = {"number": "INV-NOCUR", "po": po_number, "currency": "",
+                   "lines": {"00010": (Decimal("100"), Decimal("12.50")),
+                             "00020": (Decimal("40"), Decimal("4.15"))},
+                   "total": Decimal("1416.00")}
+
+        problems = self.check.problems(invoice, po)
+
+        # Not "no problems at all": nothing has read an 856 here, so the
+        # quantity check speaks up. The claim is narrower and is the one that
+        # matters - a missing CUR is not itself a reason to block.
+        self.assertEqual([p for p in problems if "is in" in p], [], problems)
+
+    def test_the_order_declares_its_currency_so_the_supplier_bills_it(self):
+        """A EUR order comes back invoiced in EUR, and so is payable by SEPA.
+
+        Without the 850's CUR segment mock-edi bills its own default, USD, and a
+        payment run refuses the item because a SEPA transfer is in EUR. This is
+        the test that a purchase order's currency survives the round trip.
+        """
+        self.order(currency="EUR")
+
+        [result] = self.check.run()
+
+        self.assertEqual((result["status"], result["problems"]), ("posted", []))
+        [item] = self.open_items()
+        self.assertEqual(item["TransactionCurrency"], "EUR")
 
     def test_price_disagreement_is_blocked(self):
         # We ordered widgets at 11.00; the supplier's catalogue says 12.50,
