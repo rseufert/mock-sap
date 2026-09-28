@@ -180,6 +180,16 @@ def reset(conn: sqlite3.Connection) -> None:
 # Number ranges (SAP hands out document numbers from a number range object)
 # --------------------------------------------------------------------------
 
+# Suppliers banked at mock-bank, with the accounts it holds. The IBANs are
+# mock-bank's own; their check digits are real, so they pass the same
+# validation a client's would.
+_BANKED_SUPPLIERS = (
+    ("GLOBEX", "NL14MOCK0000000002", "Operating account"),
+    ("INITECH", "NL84MOCK0000000003", "Account closed at the bank"),
+    ("EURODIS", "NL57MOCK0000000004", "Account the bank cannot identify"),
+    ("Umbrella Logistics", "NL30MOCK0000000005", "Banked elsewhere"),
+)
+
 _RANGE_START = {
     "SALESORDER": 4711,
     "PURCHASEORDER": 4500000100,
@@ -334,8 +344,13 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
                         BankName=rnd.choice(["Deutsche Bank", "Commerzbank",
                                              "Sparkasse Heidelberg"]),
                         BankNumber=bban[:8],
-                        SWIFTCode=rnd.choice(["DEUTDEFF", "COBADEFFXXX",
-                                              "SOLADES1HDB"]),
+                        # A German BIC on a US account is a shape no payment
+                        # file would carry. A supplier outside the IBAN
+                        # countries is paid on a bank number and an account
+                        # number, and has no BIC here to give.
+                        SWIFTCode=(rnd.choice(["DEUTDEFF", "COBADEFFXXX",
+                                               "SOLADES1HDB"])
+                                   if bank.uses_iban(country) else ""),
                         BankControlKey="",
                         BankAccountHolderName=org[:60],
                         BankAccountName=note,
@@ -358,6 +373,36 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
                 ValidTo=_iso(_dt.date(9999, 12, 31)),
             ),
         )
+
+    # Four suppliers whose accounts are the ones mock-bank holds, so the two
+    # mocks line up without either side editing master data first. Three carry
+    # mock-edi's partner names: the same trading partner in EDI, in SAP and at
+    # the bank. The existing suppliers above are left exactly as they were,
+    # because other projects' tests name them.
+    for org, iban, note in _BANKED_SUPPLIERS:
+        bp_no += 1
+        bp = str(bp_no)
+        created = today - _dt.timedelta(days=rnd.randint(200, 1800))
+        suppliers.append(bp)
+        ins("A_BusinessPartner", dict(
+            BusinessPartner=bp, Customer="", Supplier=bp,
+            BusinessPartnerCategory="2",
+            BusinessPartnerFullName=org, BusinessPartnerName=org,
+            BusinessPartnerGrouping="BP02", OrganizationBPName1=org,
+            FirstName="", LastName="", SearchTerm1=org.upper()[:20],
+            Industry="TRAD", CreatedByUser="CB9980000001",
+            CreationDate=_iso(created), LastChangedByUser="CB9980000001",
+            LastChangeDate=_iso(created), BusinessPartnerIsBlocked=False))
+        ins("A_BusinessPartnerRole", dict(
+            BusinessPartner=bp, BusinessPartnerRole="FLVN01",
+            ValidFrom=_iso(created), ValidTo=_iso(_dt.date(9999, 12, 31))))
+        ins("A_BusinessPartnerBank", dict(
+            BusinessPartner=bp, BankIdentification="0001", BankCountryKey="NL",
+            BankName="Mock Bank N.V.", BankNumber=iban[4:8],
+            SWIFTCode="MOCKNL2A", BankControlKey="",
+            BankAccountHolderName=org[:60], BankAccountName=note,
+            IBAN=iban, IBANValidityStartDate=_iso(created),
+            BankAccount=iban[8:], BankAccountReferenceText=note[:20]))
 
     for i, (first, last) in enumerate(_PERSONS):
         bp_no += 1

@@ -219,6 +219,10 @@ class Service:
     # V2 services publish UI intent in a document of their own, and the A2X
     # integration APIs do not publish any: only a UI service opts in.
     annotations: bool = False
+    # An analytical service reports; it does not take writes. Saying so in
+    # $metadata and refusing them is the difference between a client that
+    # works here and fails against S/4, and one that fails here first.
+    read_only: bool = False
 
     @property
     def path(self) -> str:
@@ -1532,6 +1536,7 @@ for _svc in [
         {
             "A_OperationalAcctgDocItemCube": "A_OperationalAcctgDocItemCube",
         },
+        read_only=True,
     ),
     Service(
         "GWSAMPLE_BASIC",

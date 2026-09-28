@@ -180,3 +180,83 @@ class TestWhatDoesNotPost(SupplierInvoiceCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBlockingAnInvoice(SupplierInvoiceCase):
+    """An invoice and the item that owes the money are one decision.
+
+    Blocking the invoice and leaving its open item payable is the worst of
+    both worlds: the invoice reads as blocked and the payment goes out anyway.
+    Reported by mock-bank against 0.12.0 (#62).
+    """
+
+    def payable_of(self, accounting_document):
+        _, _, body = self.get(
+            CUBE + "?$filter=AccountingDocument%%20eq%%20'%s'%%20and%%20"
+            "AccountingDocumentItemType%%20eq%%20'K'&$format=json"
+            % accounting_document)
+        return body["d"]["results"][0]
+
+    def test_blocking_the_invoice_blocks_its_open_item(self):
+        applied = self.send()["APPLIED"][0]
+        self.assertEqual(self.payable_of(applied["ACCOUNTINGDOCUMENT"])
+                         ["PaymentBlockingReason"], "")
+
+        status, _, _ = self.request(
+            "PATCH", SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+            % (applied["SUPPLIERINVOICE"], applied["FISCALYEAR"]),
+            body={"PaymentBlockingReason": "A"},
+            headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+        self.assertEqual(status, 204)
+
+        self.assertEqual(self.payable_of(applied["ACCOUNTINGDOCUMENT"])
+                         ["PaymentBlockingReason"], "A",
+                         "a payment run reads the item, not the invoice")
+
+    def test_a_blocked_item_drops_out_of_the_payment_run_selection(self):
+        applied = self.send(reference="SUP-BLOCK")["APPLIED"][0]
+        selection = (CUBE + "?$filter=AccountingDocumentItemType%20eq%20'K'%20and%20"
+                     "ClearingAccountingDocument%20eq%20''%20and%20"
+                     "PaymentBlockingReason%20eq%20''&$format=json")
+
+        _, _, before = self.get(selection)
+        self.assertIn(applied["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in before["d"]["results"]])
+
+        self.request(
+            "PATCH", SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+            % (applied["SUPPLIERINVOICE"], applied["FISCALYEAR"]),
+            body={"PaymentBlockingReason": "A"},
+            headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+
+        _, _, after = self.get(selection)
+        self.assertNotIn(applied["ACCOUNTINGDOCUMENT"],
+                         [r["AccountingDocument"] for r in after["d"]["results"]],
+                         "blocked means a payment run does not pick it up")
+
+    def test_unblocking_puts_it_back(self):
+        applied = self.send(reference="SUP-UNBLOCK")["APPLIED"][0]
+        key = (SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+               % (applied["SUPPLIERINVOICE"], applied["FISCALYEAR"]))
+        headers = dict(self.csrf_token(), **{"If-Match": "*"})
+
+        self.request("PATCH", key, body={"PaymentBlockingReason": "A"},
+                     headers=headers)
+        self.request("PATCH", key, body={"PaymentBlockingReason": ""},
+                     headers=headers)
+
+        self.assertEqual(self.payable_of(applied["ACCOUNTINGDOCUMENT"])
+                         ["PaymentBlockingReason"], "",
+                         "and it is payable again")
+
+    def test_the_payment_method_is_blank_by_default(self):
+        """Blank is what SAP leaves when the vendor master decides.
+
+        Confirmed with mock-bank rather than guessed: their example reads a
+        blank method and `T` as a transfer, and skips anything else.
+        """
+        applied = self.send(reference="SUP-METHOD")["APPLIED"][0]
+        _, _, body = self.get(
+            SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+            "?$format=json" % (applied["SUPPLIERINVOICE"], applied["FISCALYEAR"]))
+        self.assertEqual(body["d"]["PaymentMethod"], "")

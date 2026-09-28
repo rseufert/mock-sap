@@ -135,11 +135,13 @@ def metadata_document(svc: Service) -> str:
     )
     for set_name, type_name in svc.sets.items():
         et = ENTITY_TYPES[type_name]
+        writable = "false" if svc.read_only else "true"
         out.append(
-            '<EntitySet%s%s sap:creatable="true" sap:updatable="true" '
-            'sap:deletable="true" sap:pageable="true" sap:addressable="true" '
+            '<EntitySet%s%s sap:creatable="%s" sap:updatable="%s" '
+            'sap:deletable="%s" sap:pageable="true" sap:addressable="true" '
             'sap:content-version="1"/>'
-            % (_a("Name", set_name), _a("EntityType", "%s.%s" % (ns, et.edm_name)))
+            % (_a("Name", set_name), _a("EntityType", "%s.%s" % (ns, et.edm_name)),
+               writable, writable, writable)
         )
     for et, nav, assoc in assocs:
         from .schema import set_for_type

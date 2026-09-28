@@ -114,13 +114,18 @@ class TestThePaymentRunSelection(OpenItemCase):
                                         amount="400.00")[0]
         self.cleared = self.post(terms="0001", amount="500.00")[0]
         line = self.supplier_line(self.cleared)
-        self.request("PATCH", CUBE + "(AccountingDocument='%s',CompanyCode='%s',"
-                     "FiscalYear='%s',AccountingDocumentItem='%s')"
-                     % (self.cleared, line["CompanyCode"], line["FiscalYear"],
-                        line["AccountingDocumentItem"]),
-                     body={"ClearingAccountingDocument": "0100000999",
-                           "ClearingDate": "/Date(%d)/" % 0},
-                     headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+        # The cube is read-only, as the real service is, so a test arranges a
+        # cleared item through the mock's own control plane rather than by
+        # writing to an entity set no client may write to.
+        status, _, _ = self.request("PATCH", "/_mock/open-items", body={
+            "AccountingDocument": self.cleared,
+            "CompanyCode": line["CompanyCode"],
+            "FiscalYear": line["FiscalYear"],
+            "AccountingDocumentItem": line["AccountingDocumentItem"],
+            "ClearingAccountingDocument": "0100000999",
+            "ClearingDate": "2026-09-27",
+        })
+        self.assertEqual(status, 200)
 
     def test_open_due_and_not_blocked_for_one_supplier(self):
         rows = self.select(
@@ -193,3 +198,65 @@ class TestTheCubeIsAViewNotACopy(OpenItemCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheCubeIsReadOnly(OpenItemCase):
+    """The real API_OPLACCTGDOCITEMCUBE_SRV reports; it does not take writes.
+
+    A mock that accepts them lets a client block or clear items a way that
+    works here and fails against S/4, which is the one thing a mock must not
+    do. Found by mock-bank building a payment run against 0.12.0 (#62).
+    """
+
+    def key_of(self, document):
+        line = self.supplier_line(document)
+        return ("(AccountingDocument='%s',CompanyCode='%s',FiscalYear='%s',"
+                "AccountingDocumentItem='%s')"
+                % (document, line["CompanyCode"], line["FiscalYear"],
+                   line["AccountingDocumentItem"]))
+
+    def test_a_patch_is_refused(self):
+        document, _, _ = self.post(terms="NT30")
+        status, _, body = self.request(
+            "PATCH", CUBE + self.key_of(document),
+            body={"PaymentBlockingReason": "A"},
+            headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+
+        self.assertEqual(status, 405)
+        self.assertIn("read-only", body["error"]["message"]["value"])
+        self.assertEqual(self.supplier_line(document)["PaymentBlockingReason"], "",
+                         "and nothing was changed")
+
+    def test_a_post_and_a_delete_are_refused(self):
+        document, _, _ = self.post(terms="NT30")
+        status, _, _ = self.request("POST", CUBE, body={
+            "AccountingDocument": "0199999999", "CompanyCode": "1710",
+            "FiscalYear": "2026", "AccountingDocumentItem": "000001"},
+            headers=self.csrf_token())
+        self.assertEqual(status, 405)
+
+        status, _, _ = self.request(
+            "DELETE", CUBE + self.key_of(document),
+            headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+        self.assertEqual(status, 405)
+
+    def test_the_metadata_says_so_too(self):
+        status, _, raw = self.request(
+            "GET", "/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV/$metadata",
+            raw=True)
+        self.assertEqual(status, 200)
+        document = raw.decode()
+        self.assertIn('sap:creatable="false"', document)
+        self.assertIn('sap:updatable="false"', document)
+        self.assertIn('sap:deletable="false"', document)
+
+    def test_a_writable_service_still_says_it_is_writable(self):
+        _, _, raw = self.request(
+            "GET", "/sap/opu/odata/sap/API_JOURNALENTRY_SRV/$metadata", raw=True)
+        self.assertIn('sap:creatable="true"', raw.decode(),
+                      "read-only is a property of this service, not of all of them")
+
+    def test_reading_still_works(self):
+        document, _, _ = self.post(terms="NT30")
+        line = self.supplier_line(document)
+        self.assertEqual(line["Supplier"], "1000001")

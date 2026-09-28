@@ -363,12 +363,14 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
                             content_type="text/plain;charset=utf-8")
         if tail:
             raise SapError("Resource not found for the segment '%s'" % tail[0], 404)
+        _refuse_writes(svc, method, set_name)
         if method == "GET":
             return _read_collection(ctx, svc, et, set_name, opts, headers=headers)
         if method == "POST":
             return _create(ctx, svc, et, set_name, opts, body)
         raise SapError("Method %s is not allowed on entity set '%s'" % (method, set_name), 405)
 
+    _refuse_writes(svc, method, set_name)
     keys = parse_key_predicate(predicate, et)
 
     # ---- entity level ----------------------------------------------------
@@ -516,6 +518,21 @@ def _merge_where(w1, p1, w2, p2):
     if w1 and w2:
         return "(%s) AND (%s)" % (w1, w2), list(p1) + list(p2)
     return (w1 or w2), list(p1) + list(p2)
+
+
+def _refuse_writes(svc, method: str, set_name: str) -> None:
+    """A read-only service takes no writes, and says so the way SAP does.
+
+    Declaring it in $metadata is not enough on its own: a client that writes
+    anyway would work here and fail against the real service, which is the
+    one thing a mock must never do.
+    """
+    if method in ("GET", "HEAD") or not svc.read_only:
+        return
+    raise SapError(
+        "'%s' is a read-only entity set: %s reports what other services post, "
+        "and is not modified through it" % (set_name, svc.name),
+        405, code="/IWBEP/CX_MGW_NOT_IMPL_EXC")
 
 
 def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=(),

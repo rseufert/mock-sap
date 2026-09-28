@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import unquote, urlparse
 
 from . import bapi, batch, db, idoc, messages, metadata, oauth
+from .store import open_items as _open_items, set_open_item as _set_open_item
 from .odata import SapError, error_payload
 from .schema import SERVICES, service_for_path
 from .service import JSON_CT, Context, Response, dispatch, parse_query
@@ -674,6 +675,15 @@ class Handler(BaseHTTPRequestHandler):
                 return Response(body={"cleared": mock.idoc_posting.clear()})
             raise SapError(
                 "Method %s is not allowed on /_mock/idoc-posting" % method, 405)
+        if rest == "open-items":
+            ctx = mock.context(self._base_url({}), mock.config.client)
+            if method == "GET":
+                return Response(body={"results": _open_items(
+                    mock.conn, opts.get("supplier", ""))})
+            if method in ("PATCH", "POST", "PUT"):
+                return Response(body=_set_open_item(ctx, payload))
+            raise SapError(
+                "Method %s is not allowed on /_mock/open-items" % method, 405)
         if rest == "bapi-behaviour":
             if method == "GET":
                 return Response(body={"results": mock.bapi_behaviour.rules,
