@@ -29,6 +29,13 @@ PO_SERVICE = "/sap/opu/odata/sap/API_PURCHASEORDER_PROCESS_SRV"
 # SAP material -> the supplier's part number (the purchasing info record)
 SUPPLIER_PART = {"TG11": "WIDGET-001", "TG12": "BRKT-050", "TG14": "GEAR-100"}
 
+# The supplier's net payment days -> SAP's terms key. Every EDI integration
+# configures a table like this, because the partner sends terms as numbers in an
+# ITD segment and SAP wants the key that names them. Nothing is guessed: a net
+# figure with no key is sent with no terms, which SAP reads as payable at once,
+# rather than being rounded to whichever key is closest.
+TERMS_BY_NET_DAYS = {0: "0001", 30: "NT30", 45: "NT45", 60: "NT60"}
+
 
 class Sap:
     """Just enough of an OData/IDoc client: a session and a CSRF token."""
@@ -114,11 +121,26 @@ def read_856(payload):
 
 
 def read_810(payload):
-    """The invoice as a dict: number, po, lines {item: (qty, price)}, total."""
-    invoice = {"lines": {}}
+    """The invoice as a dict: number, po, date, currency, terms, lines, total.
+
+    The three-way match needs only the numbers, but posting the invoice needs
+    what it was billed *on*: ``BIG01`` is the invoice date, which becomes the
+    payable's baseline and so decides when a payment run picks it up, and the
+    net days in ``ITD`` decide the terms. Reading only the match's fields is how
+    this example came to post invoices that owed nobody anything.
+    """
+    invoice = {"lines": {}, "date": "", "currency": "", "net_days": None}
     for fields in segments(payload):
         if fields[0] == "BIG":
+            invoice["date"] = fields[1]
             invoice["number"], invoice["po"] = fields[2], fields[4]
+        elif fields[0] == "CUR":
+            invoice["currency"] = fields[2] if len(fields) > 2 else ""
+        elif fields[0] == "ITD":
+            # ITD07 is the net days; an ITD that does not carry them leaves the
+            # invoice on no terms rather than on invented ones.
+            net = fields[7] if len(fields) > 7 else ""
+            invoice["net_days"] = int(net) if net.strip().isdigit() else None
         elif fields[0] == "IT1":
             invoice["lines"][fields[1]] = (Decimal(fields[2]), Decimal(fields[4]))
         elif fields[0] == "TDS":
@@ -126,19 +148,55 @@ def read_810(payload):
     return invoice
 
 
-def invoic_idoc(invoice):
-    """The invoice as the INVOIC02 IDoc SAP's invoice verification reads."""
+def invoic_idoc(invoice, po):
+    """The invoice as the INVOIC02 IDoc SAP's invoice verification reads.
+
+    Identifying the document is not enough to post it. SAP needs to know who to
+    owe and what for, and the segments it reads for that are:
+
+      - ``E1EDKA1`` with ``PARVW`` ``LF``, the supplier who billed us. Without
+        it there is nobody to owe, so nothing is created - and mock-sap answered
+        status 53 anyway until 0.13.2, which is how every invoice this example
+        ever "posted" came to leave no payable behind (mock-sap#67, #68).
+      - ``E1EDK02`` with ``QUALF`` **009**, the supplier's own invoice number.
+        This is what ``SupplierInvoiceIDByInvcgParty`` is set from, and what a
+        payment run puts in the payment's ``EndToEndId`` so the bank's answer
+        can be matched back. ``QUALF`` ``001``, which is all this used to send,
+        is the purchase order: a different reference for a different purpose.
+        mock-sap will fall back to ``E1EDK01``/``BELNR`` when ``009`` is absent,
+        and this sends both, so removing ``009`` changes nothing here - but the
+        fallback is this mock's kindness, not something to rely on against a
+        real system, where ``009`` is where an invoicing party's reference goes.
+      - ``E1EDK03`` with ``IDDAT`` ``026``, the invoice date, which becomes the
+        payable's baseline date and so decides when it falls due.
+      - ``NETWR`` and ``VGBEL``/``VGPOS`` per item, or the payable's lines carry
+        no value and name no purchase order.
+
+    The supplier number comes from the purchase order in SAP, not from the 810:
+    the invoice names the supplier by their EDI id (``N1*RE*...*92*MOCKEDI``),
+    and SAP owes money to a vendor number.
+    """
+    supplier = po["Supplier"]
+    currency = invoice.get("currency") or po.get("DocumentCurrency") or "USD"
+    terms = TERMS_BY_NET_DAYS.get(invoice.get("net_days"), "")
     items = "".join(
         "<E1EDP01><POSEX>%s</POSEX><MENGE>%s</MENGE><VPREI>%s</VPREI>"
+        "<NETWR>%s</NETWR><VGBEL>%s</VGBEL><VGPOS>%s</VGPOS>"
         "<E1EDP02><QUALF>001</QUALF><BELNR>%s</BELNR><ZEILE>%s</ZEILE></E1EDP02></E1EDP01>"
-        % (item, qty, price, invoice["po"], item)
+        % (item, qty, price, qty * price, invoice["po"], item, invoice["po"], item)
         for item, (qty, price) in sorted(invoice["lines"].items()))
     return ("<INVOIC02><IDOC BEGIN=\"1\"><EDI_DC40 SEGMENT=\"1\">"
             "<IDOCTYP>INVOIC02</IDOCTYP><MESTYP>INVOIC</MESTYP><DIRECT>2</DIRECT>"
-            "</EDI_DC40><E1EDK01 SEGMENT=\"1\"><BELNR>%s</BELNR></E1EDK01>"
-            "<E1EDK02><QUALF>001</QUALF><BELNR>%s</BELNR></E1EDK02>%s"
+            "</EDI_DC40><E1EDK01 SEGMENT=\"1\"><BELNR>%s</BELNR>"
+            "<CURCY>%s</CURCY><ZTERM>%s</ZTERM><BSART>INVO</BSART></E1EDK01>"
+            "<E1EDK02><QUALF>001</QUALF><BELNR>%s</BELNR></E1EDK02>"
+            "<E1EDK02><QUALF>009</QUALF><BELNR>%s</BELNR></E1EDK02>"
+            "<E1EDK03><IDDAT>026</IDDAT><DATUM>%s</DATUM></E1EDK03>"
+            "<E1EDKA1><PARVW>LF</PARVW><PARTN>%s</PARTN><LIFNR>%s</LIFNR></E1EDKA1>%s"
             "<E1EDS01><SUMID>010</SUMID><SUMME>%s</SUMME></E1EDS01>"
-            "</IDOC></INVOIC02>" % (invoice["number"], invoice["po"], items, invoice["total"]))
+            "</IDOC></INVOIC02>"
+            % (invoice["number"], currency, terms, invoice["po"], invoice["number"],
+               invoice["date"], supplier, supplier, items, invoice["total"]))
 
 
 class InvoiceCheck:
@@ -147,11 +205,10 @@ class InvoiceCheck:
         self.shipped = {}       # po_number -> {item: quantity}, from 856s
         self.posted = set()     # invoice numbers already in SAP
 
-    def problems(self, invoice):
+    def problems(self, invoice, po):
         """Why this invoice must not be posted; empty if it may be."""
         if invoice["number"] in self.posted:
             return ["invoice %s has already been posted" % invoice["number"]]
-        po = self.sap.purchase_order(invoice["po"])
         ordered = {i["PurchaseOrderItem"]: i for i in po["to_PurchaseOrderItem"]["results"]}
         shipped = self.shipped.get(invoice["po"], {})
         found, total = [], Decimal(0)
@@ -182,13 +239,16 @@ class InvoiceCheck:
             if doc["code"] != "810":
                 continue
             invoice = read_810(doc["payload"])
+            # One read of the order, for the match and for the IDoc: the
+            # supplier to owe is on the order, not on the invoice.
+            po = self.sap.purchase_order(invoice["po"])
             result = {"invoice": invoice["number"], "po": invoice["po"],
-                      "problems": self.problems(invoice)}
+                      "problems": self.problems(invoice, po)}
             if result["problems"]:
                 result["status"] = "blocked"
             else:
                 receipt = self.sap.request("POST", "/sap/bc/idoc",
-                                           invoic_idoc(invoice), "application/xml")
+                                           invoic_idoc(invoice, po), "application/xml")
                 # A 201 means SAP took the IDoc, not that it posted the invoice.
                 # The status record says which, and only 53 is posted; treating
                 # the docnum as success books an invoice SAP rejected, and marks
@@ -196,6 +256,13 @@ class InvoiceCheck:
                 if receipt.get("STATUS") == "53":
                     self.posted.add(invoice["number"])
                     result.update(status="posted", idoc=receipt["DOCNUM"])
+                    # What posting it actually created. An INVOIC that posts
+                    # leaves a supplier invoice and money owed; saying so here
+                    # is what makes "posted" mean something a payment run can
+                    # find, rather than only that SAP took the file.
+                    applied = (receipt.get("APPLIED") or [{}])[0]
+                    result.update(supplier_invoice=applied.get("SUPPLIERINVOICE", ""),
+                                  accounting_document=applied.get("ACCOUNTINGDOCUMENT", ""))
                 else:
                     result.update(status="not posted", idoc=receipt["DOCNUM"],
                                   problems=["IDoc %s is in status %s: %s"

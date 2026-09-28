@@ -8,7 +8,28 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`examples/invoice_check.py` posted invoices that owed nobody anything.**
+  `invoic_idoc()` built an `INVOIC02` that named the document but not the
+  supplier: no `E1EDKA1` with `PARVW` `LF`, so SAP had nobody to owe and created
+  **no supplier invoice and no open payable** - measured against a fresh mock,
+  zero of each - while answering status `53`. Every invoice this example
+  approved had been "posted" and left no money owed, so a payment run selecting
+  open items found nothing to pay. It also omitted `NETWR` and `VGBEL`/`VGPOS`
+  per item, leaving the payable's lines worth nothing and naming no purchase
+  order, and sent no currency, terms or invoice date. All of them are there now,
+  and `read_810` keeps the invoice's date (`BIG01`), currency (`CUR`) and net
+  payment days (`ITD07`) instead of reading only what the three-way match needs.
+  ([#68])
+
+  The reason five green tests never noticed: they all asserted what SAP
+  *received* - the IDoc and its status - and none asserted what posting it
+  created. There are now tests for the supplier invoice, its item amounts and
+  purchase-order references, the open payable, and the due date the invoice's
+  own terms give it. ([#68])
+
+[#68]: https://github.com/rseufert/mock-sap/issues/68
 
 ## [0.13.1] - 2026-09-27
 
