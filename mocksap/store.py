@@ -19,6 +19,35 @@ VALIDATORS = {
 }
 
 
+def _invoice_block_reaches_its_open_item(conn, row: dict) -> None:
+    """A supplier invoice and the item that owes the money are one decision.
+
+    Blocking the invoice and leaving its open item payable is the worst of
+    both: the invoice says it is blocked, a payment run reads the item, and
+    the money goes out anyway. They are separate rows - the invoice is a
+    document, the item is a line of the accounting document it posted - so
+    keeping them in step has to be done rather than assumed.
+    """
+    document = row.get("AccountingDocument")
+    if not document:
+        return
+    et = ENTITY_TYPES["A_OperationalAcctgDocItemCube"]
+    conn.execute(
+        'UPDATE "%s" SET "PaymentBlockingReason" = ? WHERE "AccountingDocument" = ? '
+        'AND "CompanyCode" = ? AND "FiscalYear" = ? '
+        'AND "AccountingDocumentItemType" = ?' % et.table,
+        (row.get("PaymentBlockingReason") or "", document,
+         row.get("CompanyCode"), row.get("FiscalYear"), "K"))
+    conn.commit()
+
+
+# Run after a row is written, on the merged row: for keeping two rows that
+# describe one decision from disagreeing.
+AFTER_WRITE = {
+    "A_SupplierInvoice": _invoice_block_reaches_its_open_item,
+}
+
+
 def validator_for(et: EntityType):
     return VALIDATORS.get(et.name)
 
@@ -194,6 +223,53 @@ def _flatten_complex(et: EntityType, prop, value) -> Dict[str, Any]:
     return out
 
 
+# --------------------------------------------------------------------------
+# Open items, through the mock's own control plane
+#
+# The open-item cube is read-only, as the real service is: a client cannot
+# clear or block an item by writing to it. A test still needs to arrange an
+# item that is blocked, or already cleared, without waiting for a payment and
+# a bank statement - so it asks the mock, at /_mock/open-items, which is
+# plainly not an SAP API and cannot be mistaken for one.
+# --------------------------------------------------------------------------
+
+OPEN_ITEM_FIELDS = (
+    "PaymentBlockingReason", "PaymentTerms", "NetDueDate",
+    "ClearingAccountingDocument", "ClearingDate", "ClearingCreationDate",
+    "ClearingItem", "ClearingDocFiscalYear", "ClearingIsReversed",
+)
+_OPEN_ITEM_KEYS = ("AccountingDocument", "CompanyCode", "FiscalYear",
+                   "AccountingDocumentItem")
+
+
+def open_items(conn, supplier: str = "") -> List[dict]:
+    """Every open supplier item, for looking at rather than for a client."""
+    et = ENTITY_TYPES["A_OperationalAcctgDocItemCube"]
+    sql = ('SELECT * FROM "%s" WHERE "AccountingDocumentItemType" = \'K\' '
+           'AND "ClearingAccountingDocument" = \'\'' % et.table)
+    params: List[Any] = []
+    if supplier:
+        sql += ' AND "Supplier" = ?'
+        params.append(supplier)
+    return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def set_open_item(ctx, payload: dict) -> dict:
+    """Set an open item's state directly, because a test needs to arrange it."""
+    et = ENTITY_TYPES["A_OperationalAcctgDocItemCube"]
+    keys = {name: str(payload.get(name) or "") for name in _OPEN_ITEM_KEYS}
+    missing = [name for name, value in keys.items() if not value]
+    if missing:
+        raise SapError("Name the item to change: %s" % ", ".join(missing), 400)
+    values = {name: payload[name] for name in OPEN_ITEM_FIELDS if name in payload}
+    if not values:
+        raise SapError(
+            "Nothing to set; this route changes %s" % ", ".join(OPEN_ITEM_FIELDS), 400)
+    update(ctx.conn, et, keys, values, user=ctx.user)
+    row = get(ctx.conn, et, keys)
+    return dict(row) if row else {}
+
+
 def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
            parent_keys: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Insert one entity (with children, if the payload is a deep insert)."""
@@ -343,6 +419,9 @@ def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
     conn.commit()
     merged = dict(existing)
     merged.update(values)
+    after = AFTER_WRITE.get(et.name)
+    if after:
+        after(conn, merged)
     _recalculate_totals(conn, et, merged)
 
 

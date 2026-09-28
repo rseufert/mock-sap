@@ -498,6 +498,14 @@ back - and the purchase order each line bills against under
 than only inside an example. The accounting document it posts leaves an **open
 payable**, which is what a payment run then selects.
 
+**Blocking an invoice blocks the money.** `PaymentBlockingReason` on
+`A_SupplierInvoice` reaches the open item its accounting document posted, so a
+payment run - which reads the item, not the invoice - stops picking it up.
+The two are separate rows and keeping them in step is done rather than assumed;
+letting them disagree means an invoice that reads as blocked while the payment
+goes out anyway. `PaymentMethod` is blank by default, which is what SAP leaves
+when the vendor master decides.
+
 Three things it deliberately does not do:
 
 - **It does not check the invoice against the purchase order.** That is the
@@ -542,6 +550,27 @@ a payment run would quietly find no work to do.
 its own and `/_mock/state` does not count it. The journal entry service does not
 publish the open-item fields, which is also true of the real one.
 
+**It is read-only, as the real service is.** A `POST`, `PATCH` or `DELETE` is
+refused with 405 and `$metadata` says `sap:creatable="false"`. An item is
+blocked by blocking its supplier invoice, and cleared by a payment and a bank
+statement - not by writing to the cube. A mock that accepted those writes would
+let a client work here and fail against S/4.
+
+To arrange an item for a test - blocked, overdue, already cleared - without
+waiting for a payment, ask the mock rather than the service:
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/_mock/open-items \
+  -H 'Content-Type: application/json' \
+  -d '{"AccountingDocument":"0100000008","CompanyCode":"1710",
+       "FiscalYear":"2026","AccountingDocumentItem":"000001",
+       "PaymentBlockingReason":"A"}'
+```
+
+`/_mock` is plainly the mock's own control plane and cannot be mistaken for an
+SAP API, which is the point: the shortcut is somewhere a client would never
+find it.
+
 Post a payable with `BAPI_ACC_DOCUMENT_POST` and an `ACCOUNTPAYABLE` line
 (`VENDOR_NO`, `PMNTTRMS`, `BLINE_DATE`, `PMTBLOCK`), or an `ACCOUNTRECEIVABLE`
 line for the customer side. The terms table is deliberately short - `0001` is
@@ -574,8 +603,15 @@ check a client's does, and there is a test that says so.
 **Not every supplier has an IBAN.** The seeded suppliers outside the IBAN
 countries carry a bank number and an account number instead, because a US
 supplier is paid on a routing number and inventing a US IBAN would be a shape no
-bank would take. A payment run has to cope with that, so the mock makes it
-happen.
+bank would take. They carry no BIC either, for the same reason. A payment run has
+to cope with that, so the mock makes it happen.
+
+**Four suppliers bank where [mock-bank](https://github.com/rseufert/mock-bank)
+can act on them**: `1000013` GLOBEX, `1000014` INITECH, `1000015` EURODIS and
+`1000016` Umbrella Logistics, at `NL…MOCK…` IBANs with BIC `MOCKNL2A`. Three
+carry mock-edi's partner names, so the same trading partner is recognisable in
+EDI, in SAP and at the bank. The suppliers numbered `1000009` to `1000012` are
+unchanged, because other projects' tests name them.
 
 ## A bank statement: what it claims
 
@@ -784,6 +820,7 @@ curl  http://127.0.0.1:8000/_mock/rfc-log              # which BAPIs were called
 curl  http://127.0.0.1:8000/_mock/state                # row counts per entity
 curl  http://127.0.0.1:8000/_mock/idoc-posting         # how inbound IDocs will post
 curl  http://127.0.0.1:8000/_mock/bapi-behaviour       # what a BAPI will answer
+curl  http://127.0.0.1:8000/_mock/open-items           # what is still owed, and set its state
 curl -X POST http://127.0.0.1:8000/_mock/reset \
      -H 'Content-Type: application/json' -d '{"seed":7,"orders":50}'
 ```

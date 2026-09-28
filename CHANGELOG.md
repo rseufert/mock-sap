@@ -8,7 +8,39 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The open-item cube accepted writes, and the real service does not.**
+  `API_OPLACCTGDOCITEMCUBE_SRV` was declared `sap:creatable/updatable/deletable
+  ="true"` and took `PATCH`, so a client could block or clear an item a way
+  that works here and fails against S/4 - the one thing a mock must never
+  allow. It is now read-only in `$metadata` **and** refuses writes with 405,
+  because declaring it is not enough on its own. A `Service` can now say
+  `read_only`. Arranging an item for a test moved to `PATCH /_mock/open-items`,
+  which is plainly the mock's own control plane rather than a pretend SAP API.
+  ([#62])
+
+- **A blocked supplier invoice left its open item payable.** `PATCH`ing
+  `PaymentBlockingReason` on `A_SupplierInvoice` returned 204 and showed the
+  block, while the open item a payment run actually reads stayed blank - so the
+  invoice said blocked and the money went out anyway. The invoice and the item
+  its accounting document posted are separate rows, and they are now kept in
+  step. ([#62])
+
+- **A supplier outside the IBAN countries carried a German BIC.** The seed
+  picked a `SWIFTCode` whatever the account's country, so a US supplier paid on
+  a routing number was given `DEUTDEFF`. It now has no BIC, which is what it
+  has. ([#62])
+
+### Added
+
+- **Four suppliers banked where mock-bank can act on them.** `1000013` GLOBEX,
+  `1000014` INITECH, `1000015` EURODIS and `1000016` Umbrella Logistics, at the
+  `NL…MOCK…` IBANs mock-bank holds, with BIC `MOCKNL2A`. Three carry mock-edi's
+  partner names, so one trading partner is recognisable in EDI, in SAP and at
+  the bank. Without them a payment run had to write its own master data before
+  it could test anything. The suppliers numbered `1000009` to `1000012` are
+  untouched, because other projects' tests name them. ([#62])
 
 ## [0.13.0] - 2026-09-27
 
@@ -498,3 +530,4 @@ First release.
 [#55]: https://github.com/rseufert/mock-sap/issues/55
 [#56]: https://github.com/rseufert/mock-sap/issues/56
 [#57]: https://github.com/rseufert/mock-sap/issues/57
+[#62]: https://github.com/rseufert/mock-sap/issues/62

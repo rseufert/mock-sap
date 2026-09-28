@@ -160,3 +160,54 @@ class TestResetRestoresTheAccounts(BankCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheSuppliersMockBankHolds(BankCase):
+    """Four suppliers banked where mock-bank can act on them (#62).
+
+    Without these, a payment run has to write its own master data before it
+    can test anything, which is the shadow master data this set exists to
+    make unnecessary.
+    """
+
+    WANTED = {
+        "NL14MOCK0000000002": "GLOBEX",
+        "NL84MOCK0000000003": "INITECH",
+        "NL57MOCK0000000004": "EURODIS",
+        "NL30MOCK0000000005": "Umbrella Logistics",
+    }
+
+    def test_each_account_is_seeded_against_the_named_supplier(self):
+        by_iban = {a["IBAN"]: a for a in self.suppliers_with_accounts()}
+        for iban, name in self.WANTED.items():
+            self.assertIn(iban, by_iban, "mock-bank holds %s" % iban)
+            account = by_iban[iban]
+            self.assertEqual(account["BankAccountHolderName"], name)
+            self.assertEqual(account["SWIFTCode"], "MOCKNL2A")
+            self.assertEqual(account["BankCountryKey"], "NL")
+
+    def test_they_are_suppliers_a_payment_run_can_find(self):
+        by_iban = {a["IBAN"]: a for a in self.suppliers_with_accounts()}
+        for iban in self.WANTED:
+            partner = by_iban[iban]["BusinessPartner"]
+            _, _, body = self.get(
+                BP_SRV + "/A_BusinessPartner('%s')?$format=json" % partner)
+            self.assertEqual(body["d"]["Supplier"], partner,
+                             "a business partner in a supplier role")
+
+    def test_the_suppliers_other_projects_name_are_untouched(self):
+        """mock-bank's tests hardcode these, so the seed must not move them."""
+        for partner in ("1000009", "1000010", "1000011"):
+            status, _, body = self.get(
+                BP_SRV + "/A_BusinessPartner('%s')?$format=json" % partner)
+            self.assertEqual(status, 200)
+            self.assertEqual(body["d"]["Supplier"], partner)
+
+    def test_a_non_iban_account_carries_no_bic_either(self):
+        """A German BIC on a US account is a shape no payment file carries."""
+        for account in self.suppliers_with_accounts():
+            if not account["IBAN"]:
+                self.assertEqual(account["SWIFTCode"], "",
+                                 "%s has no IBAN, so no BIC to give"
+                                 % account["BusinessPartner"])
+                self.assertTrue(account["BankNumber"])
