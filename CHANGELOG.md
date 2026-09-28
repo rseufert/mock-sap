@@ -8,6 +8,15 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.13.0] - 2026-09-27
+
+Reconciliation, and with it the end of the chain 0.12.0 started. A supplier's
+invoice became money owed; now the bank says what happened to it, and the mock
+clears what settled and reopens what came back. Built in two halves by two
+people: reading the statement, and acting on it.
+
 ### Added
 
 - **Posting a `FINSTA01` clears the open items it paid.** Reading the statement
@@ -446,7 +455,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/rseufert/mock-sap/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rseufert/mock-sap/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/rseufert/mock-sap/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/rseufert/mock-sap/compare/v0.11.0...v0.11.1
