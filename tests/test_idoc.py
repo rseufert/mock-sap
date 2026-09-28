@@ -50,6 +50,30 @@ class TestIdoc(MockServerCase):
         self.assertEqual(status, 201)
         self.assertEqual(receipt["IDOCTYP"], "ORDERS05")
         self.assertEqual(receipt["MESTYP"], "ORDERS")
+        # An ORDERS is filed and nothing else, so a flat one posts: the refusal
+        # of a flat INVOIC below must stay narrow, not reject every flat IDoc.
+        self.assertEqual(receipt["STATUS"], "53")
+
+    def test_a_flat_invoic_is_refused_rather_than_filed_as_posted(self):
+        """A flat INVOIC cannot be posted, so it must not report 53.
+
+        Posting reads the segments, and this mock has no fixed-width layout for
+        them - only the control record. The flat ORDERS05 above still posts 53
+        because an ORDERS is filed and nothing else; an INVOIC would have owed
+        somebody money, so silence would be the same lie as any other IDoc that
+        posts nothing and says it posted.
+        """
+        headers = self.csrf_token()
+        control = ("EDI_DC40  " + "100" + "0" * 16 + "0756" + "53" + "2" + "2" + " " + " "
+                   + "INVOIC02".ljust(30) + " " * 30 + "INVOIC".ljust(30))
+        status, _, receipt = self.request(
+            "POST", "/sap/bc/idoc", body=control + "\nE1EDK01   ...",
+            headers=dict(headers, **{"Content-Type": "text/plain"}))
+
+        self.assertEqual(status, 201, "the IDoc was still received")
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("flat file", receipt["STATUS_TEXT"], receipt["STATUS_TEXT"])
+        self.assertNotIn("APPLIED", receipt)
 
 class TestInvoiceAndDelivery(MockServerCase):
     def an_order(self):
@@ -275,6 +299,48 @@ class TestInvoiceAndDelivery(MockServerCase):
             "/sap/opu/odata/sap/API_OUTBOUND_DELIVERY_SRV/A_OutbDeliveryHeader"
             "?$format=json")[2]["d"]["results"]
         self.assertEqual(len(deliveries_after), len(deliveries_before))
+
+    def test_a_delvry_that_delivers_nothing_is_not_posted(self):
+        """A DELVRY naming no order line is 51, not 53.
+
+        Same argument as the INVOIC: 53 is *Application document posted*, and
+        an IDoc with no E1EDL24 naming a document and position moves no order,
+        so claiming it posted leaves a client nothing to check.
+        """
+        headers = dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                             "Accept": "application/json"})
+        delivery = (
+            '<?xml version="1.0" encoding="utf-8"?><DELVRY07><IDOC BEGIN="1">'
+            '<EDI_DC40 SEGMENT="1"><IDOCTYP>DELVRY07</IDOCTYP><MESTYP>DELVRY</MESTYP>'
+            "</EDI_DC40>"
+            '<E1EDL20 SEGMENT="1"><VBELN>0080007778</VBELN></E1EDL20>'
+            "</IDOC></DELVRY07>")
+
+        status, _, receipt = self.request("POST", "/sap/bc/idoc", body=delivery,
+                                         headers=headers)
+
+        self.assertEqual(status, 201)
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("E1EDL24", receipt["STATUS_TEXT"], receipt["STATUS_TEXT"])
+        self.assertNotIn("APPLIED", receipt)
+
+    def test_an_orders_idoc_with_nothing_to_post_is_still_53(self):
+        """The limit of the rule above: ORDERS has no application step at all.
+
+        An ORDERS05 is filed and nothing else, so there is nothing for it to
+        decline and 53 is honest. Without this, "post before filing" would
+        drift into refusing every IDoc that does not create a document.
+        """
+        headers = dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                             "Accept": "application/json"})
+        order = ('<?xml version="1.0" encoding="utf-8"?><ORDERS05><IDOC BEGIN="1">'
+                 '<EDI_DC40 SEGMENT="1"><IDOCTYP>ORDERS05</IDOCTYP>'
+                 "<MESTYP>ORDERS</MESTYP></EDI_DC40></IDOC></ORDERS05>")
+
+        receipt = self.request("POST", "/sap/bc/idoc", body=order, headers=headers)[2]
+
+        self.assertEqual(receipt["STATUS"], "53")
+        self.assertEqual(receipt["STATUS_TEXT"], "Application document posted")
 
     def test_a_rule_can_be_spent_leaving_the_retry_to_post(self):
         self.posts_as({"mestyp": "ORDERS", "status": "51",

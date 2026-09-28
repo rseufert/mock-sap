@@ -376,7 +376,8 @@ is created too.
 
 Receiving an IDoc and posting it are two events, and SAP reports them separately:
 the port answers, and then the application either posts the document or does not.
-By default every inbound IDoc posts, status `53`. Ask for something else:
+By default an inbound IDoc the mock can act on posts, status `53`. Ask for
+something else:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/_mock/idoc-posting \
@@ -394,6 +395,14 @@ curl -X POST http://127.0.0.1:8000/_mock/idoc-posting \
 `mestyp` and `idoctyp` are optional filters, `count` spends the rule after that
 many IDocs, `GET` lists the rules and `DELETE` clears them, as does
 `POST /_mock/reset`.
+
+The mock also declines on its own account, without a rule, when it cannot do what
+posting the IDoc means: an `INVOIC` with no `E1EDKA1` naming the supplier owes
+nobody money, and a `DELVRY` with no `E1EDL24` naming a document and position
+delivers nothing. Both are status `51` with a status text naming the segment that
+was missing, because reporting `53` for an IDoc that posted nothing is the very
+mistake this section exists to help you catch. An `ORDERS05`, which is filed and
+nothing else, has no application step to decline and still posts `53`.
 
 Two things about this are the point. **The HTTP status stays `201`**: the IDoc
 *was* received, a docnum *was* issued, and the failure is in the status record
