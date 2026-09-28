@@ -8,6 +8,15 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.13.1] - 2026-09-27
+
+Two fixes found by integrating, not by reading. mock-bank built a payment run
+against 0.13.0 and hit a mock that allowed something the real system refuses,
+and an invoice whose block did not reach the money. Both are the kind a mock
+has to get right to be worth pointing at.
+
 ### Fixed
 
 - **The open-item cube accepted writes, and the real service does not.**
@@ -487,7 +496,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/rseufert/mock-sap/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/rseufert/mock-sap/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rseufert/mock-sap/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/rseufert/mock-sap/compare/v0.11.1...v0.11.2
