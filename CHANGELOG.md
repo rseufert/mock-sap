@@ -8,7 +8,20 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`examples/invoice_check.py` ordered in one currency and was billed in
+  another, and its three-way match did not notice.** The `850` it sent carried no
+  `CUR` segment, so mock-edi fell back to its own default and invoiced a EUR
+  purchase order in dollars; `problems()` then compared `12.50` with `12.50` and
+  passed it, because every check there subtracts bare decimals. A payment run
+  downstream refused the item - a SEPA transfer is in EUR - which is where it
+  surfaced. The order now declares its currency, and an invoice whose currency
+  differs from its purchase order is blocked by name. An invoice that names no
+  currency is not blocked: `CUR` is optional, and absence is not disagreement.
+  ([#74])
+
+[#74]: https://github.com/rseufert/mock-sap/issues/74
 
 ## [0.13.2] - 2026-09-28
 

@@ -89,6 +89,11 @@ def send_order(sap, edi_base, po_number, sender, receiver="MOCKEDI", control=1):
     items = po["to_PurchaseOrderItem"]["results"]
     now = datetime.datetime.now(datetime.timezone.utc)
     body = ["ST*850*0001", "BEG*00*SA*%s**%s" % (po_number, now.strftime("%Y%m%d"))]
+    # CUR, or the supplier bills in whatever its own default is - USD, for
+    # mock-edi - and an order placed in EUR comes back invoiced in dollars. The
+    # amounts then match number for number and mean different things, which is
+    # what `problems` checks for below.
+    body += ["CUR*BY*%s" % (po.get("DocumentCurrency") or "USD")]
     body += ["PO1*%s*%d*EA*%s**VP*%s" % (i["PurchaseOrderItem"], float(i["OrderQuantity"]),
                                           i["NetPriceAmount"], SUPPLIER_PART[i["Material"]])
              for i in items]
@@ -212,6 +217,14 @@ class InvoiceCheck:
         ordered = {i["PurchaseOrderItem"]: i for i in po["to_PurchaseOrderItem"]["results"]}
         shipped = self.shipped.get(invoice["po"], {})
         found, total = [], Decimal(0)
+        # Before any amount is compared: the same number in another currency is
+        # not the same price. Every check below subtracts and compares bare
+        # decimals, so a USD invoice against a EUR order would pass them all.
+        billed = invoice.get("currency") or ""
+        ordered_in = po.get("DocumentCurrency") or ""
+        if billed and ordered_in and billed != ordered_in:
+            found.append("invoice is in %s, purchase order %s is in %s"
+                         % (billed, invoice["po"], ordered_in))
         for item, (qty, price) in sorted(invoice["lines"].items()):
             total += qty * price
             if item not in ordered:
