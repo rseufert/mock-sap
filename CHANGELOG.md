@@ -8,6 +8,21 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.13.3] - 2026-09-29
+
+Everything here is in `examples/`. `mocksap/` is unchanged from 0.13.2, so the
+mock behaves exactly as it did - and because the wheel carries no examples, this
+release reaches you through the source archive or a clone rather than through
+`pip install`. It is a patch because no behaviour of the mock changes at all.
+
+It is worth cutting anyway: `invoice_check` is what this project's walkthrough
+tells a reader to run, the currency fix below was being described as shipped in
+0.13.2 when it was not, and an example nobody can install is an example that
+does not exist. Two test docstrings are corrected with it - one claimed
+something the test did not do, and one printed cut in half under `-v`.
+
 ### Fixed
 
 - **`examples/invoice_check.py` ordered in one currency and was billed in
@@ -564,7 +579,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.13.3...HEAD
+[0.13.3]: https://github.com/rseufert/mock-sap/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/rseufert/mock-sap/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/rseufert/mock-sap/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/rseufert/mock-sap/compare/v0.12.0...v0.13.0
