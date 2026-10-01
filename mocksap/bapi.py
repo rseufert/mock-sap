@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-from . import db, documents, store
+from . import clock, db, documents, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -126,7 +126,7 @@ def _stfc_connection(ctx, params):
     return {
         "ECHOTEXT": text,
         "RESPTEXT": "Mock SAP system %s, date %s, connection test successful"
-                    % (SYSTEM_ID, _dt.date.today().isoformat()),
+                    % (SYSTEM_ID, clock.today().isoformat()),
     }
 
 
@@ -1062,7 +1062,7 @@ def call(ctx, name: str, params: dict, protocol: str = "json",
                 ret(rule["type"], rule["message"], rule["msg_id"], rule["number"]))
     ctx.conn.execute(
         "INSERT INTO rfc_log(ts,function_name,protocol,request,response) VALUES(?,?,?,?,?)",
-        (_dt.datetime.utcnow().isoformat(), resolved, protocol,
+        (clock.stamp(), resolved, protocol,
          json.dumps(params)[:20000], json.dumps(result)[:20000]),
     )
     ctx.conn.commit()

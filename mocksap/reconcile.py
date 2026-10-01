@@ -23,7 +23,7 @@ import json
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from . import db, documents, statement as statement_reader, store
+from . import clock, db, documents, statement as statement_reader, store
 from .schema import ENTITY_TYPES
 
 CUBE = "A_OperationalAcctgDocItemCube"
@@ -274,7 +274,7 @@ def _remember(conn, parsed: dict, findings: List[str]) -> None:
          str(parsed["opening"]) if parsed["opening"] is not None else None,
          str(parsed["closing"]) if parsed["closing"] is not None else None,
          1 if parsed.get("interim") else 0, json.dumps(findings),
-         _dt.datetime.utcnow().isoformat()))
+         clock.stamp()))
     conn.commit()
 
 
@@ -311,7 +311,7 @@ def check_balances(conn, parsed: dict) -> List[str]:
 def apply_statement(ctx, body: bytes) -> dict:
     """Post a bank statement against the open items it pays."""
     parsed = statement_reader.parse(body)
-    posting = parsed.get("date") or _dt.date.today().isoformat()
+    posting = parsed.get("date") or clock.today().isoformat()
     findings = check_balances(ctx.conn, parsed)
 
     cleared, reopened, unprocessed = [], [], []

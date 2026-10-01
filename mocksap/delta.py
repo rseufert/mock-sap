@@ -15,6 +15,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import clock
 from .odata import SapError
 from .schema import EntityType
 
@@ -43,7 +44,7 @@ def require_change_property(et: EntityType):
 
 
 def mint(moment: Optional[_dt.datetime] = None) -> str:
-    moment = moment or _dt.datetime.utcnow()
+    moment = moment or clock.now()
     return "D%sT%s%03d" % (moment.strftime("%Y%m%d"), moment.strftime("%H%M%S"),
                            moment.microsecond // 1000)
 

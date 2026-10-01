@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import __version__
+from . import __version__, clock
 from .server import Config, make_server
 from .schema import SERVICES
 
@@ -35,6 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "arrives without an If-Match header (428)")
     p.add_argument("--seed", dest="seed_value", type=int, default=42,
                    help="seed for the generated demo data (default: 42)")
+    p.add_argument("--clock", default="", metavar="YYYY-MM-DDTHH:MM",
+                   help="pin system time, so every date the mock computes - a "
+                        "posting date, a due date, a log timestamp - is the "
+                        "same on every run. Moved with POST /_mock/advance. "
+                        "Without it the mock keeps real time (UTC)")
     p.add_argument("--latency-ms", type=int, default=0,
                    help="artificial delay added to every request")
     p.add_argument("--error-rate", type=float, default=0.0,
@@ -57,7 +62,14 @@ def main(argv=None) -> int:
     except (AttributeError, ValueError):  # pragma: no cover - odd stdout
         pass
     config = Config(**{k: v for k, v in vars(args).items()})
-    httpd = make_server(config)
+    try:
+        httpd = make_server(config)
+    except clock.Invalid as bad:
+        # A clock the mock cannot keep is a flag the caller mistyped, so it
+        # gets the same one-line refusal as any other bad argument rather
+        # than a traceback from inside the server.
+        print("mock-sap: %s" % bad, file=sys.stderr)
+        return 2
     base = "http://%s:%d" % (args.host, args.port)
     print("mock-sap %s listening on %s  (client %s, db %s)"
           % (__version__, base, args.client, args.db_path))
@@ -69,6 +81,9 @@ def main(argv=None) -> int:
         print("  OAuth  %s/sap/bc/sec/oauth2/token  (client %s, tokens live %ds)"
               % (base, args.oauth.split(":", 1)[0], args.token_ttl))
     print("  Admin  %s/_mock/health" % base)
+    if args.clock:
+        print("  Clock  pinned at %s UTC  (move it with POST %s/_mock/advance)"
+              % (args.clock, base))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

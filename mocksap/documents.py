@@ -10,14 +10,14 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import db, store
+from . import clock, db, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
 
 def _today() -> str:
-    return _dt.datetime.utcnow().replace(hour=0, minute=0, second=0,
-                                         microsecond=0).isoformat()
+    return clock.now().replace(hour=0, minute=0, second=0,
+                               microsecond=0).isoformat()
 
 
 def sales_order(ctx, number: str):

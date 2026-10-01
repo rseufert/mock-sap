@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote, urlparse
 
-from . import bapi, batch, db, idoc, messages, metadata, oauth
+from . import bapi, batch, clock as clocks, db, idoc, messages, metadata, oauth
 from .store import open_items as _open_items, set_open_item as _set_open_item
 from .odata import SapError, error_payload
 from .schema import SERVICES, service_for_path
@@ -56,6 +56,7 @@ class Config:
         self.log_requests = kw.get("log_requests", True)
         self.quiet = kw.get("quiet", False)
         self.seed_value = kw.get("seed_value", 42)
+        self.clock = kw.get("clock", "")  # "YYYY-MM-DDTHH:MM", or real time
 
 
 class Faults:
@@ -115,7 +116,17 @@ class MockSap:
         self.faults = Faults()
         self.idoc_posting = idoc.PostingRules()
         self.bapi_behaviour = bapi.BehaviourRules()
-        self.started = _dt.datetime.utcnow()
+        # Installed as the process-wide clock, which is what every module
+        # that computes a date reads. One mock per process holds one clock;
+        # see `clock.py` on why it is an offset rather than a stored instant.
+        self.clock = clocks.Clock(config.clock)
+        # The clock it displaced is kept so `close` can put it back. A test
+        # suite starts many mocks in one process, and a pinned clock left
+        # installed after its own mock shut down would move the dates under
+        # whatever ran next - which surfaces as a failure in an unrelated
+        # test, a long way from the class that pinned it.
+        self._previous_clock = clocks.install(self.clock)
+        self.started = self.clock.now()
         self.rnd = random.Random(config.seed_value)
 
     def context(self, base_url: str, client: str, user: Optional[str] = None) -> Context:
@@ -123,12 +134,20 @@ class MockSap:
                        require_if_match=self.config.require_if_match)
 
     def close(self) -> None:
-        """Release the database connection; used when a test shuts a mock down."""
+        """Release the database connection; used when a test shuts a mock down.
+
+        Also puts back the clock this mock displaced, so a pinned clock does
+        not outlive the mock that pinned it.
+        """
         try:
             db.forget(self.conn)
             self.conn.close()
         except Exception:  # pragma: no cover - nothing useful to do here
             pass
+        if clocks.current() is self.clock:
+            # Only if nothing else has installed one since: putting back an
+            # older clock over a newer mock's would be worse than leaving it.
+            clocks.install(self._previous_clock)
 
     def new_token(self) -> str:
         token = secrets.token_urlsafe(18)
@@ -222,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 db.log_request(
                     self.mock.conn,
-                    ts=_dt.datetime.utcnow().isoformat(), method=method, path=path,
+                    ts=clocks.stamp(), method=method, path=path,
                     query=query, headers=json.dumps(headers),
                     body=body[:8000].decode("utf-8", "replace"),
                     status=response.status, duration_ms=round(duration, 2))
@@ -604,11 +623,17 @@ class Handler(BaseHTTPRequestHandler):
                 "requireIfMatch": mock.config.require_if_match,
                 "auth": bool(mock.config.basic_auth),
                 "oauth": bool(mock.oauth),
-                "started": mock.started.isoformat() + "Z",
-                "uptime_s": round((_dt.datetime.utcnow() - mock.started).total_seconds(), 1),
+                "started": mock.started.replace(microsecond=0).isoformat() + "Z",
+                "uptime_s": round((clocks.now() - mock.started).total_seconds(), 1),
+                "clock": mock.clock.snapshot(),
             })
         if rest == "state":
-            return Response(body=db.counts(mock.conn))
+            # The row counts are the body, as they always were, with the clock
+            # under its own key: a client reading counts by entity name keeps
+            # working, and `clock` cannot collide with an entity set.
+            body = db.counts(mock.conn)
+            body["clock"] = mock.clock.snapshot()
+            return Response(body=body)
         if rest == "services":
             base = self._base_url({k.lower(): v for k, v in self.headers.items()})
             return Response(body={"services": [{
@@ -631,7 +656,13 @@ class Handler(BaseHTTPRequestHandler):
             mock.faults.clear()
             mock.idoc_posting.clear()
             mock.bapi_behaviour.clear()
-            return Response(body={"reset": True, "counts": counts})
+            # Back to the pinned moment rather than to real time; see
+            # `Clock.reset`. Without this, a suite that pins the clock and
+            # resets between tests gets the pinned moment for its first test
+            # and the wall clock for every test after it.
+            mock.clock.reset()
+            return Response(body={"reset": True, "counts": counts,
+                                  "clock": mock.clock.snapshot()})
         if rest == "requests":
             limit = int(opts.get("limit", 25))
             columns = "id,ts,method,path,query,status,duration_ms"
@@ -690,6 +721,19 @@ class Handler(BaseHTTPRequestHandler):
                 return Response(body=_set_open_item(ctx, payload))
             raise SapError(
                 "Method %s is not allowed on /_mock/open-items" % method, 405)
+        if rest == "advance":
+            if method != "POST":
+                raise SapError("Use POST to move the clock", 405)
+            # Query string or body, because both are what a caller reaches
+            # for: mock-bank's advance is a query string and a test that
+            # already posts JSON everywhere should not have to special-case
+            # this one.
+            days = opts.get("days", payload.get("days"))
+            to = opts.get("to", payload.get("to"))
+            try:
+                return Response(body=mock.clock.advance(days=days, to=to))
+            except clocks.Invalid as bad:
+                raise SapError(str(bad), 400)
         if rest == "bapi-behaviour":
             if method == "GET":
                 return Response(body={"results": mock.bapi_behaviour.rules,

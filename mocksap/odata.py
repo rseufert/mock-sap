@@ -12,6 +12,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
+from . import clock
 from .schema import COMPLEX_TYPES, EntityType, Prop, Service, set_for_type
 
 EPOCH = _dt.datetime(1970, 1, 1)
@@ -55,7 +56,7 @@ def error_payload(err: SapError, lang: str = "en") -> dict:
                     "service_version": "0001",
                 },
                 "transactionid": "MOCK0000000000000000000000000000",
-                "timestamp": _dt.datetime.utcnow().strftime("%Y%m%d%H%M%S.%f")[:21],
+                "timestamp": clock.now().strftime("%Y%m%d%H%M%S.%f")[:21],
                 "Error_Resolution": {
                     "SAP_Transaction": "Run transaction /IWFND/ERROR_LOG on the mock gateway",
                     "SAP_Note": "See SAP Note 1797736 for error analysis",
