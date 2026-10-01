@@ -93,12 +93,11 @@ PAYMENT_TERMS = {
     "NT60": 60,
 }
 
-# The account type a line posts to, SAP's KOART: a G/L line, a customer line,
-# a supplier line. Only the last two can be open items, because only they are
-# owed to or by somebody.
-ITEM_TYPE_GL = "S"
-ITEM_TYPE_CUSTOMER = "D"
-ITEM_TYPE_SUPPLIER = "K"
+# SAP's KOART, defined in `store` next to the queries that select open items
+# by it, and re-exported here because this is where lines are given one.
+ITEM_TYPE_GL = store.ITEM_TYPE_GL
+ITEM_TYPE_CUSTOMER = store.ITEM_TYPE_CUSTOMER
+ITEM_TYPE_SUPPLIER = store.ITEM_TYPE_SUPPLIER
 
 
 def net_due_date(baseline: str, terms: str = "", days=None) -> str:
