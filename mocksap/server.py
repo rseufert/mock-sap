@@ -634,15 +634,21 @@ class Handler(BaseHTTPRequestHandler):
             return Response(body={"reset": True, "counts": counts})
         if rest == "requests":
             limit = int(opts.get("limit", 25))
+            columns = "id,ts,method,path,query,status,duration_ms"
+            if _verbose(opts):
+                columns += ",headers,body"
             rows = mock.conn.execute(
-                "SELECT id,ts,method,path,query,status,duration_ms FROM request_log "
-                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-            return Response(body={"results": [dict(r) for r in rows]})
+                "SELECT %s FROM request_log ORDER BY id DESC LIMIT ?" % columns,
+                (limit,)).fetchall()
+            return Response(body={"results": [_logged_request(r) for r in rows]})
         if rest == "rfc-log":
+            columns = "id,ts,function_name,protocol"
+            if _verbose(opts):
+                columns += ",request,response"
             rows = mock.conn.execute(
-                "SELECT id,ts,function_name,protocol FROM rfc_log ORDER BY id DESC LIMIT ?",
+                "SELECT %s FROM rfc_log ORDER BY id DESC LIMIT ?" % columns,
                 (int(opts.get("limit", 25)),)).fetchall()
-            return Response(body={"results": [dict(r) for r in rows]})
+            return Response(body={"results": [_logged_call(r) for r in rows]})
         if rest == "idocs":
             ctx = mock.context(self._base_url({}), mock.config.client)
             return Response(body={"results": idoc.listing(
@@ -697,6 +703,71 @@ class Handler(BaseHTTPRequestHandler):
         raise SapError("Unknown mock endpoint '%s'" % rest, 404)
 
 
+# Header names whose value is a credential rather than information. The
+# request log stores every header, and `?verbose=1` hands them back through a
+# control endpoint that `--auth` does not protect - so a mock that returned
+# these would be teaching a client to leak its own token. The names are
+# matched case-insensitively, because HTTP header names are.
+REDACTED_HEADERS = frozenset((
+    "authorization", "cookie", "set-cookie", "x-csrf-token", "proxy-authorization",
+))
+REDACTED = "<redacted by the mock>"
+
+
+def _verbose(opts: Dict[str, Any]) -> bool:
+    """Whether a log read asked for the stored payloads as well.
+
+    Off by default, for two reasons. The payloads are capped at 20000
+    characters each for an RFC call and 8000 for a request body, so a default
+    `limit` of 25 could answer with half a megabyte where it now answers with
+    a few hundred bytes. And a client already parsing these rows keeps the
+    shape it was written against.
+    """
+    value = str(opts.get("verbose", "")).strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
+def _redact(headers: Dict[str, Any]) -> Dict[str, Any]:
+    """The request's headers with every credential replaced by a marker.
+
+    The marker is left in place of the value rather than the whole entry
+    removed: a client debugging an auth failure needs to know the header was
+    sent, which an absent key cannot tell it from one never set.
+    """
+    return {name: (REDACTED if name.lower() in REDACTED_HEADERS else value)
+            for name, value in headers.items()}
+
+
+def _logged_request(row) -> Dict[str, Any]:
+    """One `request_log` row as the control plane reports it."""
+    record = dict(row)
+    if "headers" in record:
+        try:
+            parsed = json.loads(record["headers"] or "{}")
+        except ValueError:                     # pragma: no cover - defensive
+            parsed = {}
+        record["headers"] = _redact(parsed if isinstance(parsed, dict) else {})
+    return record
+
+
+def _logged_call(row) -> Dict[str, Any]:
+    """One `rfc_log` row as the control plane reports it.
+
+    `request` and `response` are stored as JSON text and handed back parsed,
+    because the caller's question is what was in `RETURN`, not what the
+    serialisation looked like. A row that somehow holds invalid JSON is
+    returned as the text it holds rather than dropped.
+    """
+    record = dict(row)
+    for field in ("request", "response"):
+        if field in record:
+            try:
+                record[field] = json.loads(record[field] or "null")
+            except ValueError:                 # pragma: no cover - defensive
+                pass
+    return record
+
+
 def _index_html(base_url: str) -> str:
     rows = "".join(
         '<tr><td><code>%s</code></td><td>V%d</td><td>%s</td>'
@@ -726,6 +797,10 @@ code{background:#f3f4f6;padding:.1rem .3rem;border-radius:3px}</style>
     <code>/_mock/faults</code>, <code>/_mock/idoc-posting</code>,
     <code>/_mock/bapi-behaviour</code>,
     <code>POST /_mock/reset</code></li>
+<li><code>?verbose=1</code> on <code>/_mock/requests</code> or
+    <code>/_mock/rfc-log</code> adds the stored payloads - a BAPI's
+    <code>RETURN</code> table lives in the latter. Credential headers come back
+    redacted.</li>
 </ul>""" % (SYSTEM_ID, SYSTEM_ID, rows, functions)
 
 
