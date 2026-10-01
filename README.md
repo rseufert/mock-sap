@@ -976,7 +976,7 @@ python3 -m unittest discover -s tests -v   # everything
 python3 tests/test_batch.py                # one surface
 ```
 
-196 tests, every one of them over real HTTP against a running mock, split by
+Every test runs over real HTTP against a running mock, split by
 surface: `test_metadata`, `test_odata_read`, `test_odata_write`, `test_odata_v4`,
 `test_apply`, `test_delta`, `test_annotations`, `test_v2_annotations`,
 `test_complex`, `test_links`, `test_etag`, `test_batch`, `test_rfc`, `test_idoc`,
