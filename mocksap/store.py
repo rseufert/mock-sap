@@ -18,6 +18,17 @@ VALIDATORS = {
     "A_BusinessPartnerBank": bank.check_bank_details,
 }
 
+# The account type a line posts to, SAP's KOART: a G/L line, a customer line,
+# a supplier line. Only the last two can be open items, because only they are
+# owed to or by somebody.
+#
+# They live here rather than in `documents` because the queries that select
+# open items are here, and `documents` imports this module rather than the
+# other way round. `documents` re-exports them under the same names.
+ITEM_TYPE_GL = "S"
+ITEM_TYPE_CUSTOMER = "D"
+ITEM_TYPE_SUPPLIER = "K"
+
 
 def _invoice_block_reaches_its_open_item(conn, row: dict) -> None:
     """A supplier invoice and the item that owes the money are one decision.
@@ -242,12 +253,19 @@ _OPEN_ITEM_KEYS = ("AccountingDocument", "CompanyCode", "FiscalYear",
                    "AccountingDocumentItem")
 
 
-def open_items(conn, supplier: str = "") -> List[dict]:
-    """Every open supplier item, for looking at rather than for a client."""
+def open_items(conn, supplier: str = "",
+               item_type: str = ITEM_TYPE_SUPPLIER) -> List[dict]:
+    """Every open item of one account type, for looking at rather than for a client.
+
+    `item_type` defaults to the supplier side because that is what a payment
+    run selects, and what this was for when it only knew one. The `supplier`
+    filter is the account type's own partner column, so it only narrows a
+    supplier-side query.
+    """
     et = ENTITY_TYPES["A_OperationalAcctgDocItemCube"]
-    sql = ('SELECT * FROM "%s" WHERE "AccountingDocumentItemType" = \'K\' '
+    sql = ('SELECT * FROM "%s" WHERE "AccountingDocumentItemType" = ? '
            'AND "ClearingAccountingDocument" = \'\'' % et.table)
-    params: List[Any] = []
+    params: List[Any] = [item_type]
     if supplier:
         sql += ' AND "Supplier" = ?'
         params.append(supplier)

@@ -28,8 +28,10 @@ from .schema import ENTITY_TYPES
 
 CUBE = "A_OperationalAcctgDocItemCube"
 
-# A payable line, in SAP's account-type letters.
+# The two sides an open item can be on, in SAP's account-type letters. A
+# payable is money we owe a supplier; a receivable is money a customer owes us.
 SUPPLIER_LINE = documents.ITEM_TYPE_SUPPLIER
+CUSTOMER_LINE = documents.ITEM_TYPE_CUSTOMER
 
 
 def _decimal(value) -> Decimal:
@@ -71,27 +73,47 @@ def references_in(line: dict) -> List[str]:
     return found
 
 
-def _open_payables(conn) -> List[dict]:
+def _open_items(conn, item_type: str = SUPPLIER_LINE) -> List[dict]:
+    """Items of one account type that nothing has cleared yet."""
     rows = conn.execute(
         'SELECT * FROM "%s" WHERE "AccountingDocumentItemType" = ? '
         'AND "ClearingAccountingDocument" = ?' % ENTITY_TYPES[CUBE].table,
-        (SUPPLIER_LINE, "")).fetchall()
+        (item_type, "")).fetchall()
     return [dict(row) for row in rows]
 
 
-def _cleared_payables(conn) -> List[dict]:
+def _cleared_items(conn, item_type: str = SUPPLIER_LINE) -> List[dict]:
+    """Items of one account type that something has already cleared."""
     rows = conn.execute(
         'SELECT * FROM "%s" WHERE "AccountingDocumentItemType" = ? '
         'AND "ClearingAccountingDocument" <> ?' % ENTITY_TYPES[CUBE].table,
-        (SUPPLIER_LINE, "")).fetchall()
+        (item_type, "")).fetchall()
     return [dict(row) for row in rows]
 
 
 def _invoice_reference(conn, item: dict) -> str:
-    """The supplier's own invoice number for the invoice this item came from.
+    """The document number the payer for this item would quote.
 
-    That is what a payment quotes, so it is what a statement line names.
+    Each side quotes the other party's document, not its own, and the two
+    sides keep that number in different places. A supplier bills us and we
+    pay quoting *their* invoice number, which is why the payable side reads
+    `SupplierInvoiceIDByInvcgParty` rather than the invoice's own key. We
+    bill a customer and they pay quoting the billing document we sent, which
+    is its own key.
+
+    Dispatch is on the item rather than on an argument, because an item
+    already knows which side it is on and a caller passing the other one
+    would be asking the wrong question.
     """
+    if item.get("AccountingDocumentItemType") == CUSTOMER_LINE:
+        # A_BillingDocument is keyed by BillingDocument alone - it carries no
+        # company code or fiscal year - so the accounting document is the
+        # whole join here, unlike the supplier side below.
+        row = conn.execute(
+            'SELECT "BillingDocument" FROM "A_BillingDocument" '
+            'WHERE "AccountingDocument" = ?',
+            (item["AccountingDocument"],)).fetchone()
+        return (row["BillingDocument"] if row else "") or ""
     row = conn.execute(
         'SELECT "SupplierInvoiceIDByInvcgParty" FROM "A_SupplierInvoice" '
         'WHERE "AccountingDocument" = ? AND "CompanyCode" = ? AND "FiscalYear" = ?',
@@ -146,18 +168,23 @@ def _set_clearing(ctx, item: dict, values: dict) -> None:
     }, values, user=ctx.user)
 
 
-def _self_clear(ctx, document: str, company: str, year: str) -> None:
-    """A payment document's own supplier line is cleared by that document.
+def _self_clear(ctx, document: str, company: str, year: str,
+                item_type: str = SUPPLIER_LINE) -> None:
+    """A payment document's own subledger line is cleared by that document.
 
-    Otherwise the payment posts a second payable line with nothing against
-    it, and the next payment run sees a phantom open item and pays it. SAP
-    clears both sides with the same clearing document; so does this.
+    Otherwise the payment posts a second open line with nothing against it,
+    and the next payment run sees a phantom open item and pays it. SAP clears
+    both sides with the same clearing document; so does this.
+
+    `item_type` is the side the payment document itself posted to, which is
+    the same side as the item being settled: paying a supplier posts another
+    supplier line, and collecting from a customer posts another customer one.
     """
     rows = ctx.conn.execute(
         'SELECT * FROM "%s" WHERE "AccountingDocument" = ? AND "CompanyCode" = ? '
         'AND "FiscalYear" = ? AND "AccountingDocumentItemType" = ?'
         % ENTITY_TYPES[CUBE].table,
-        (document, company, year, SUPPLIER_LINE)).fetchall()
+        (document, company, year, item_type)).fetchall()
     for row in rows:
         _set_clearing(ctx, dict(row), {
             "ClearingAccountingDocument": document,
@@ -291,7 +318,7 @@ def apply_statement(ctx, body: bytes) -> dict:
     for line in parsed["lines"]:
         side = line.get("side")
         if side == "debit":
-            outcome = _match(ctx.conn, line, _open_payables(ctx.conn))
+            outcome = _match(ctx.conn, line, _open_items(ctx.conn))
             if outcome["item"] is None:
                 unprocessed.append({"LINE": line["line"], "REASON": outcome["reason"]})
                 continue
@@ -303,7 +330,7 @@ def apply_statement(ctx, body: bytes) -> dict:
                 "AMOUNT": str(posted["amount"]),
             })
         elif side == "credit":
-            outcome = _match(ctx.conn, line, _cleared_payables(ctx.conn))
+            outcome = _match(ctx.conn, line, _cleared_items(ctx.conn))
             if outcome["item"] is None:
                 unprocessed.append({"LINE": line["line"], "REASON": outcome["reason"]})
                 continue
