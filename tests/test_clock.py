@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import time
 import unittest
 
 from support import MockServerCase, SRV
@@ -39,12 +40,25 @@ class TestTheClockOnItsOwn(unittest.TestCase):
 
         A frozen clock stamps every row in a run identically, which in a log
         is indistinguishable from a bug.
+
+        Waits for the value to change rather than asserting that some read
+        has a non-zero microsecond. The first version did the latter and
+        failed on Windows, whose clock resolution is about 15.6ms: both reads
+        inside `Clock.__init__` and `now()` landed in the same tick, so the
+        offset was exactly zero and `now()` returned the pinned moment on the
+        nose. That assertion was measuring the host's clock resolution, not
+        whether this clock advances.
         """
         c = clock.Clock("2026-10-02T16:00")
-        first, second = c.now(), c.now()
-        self.assertGreaterEqual(second, first)
-        self.assertNotEqual(c.now().microsecond, 0,
-                            "a pinned clock that never moves is frozen")
+        first = c.now()
+        deadline = time.monotonic() + 5.0
+        while c.now() == first and time.monotonic() < deadline:
+            pass
+        later = c.now()
+        self.assertGreater(later, first,
+                           "a pinned clock that never moves is frozen")
+        self.assertEqual(later.date(), datetime.date(2026, 10, 2),
+                         "it ticked away from the pin instead of from real time")
 
     def test_the_shapes_it_accepts(self):
         for text, day in (("2026-10-02T16:00:30", datetime.date(2026, 10, 2)),
