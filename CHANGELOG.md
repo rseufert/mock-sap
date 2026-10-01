@@ -30,6 +30,23 @@ says so where it does.
 
 [#80]: https://github.com/rseufert/mock-sap/issues/80
 
+### Changed
+
+- **The clearing path no longer assumes a payable.** `reconcile` selected open
+  and cleared items with the supplier account type closed over, and
+  `store.open_items` had `'K'` as a SQL literal; both now take the account type
+  as an argument, defaulting to the supplier side. `_invoice_reference`
+  dispatches on the item instead: a payable reads the supplier's own invoice
+  number, because that is what we quote when we pay it, and a receivable reads
+  the billing document we sent, because that is what a customer quotes.
+  SAP's KOART constants moved from `documents` to `store`, next to the queries
+  that select by them, and `documents` re-exports them under the same names.
+  Nothing a client can see changes - no statement is matched differently and no
+  item clears that did not before - and clearing a receivable is not built yet.
+  This is the groundwork for it. ([#65])
+
+[#65]: https://github.com/rseufert/mock-sap/issues/65
+
 ## [0.13.3] - 2026-09-29
 
 Everything here is in `examples/`. `mocksap/` is unchanged from 0.13.2, so the
