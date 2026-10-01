@@ -27,6 +27,24 @@ says so where it does.
   nothing about business days: no cutoff, no weekend, no holidays. Those are a
   bank's questions. ([#81])
 
+- **`?verbose=1` on `/_mock/requests` and `/_mock/rfc-log` returns the payloads
+  both logs were already recording.** `rfc_log` stores every call's parameters
+  and full answer and `request_log` stores every request's headers and body;
+  the two endpoints selected neither. The answer is where a BAPI's `RETURN`
+  table lives, which made a *business* error invisible from outside - a BAPI
+  reports one by returning normally with HTTP 200 and a `RETURN` row of type
+  `E`, so through the narrow log a call refused by `/_mock/bapi-behaviour` and
+  one that worked were the same two fields. It is opt-in because the payloads
+  are capped at 20000 characters for an RFC call and 8000 for a request body,
+  so a default `limit` of 25 could answer with half a megabyte; the default
+  shape is unchanged, so a client already parsing these rows keeps what it was
+  written against. Credential headers - `Authorization`, `Cookie`,
+  `Set-Cookie`, `X-CSRF-Token`, `Proxy-Authorization` - are redacted, because
+  `/_mock/requests` is not behind `--auth` and a mock that handed back a
+  client's own token would be teaching a bad habit. The header name is kept
+  with a marker in place of the value, since a client debugging an auth failure
+  cannot tell an absent key from a header that was never sent. ([#80])
+
 ### Changed
 
 - **The logs and the control plane agree on one timestamp shape.**
@@ -44,7 +62,6 @@ says so where it does.
   around them used `utcnow()`, so on a machine behind UTC they disagreed with
   every other date in the same run by a day. Both now read the clock. ([#81])
 
-
 - **The clearing path no longer assumes a payable.** `reconcile` selected open
   and cleared items with the supplier account type closed over, and
   `store.open_items` had `'K'` as a SQL literal; both now take the account type
@@ -60,6 +77,7 @@ says so where it does.
 
 [#81]: https://github.com/rseufert/mock-sap/issues/81
 [#65]: https://github.com/rseufert/mock-sap/issues/65
+[#80]: https://github.com/rseufert/mock-sap/issues/80
 
 ## [0.13.3] - 2026-09-29
 

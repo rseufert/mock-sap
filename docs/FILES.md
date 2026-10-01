@@ -58,6 +58,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | File | Covers |
 | --- | --- |
 | `support.py` | The shared harness, not a test module: `MockServerCase` starts a server on an ephemeral port in a background thread, and provides `request`/`get`/`csrf_token` helpers. Subclasses set `config_kwargs` to change the server's configuration. |
+| `test_logs.py` | What the control-plane logs return against what they record: the default shape of `/_mock/requests` and `/_mock/rfc-log` is unchanged, `?verbose=1` adds the stored payloads parsed rather than as JSON text, a BAPI refused by `/_mock/bapi-behaviour` is distinguishable from one that worked only through its `RETURN` table, and a credential header is marked rather than handed back or dropped. |
 | `test_metadata.py` | The service document, EDMX `$metadata`, and the service catalog. |
 | `test_odata_read.py` | Response envelopes and value formats, `$filter` (including string functions), `$top`/`$skip`/`$orderby`/`$inlinecount`, `$select`/`$expand`, navigation, `$count`, `$value`, and the error envelope for a bad filter. |
 | `test_odata_v4.py` | The V4 dialect: envelopes and annotations, value formats compared against the same row read through V2, nested `$expand` options, `$ref`, CSDL 4.0 in both encodings, JSON `$batch` with an atomicity group, and the refusal to mix dialects. |

@@ -865,6 +865,7 @@ Every request is recorded, which makes the mock useful as a contract check in CI
 ```bash
 curl "http://127.0.0.1:8000/_mock/requests?limit=10"   # method, path, query, status, duration
 curl  http://127.0.0.1:8000/_mock/rfc-log              # which BAPIs were called
+curl "http://127.0.0.1:8000/_mock/rfc-log?verbose=1"   # ...and what each one answered
 curl  http://127.0.0.1:8000/_mock/state                # row counts per entity
 curl  http://127.0.0.1:8000/_mock/idoc-posting         # how inbound IDocs will post
 curl  http://127.0.0.1:8000/_mock/bapi-behaviour       # what a BAPI will answer
@@ -872,6 +873,33 @@ curl  http://127.0.0.1:8000/_mock/open-items           # what is still owed, and
 curl -X POST http://127.0.0.1:8000/_mock/reset \
      -H 'Content-Type: application/json' -d '{"seed":7,"orders":50}'
 ```
+
+Both logs record more than they return. `?verbose=1` adds the stored payloads:
+the body and headers a caller sent on `/_mock/requests`, and each call's
+parameters and full answer on `/_mock/rfc-log`. That answer is where a BAPI's
+`RETURN` table lives, and it is the only way to see a *business* error from
+outside - a BAPI reports one by returning normally with HTTP 200 and a `RETURN`
+row of type `E`, so through the narrow log a refused call and a successful one
+are the same two fields.
+
+```bash
+# a refused BAPI, and the reason it gave
+curl -X POST http://127.0.0.1:8000/_mock/bapi-behaviour \
+  -d '{"function": "BAPI_PO_CREATE1", "type": "E", "message": "Posting period closed"}'
+curl "http://127.0.0.1:8000/_mock/rfc-log?limit=1&verbose=1"
+```
+
+It is off by default because the payloads are capped at 20000 characters for an
+RFC call and 8000 for a request body, so a default `limit` of 25 could answer
+with half a megabyte where it otherwise answers with a few hundred bytes.
+
+Credential headers - `Authorization`, `Cookie`, `Set-Cookie`, `X-CSRF-Token`,
+`Proxy-Authorization` - come back redacted. `/_mock/requests` is not behind
+`--auth`, and a mock that handed a client its own token back through an
+unauthenticated endpoint would be teaching a bad habit. The header name is kept
+with a marker in place of the value, because a client debugging an auth failure
+needs to know the header was sent, which an absent key cannot tell it from one
+that was never set.
 
 `POST /_mock/reset` restores a known dataset between test cases.
 
