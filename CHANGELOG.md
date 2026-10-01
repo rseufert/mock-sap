@@ -8,6 +8,17 @@ says so where it does.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.14.0] - 2026-09-30
+
+Repeatability, and the logs admitting what they already hold. Until now every
+date the mock produced came from the host's real UTC clock at the point of use,
+so the same script wrote differently dated documents on different days and a
+dated assertion went stale by itself overnight. There is one clock now, `--clock`
+pins it and `POST /_mock/advance` moves it. It knows nothing about business days
+- no cutoff, no weekend, no holidays. Those are a bank's questions.
+
 ### Added
 
 - **One clock, which `--clock` pins and `POST /_mock/advance` moves.** Every
@@ -648,7 +659,8 @@ First release.
 - A control plane at `/_mock`: failure scenarios, fault rules, a request log and
   a reset endpoint.
 
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.13.3...HEAD
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/rseufert/mock-sap/compare/v0.13.3...v0.14.0
 [0.13.3]: https://github.com/rseufert/mock-sap/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/rseufert/mock-sap/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/rseufert/mock-sap/compare/v0.13.0...v0.13.1
