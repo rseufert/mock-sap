@@ -104,7 +104,7 @@ bash examples/demo.sh
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
 | IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05, INVOIC02 or DELVRY07 |
 | OAuth token endpoint | `POST /sap/bc/sec/oauth2/token`, `POST /sap/bc/sec/oauth2/revoke` |
-| Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs`, `/_mock/tokens`, `/_mock/faults`, `POST /_mock/reset` |
+| Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs`, `/_mock/tokens`, `/_mock/faults`, `POST /_mock/advance`, `POST /_mock/reset` |
 
 The four `API_*` services carry the S/4HANA field names; `GWSAMPLE_BASIC` is the
 classic Gateway demo service every SAP OData tutorial uses, with its structured
@@ -819,6 +819,45 @@ the response is a success and the payload says otherwise, see
 [A valid call that fails anyway](#a-valid-call-that-fails-anyway) for BAPIs and
 [Accepted is not posted](#accepted-is-not-posted) for IDocs.
 
+## Pinning the clock
+
+Every date the mock computes - a posting date, a document date, the baseline a
+payment term counts from, the timestamp on a log row - comes from one clock.
+Left alone it keeps real time in UTC. `--clock` pins it:
+
+```bash
+python3 -m mocksap --clock 2026-10-02T16:00
+```
+
+Now the same script posts the same documents with the same dates on every run,
+which is what makes a captured run reproducible and an example's dated
+assertion stable. Without it, an invoice posted today on `NT30` falls due
+thirty days from whenever the suite happened to run - and an example asserting
+on that date goes stale by itself overnight.
+
+Move it forward to make a due date arrive:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/_mock/advance?days=30"
+curl -X POST "http://127.0.0.1:8000/_mock/advance?to=2026-11-01"
+curl http://127.0.0.1:8000/_mock/state      # "clock": {"now": ..., "pinned": ...}
+```
+
+It does not go backwards, and says so rather than accepting it: whatever was
+dated since would then be in the future. `POST /_mock/reset` returns it to the
+pinned moment rather than to real time, because `--clock` is configuration and
+a reset is not meant to undo configuration.
+
+The clock holds an **offset, not an instant**, so it keeps ticking between
+advances. A frozen clock would stamp every row in a run identically, which in
+a log is indistinguishable from a bug.
+
+It is UTC and knows nothing about business days - no cutoff, no weekend, no
+holidays. Those are a bank's questions, and mock-bank has them; SAP here has a
+posting date and a due date. So a mock-sap date that lands on a Saturday is
+still a Saturday, and if that matters to what you are testing, it is the
+calendar you have to reckon with rather than this clock.
+
 ## Inspecting what your client did
 
 Every request is recorded, which makes the mock useful as a contract check in CI:
@@ -967,6 +1006,7 @@ mocksap/statement.py  reading a FINSTA01 bank statement, and checking its sums
 mocksap/reconcile.py  matching a statement to the open items it pays
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
 mocksap/messages.py   sap-message warnings, and the rules that produce them
+mocksap/clock.py      system time: one clock, pinnable and movable
 mocksap/oauth.py      the token store: grants, bearer validation, refresh
 mocksap/server.py     HTTP front end, CSRF, auth, fault injection, /_mock API
 

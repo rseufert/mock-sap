@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-from . import db, documents, reconcile, store
+from . import clock, db, documents, reconcile, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -347,12 +347,12 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
         except NotPosted as declined:
             status, status_text = "51", str(declined)
 
-    now = _dt.datetime.utcnow().replace(microsecond=0)
+    now = clock.now().replace(microsecond=0)
     ctx.conn.execute(
         "INSERT INTO idoc(docnum,direction,idoctyp,mestyp,status,status_text,"
         "created_at,content_type,payload) VALUES(?,?,?,?,?,?,?,?,?)",
         (docnum, "2", info.get("idoctyp", ""), info.get("mestyp", ""), status,
-         status_text, now.isoformat(),
+         status_text, now.isoformat() + "Z",
          "xml" if is_xml else "flat", body.decode("utf-8", "replace")),
     )
     ctx.conn.commit()
@@ -456,7 +456,7 @@ def _seg(name: str, fields: Dict[str, str], children: str = "") -> str:
 
 
 def _control_record(docnum: str, idoctyp: str, mestyp: str, client: str) -> str:
-    now = _dt.datetime.utcnow()
+    now = clock.now()
     return _seg("EDI_DC40", {
         "TABNAM": "EDI_DC40", "MANDT": client, "DOCNUM": docnum, "DOCREL": "756",
         "STATUS": "30", "DIRECT": "1", "OUTMOD": "2", "IDOCTYP": idoctyp,
@@ -521,7 +521,7 @@ def generate_orders05(ctx, sales_order: str) -> dict:
         "INSERT INTO idoc(docnum,direction,idoctyp,mestyp,status,status_text,"
         "created_at,content_type,payload) VALUES(?,?,?,?,?,?,?,?,?)",
         (docnum, "1", "ORDERS05", "ORDERS", "03", STATUS_TEXT["03"],
-         _dt.datetime.utcnow().replace(microsecond=0).isoformat(), "xml", xml),
+         clock.stamp(), "xml", xml),
     )
     ctx.conn.commit()
     return {"docnum": docnum, "xml": xml}
@@ -561,7 +561,7 @@ def _store_idoc(ctx, docnum, idoctyp, mestyp, xml, direction="1", status="03") -
         "INSERT INTO idoc(docnum,direction,idoctyp,mestyp,status,status_text,"
         "created_at,content_type,payload) VALUES(?,?,?,?,?,?,?,?,?)",
         (docnum, direction, idoctyp, mestyp, status, STATUS_TEXT[status],
-         _dt.datetime.utcnow().replace(microsecond=0).isoformat(), "xml", xml),
+         clock.stamp(), "xml", xml),
     )
     ctx.conn.commit()
 
@@ -575,7 +575,7 @@ def generate_invoic02(ctx, sales_order: str) -> dict:
     docnum = db.next_number(ctx.conn, "IDOC", 16)
     billing = invoice["billing_document"]
     doc_date = str(row["SalesOrderDate"] or "")[:10].replace("-", "")
-    today = _dt.datetime.utcnow().strftime("%Y%m%d")
+    today = clock.now().strftime("%Y%m%d")
     currency = row["TransactionCurrency"]
     net, tax = invoice["net"], invoice["tax"]
 
@@ -631,7 +631,7 @@ def generate_delvry07(ctx, sales_order: str) -> dict:
     delivery = documents.create_delivery(
         ctx, row, [(item, float(item["RequestedQuantity"] or 0)) for item in items])
     docnum = db.next_number(ctx.conn, "IDOC", 16)
-    today = _dt.datetime.utcnow().strftime("%Y%m%d")
+    today = clock.now().strftime("%Y%m%d")
     weight = sum(float(item["RequestedQuantity"] or 0) for item in items)
 
     children = "".join([

@@ -8,7 +8,43 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **One clock, which `--clock` pins and `POST /_mock/advance` moves.** Every
+  date the mock computed - a posting date, a document date, a payment term's
+  baseline, the timestamp on a log row - came from `datetime.utcnow()` at the
+  point of use, about twenty-five call sites across eleven modules. So a run
+  was not repeatable: the same script produced differently dated documents on
+  different days, and an example whose assertion depended on a date went stale
+  by itself overnight. `mocksap/clock.py` now holds system time, every one of
+  those call sites reads it, `/_mock/health` and `/_mock/state` report it, and
+  `POST /_mock/reset` returns it to the pinned moment rather than to real time,
+  because `--clock` is configuration and a reset is not meant to undo
+  configuration. It holds an offset rather than an instant, so it keeps ticking
+  between advances - a frozen clock stamps every row in a run identically,
+  which in a log is indistinguishable from a bug. It is naive UTC, which is
+  exactly what `utcnow()` returned at every call site replaced, and it knows
+  nothing about business days: no cutoff, no weekend, no holidays. Those are a
+  bank's questions. ([#81])
+
+### Changed
+
+- **The logs and the control plane agree on one timestamp shape.**
+  `request_log.ts` and `rfc_log.ts` carried microseconds and no zone, an IDoc's
+  `created_at` was truncated to the second and had no zone, and only
+  `/_mock/health` appended a `Z`, so a client reading two of them parsed two
+  shapes and guessed at the zone of both. All of them are now ISO-8601 to the
+  second with a `Z`. The extra digits were never a tie-breaker, because both
+  logs are ordered by `id`. OData's `/Date(milliseconds)/` on the entity
+  payloads is unchanged - that is SAP's wire format, not a timestamp this mock
+  chose. ([#81])
+
+- **`STFC_CONNECTION` and a statement's fallback posting date read UTC rather
+  than the host's local date.** Both used `date.today()` where everything
+  around them used `utcnow()`, so on a machine behind UTC they disagreed with
+  every other date in the same run by a day. Both now read the clock. ([#81])
+
+[#81]: https://github.com/rseufert/mock-sap/issues/81
 
 ## [0.13.3] - 2026-09-29
 

@@ -17,6 +17,8 @@ from typing import Dict, List, Optional
 from urllib.parse import parse_qsl
 from xml.etree import ElementTree as ET
 
+from . import clock
+
 CLIENT_CREDENTIALS = "client_credentials"
 PASSWORD = "password"
 REFRESH_TOKEN = "refresh_token"
@@ -48,7 +50,7 @@ class Token:
                  "issued_at", "expires_at", "grant")
 
     def __init__(self, value, refresh_value, client_id, user, scope, ttl, grant):
-        now = _dt.datetime.utcnow()
+        now = clock.now()
         self.value = value
         self.refresh_value = refresh_value
         self.client_id = client_id
@@ -60,7 +62,7 @@ class Token:
 
     @property
     def expired(self) -> bool:
-        return _dt.datetime.utcnow() >= self.expires_at
+        return clock.now() >= self.expires_at
 
     @property
     def lifetime(self) -> int:
@@ -78,7 +80,7 @@ class Token:
     @property
     def expires_in(self) -> int:
         """The seconds this token has left, which is what a listing wants."""
-        return max(0, int(round((self.expires_at - _dt.datetime.utcnow()).total_seconds())))
+        return max(0, int(round((self.expires_at - clock.now()).total_seconds())))
 
     def response(self) -> dict:
         return {

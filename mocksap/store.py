@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from . import bank, db
+from . import bank, clock, db
 from .odata import SapError, to_db_value
 from .schema import COMPLEX_TYPES, ENTITY_TYPES, EntityType
 
@@ -166,7 +166,7 @@ def _advance(previous, now: str) -> str:
 
 
 def _context(user: str) -> dict:
-    moment = _dt.datetime.utcnow()
+    moment = clock.now()
     now = moment.replace(microsecond=(moment.microsecond // 1000) * 1000)
     return {
         "user": user,

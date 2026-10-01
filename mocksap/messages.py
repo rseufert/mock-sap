@@ -18,7 +18,7 @@ import datetime as _dt
 import json
 from typing import Any, Dict, List, Optional
 
-from . import store
+from . import clock, store
 from .schema import ENTITY_TYPES, EntityType
 
 # numericSeverity follows SAP's convention: 1 success, 2 info, 3 warning, 4 error
@@ -64,7 +64,7 @@ def after_write(conn, et: EntityType, keys: Dict[str, Any],
     delivery date it cannot honour rather than refusing the order - so this
     runs after the write and may write again.
     """
-    today = today or _dt.datetime.utcnow().date()
+    today = today or clock.now().date()
     if et.name == "A_SalesOrder":
         return _sales_order(conn, et, keys, today)
     if et.name == "A_SalesOrderItem":

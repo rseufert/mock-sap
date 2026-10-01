@@ -11,6 +11,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
+from . import clock
 from . import annotations as sap_annotations
 from . import apply as odata_apply
 from . import delta as odata_delta
@@ -546,7 +547,7 @@ def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=
     # Taken before the rows are read: a change landing between the query and the
     # mint would otherwise fall in the gap and never be reported.
     tracking = odata_delta.wants_tracking(headers)
-    moment = _dt.datetime.utcnow() if tracking else None
+    moment = clock.now() if tracking else None
     where, params = _where_from(opts, et)
     where, params = _merge_where(extra_where, extra_params, where, params)
     order = build_orderby(opts["$orderby"], et) if opts.get("$orderby") else ""
@@ -597,7 +598,7 @@ def _delta_link(ctx, svc, set_name, opts, moment=None) -> str:
 def _read_delta(ctx, svc, et, set_name, opts, token, extra_where, extra_params) -> Response:
     """Answer with what changed since the token was issued, deletions included."""
     since = odata_delta.read(token)
-    moment = _dt.datetime.utcnow()      # before the query, for the same reason
+    moment = clock.now()      # before the query, for the same reason
     where, params = _where_from(opts, et)
     where, params = _merge_where(extra_where, extra_params, where, params)
     changed_where, changed_params = odata_delta.changed_since(et, since)
