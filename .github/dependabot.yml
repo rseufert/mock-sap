@@ -1,0 +1,21 @@
+# The package has no dependencies, so GitHub Actions are the whole surface.
+#
+# This exists to make SHA pinning sustainable. publish.yml pins the action that
+# holds `id-token: write` to a commit, which is only safe if something keeps the
+# pin current - an unmaintained pin is how people end up deciding pinning is
+# more trouble than it is worth and going back to a branch ref.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "actions"
+    labels:
+      - "no changelog"
+    groups:
+      # One pull request for the lot. These are version bumps reviewed together,
+      # and five separate ones would each need their own CI run.
+      actions:
+        patterns: ["*"]

@@ -13,9 +13,11 @@ first.
 | `pyproject.toml` | Packaging metadata and the **single source of truth for the version**. Declares the `mock-sap` console script and, notably, zero dependencies. |
 | `CHANGELOG.md` | Every release, what it added and what it fixed, in Keep a Changelog form with links to the compare views. |
 | `CONTRIBUTING.md` | What the project values and how to work on it: the principles that decide what gets merged, where to add each kind of thing, what a good pull request carries, and the release process. |
+| `SECURITY.md` | What counts as a vulnerability in a test double and what does not, and how to report one privately. The distinction is the point: no authentication by default, no TLS and a reachable `POST /_mock/reset` are deliberate, while anything that escapes the mock's own state - reading files outside its database, running what a request supplies, or a published artifact that does not match the tagged source - is in scope. |
 | `MANIFEST.in` | Adds the Dockerfile, examples and tests to the sdist; without it an sdist carries only the package itself. |
 | `Dockerfile` | `python:3.12-slim`, `pip install .`, entrypoint bound to `0.0.0.0:8000`. Built and exercised by CI on every push. |
 | `.gitignore` | Build output, virtualenvs, `*.db` files left behind by `--db`. |
+| `.github/dependabot.yml` | Weekly `github-actions` updates, grouped into one pull request and labelled `no changelog`. The package has no dependencies, so Actions are the whole surface; this is also what keeps the commit SHA that `publish.yml` pins from going stale, which is the thing that makes pinning stick. |
 
 ## `mocksap/` - the package
 
@@ -105,7 +107,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 
 | File | What it is |
 | --- | --- |
-| `ci.yml` | Five jobs: the suite on Python 3.8-3.13 (Linux) plus 3.12 on macOS and Windows; a docs job running `tools/check_docs.py` and `tools/check_changelog.py`; a smoke job running `demo.sh` and `client.py` against a live mock; a package job that builds, `twine check`s, installs the wheel and asserts the version agrees with `pyproject.toml`; and a job that builds and runs the Docker image. |
+| `ci.yml` | Six jobs: the suite on Python 3.8-3.13 (Linux) plus 3.12 on macOS and Windows; a docs job running `tools/check_docs.py` and `tools/check_changelog.py`; a smoke job running `demo.sh` and `client.py` against a live mock; a package job that builds, `twine check`s, installs the wheel and asserts the version agrees with `pyproject.toml`; a job that builds and runs the Docker image; and an `all green` job that fails unless every one of the others succeeded. That last one exists to be the single required check on `main` - the matrix job names carry the Python version and the runner, so they change whenever the matrix does, and a required check whose name has gone blocks every merge rather than failing. |
 | `publish.yml` | Releases to PyPI via Trusted Publishing (OIDC, no stored token). A published GitHub Release goes to PyPI; a manual run goes to TestPyPI. Both build from a green test run and refuse a tag that disagrees with the built package. |
 
 ## `docs/`

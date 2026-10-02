@@ -141,3 +141,27 @@ jobs:
           done
           curl -sf "http://127.0.0.1:8000/sap/opu/odata/IWFND/CATALOGSERVICE;v=2/ServiceCollection?\$format=json" | head -5
           docker rm -f mock-sap
+
+  all-green:
+    name: all green
+    # The single check to require on main. The matrix job names carry the Python
+    # version and the runner, so they change whenever the matrix does, and a
+    # required check whose name no longer exists blocks every merge instead of
+    # failing loudly. This one keeps its name while the matrix moves underneath.
+    needs: [test, docs, smoke, package, docker]
+    # Without always(), a failed dependency skips this job rather than failing
+    # it, and a skipped check is not a red one.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job this release depends on succeeded
+        run: |
+          set -eu
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "results: $results"
+          for result in $results; do
+            case "$result" in
+              success) ;;
+              *) echo "a job did not succeed ($result); see the run" >&2; exit 1 ;;
+            esac
+          done
