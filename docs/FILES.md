@@ -114,3 +114,4 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | --- | --- |
 | `FILES.md` | This file. |
 | `ARCHITECTURE.md` | How a request flows through the mock, why the layering is the way it is, and where to extend it. |
+| `GITHUB.md` | The GitHub settings all three mocks are kept at and the reason for each: the release path, which is the only irreversible part, the rulesets on `main` and on `v*` tags, merging, labels, and the one thing that is deliberately not uniform. Identical in `mock-edi` and `mock-bank`, so a diff between copies is drift. |
