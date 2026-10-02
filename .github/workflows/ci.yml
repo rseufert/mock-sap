@@ -144,10 +144,17 @@ jobs:
 
   all-green:
     name: all green
-    # The single check to require on main. The matrix job names carry the Python
+    # The single check required on main. The matrix job names carry the Python
     # version and the runner, so they change whenever the matrix does, and a
     # required check whose name no longer exists blocks every merge instead of
     # failing loudly. This one keeps its name while the matrix moves underneath.
+    #
+    # That name is load-bearing. The `Main Protect` ruleset requires the context
+    # `all green` literally, and it has no bypass actors - nobody, including the
+    # owner, can merge past it. Rename or delete this job and the required check
+    # never reports, so every pull request becomes permanently unmergeable with
+    # no way round it from the pull request side. Change the ruleset first; see
+    # docs/GITHUB.md.
     needs: [test, docs, smoke, package, docker]
     # Without always(), a failed dependency skips this job rather than failing
     # it, and a skipped check is not a red one.
