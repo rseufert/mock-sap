@@ -152,6 +152,44 @@ def init_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         )"""
     )
+    # What posting a FINSTA01 decided, per line. The decision is made in
+    # reconcile.apply_statement and used to be returned on the POST receipt and
+    # then dropped, so a client that did not keep the response had no way back
+    # to it (#105).
+    #
+    # A header and its lines rather than one JSON column, because the question
+    # worth asking runs backwards: "which statement line, on which IDoc,
+    # cleared this invoice?" A blob would mean reading every IDoc to answer it.
+    # Hence the index on accounting_document.
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS idoc_statement (
+            docnum TEXT PRIMARY KEY,
+            statement TEXT,
+            account TEXT,
+            findings TEXT NOT NULL
+        )"""
+    )
+    # `related_document` is the clearing document on a CLEARED line and the
+    # reversal document on a REOPENED one - the same relation read from either
+    # side, so one column rather than two mutually exclusive ones.
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS idoc_statement_line (
+            docnum TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            line TEXT NOT NULL,
+            reference TEXT,
+            accounting_document TEXT,
+            related_document TEXT,
+            amount TEXT,
+            reason TEXT,
+            PRIMARY KEY (docnum, seq)
+        )"""
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idoc_statement_line_by_document "
+        "ON idoc_statement_line(accounting_document)"
+    )
     cur.execute(
         """CREATE TABLE IF NOT EXISTS rfc_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,8 +208,8 @@ def reset(conn: sqlite3.Connection) -> None:
     for et in ENTITY_TYPES.values():
         if owns_a_table(et):
             cur.execute('DELETE FROM "%s"' % et.name)
-    for t in ("number_range", "idoc", "rfc_log", "deleted_entity",
-              "bank_statement"):
+    for t in ("number_range", "idoc", "idoc_statement", "idoc_statement_line",
+              "rfc_log", "deleted_entity", "bank_statement"):
         cur.execute("DELETE FROM %s" % t)
     conn.commit()
 

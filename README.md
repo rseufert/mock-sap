@@ -104,7 +104,7 @@ bash examples/demo.sh
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
 | IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05, INVOIC02 or DELVRY07 |
 | OAuth token endpoint | `POST /sap/bc/sec/oauth2/token`, `POST /sap/bc/sec/oauth2/revoke` |
-| Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs`, `/_mock/tokens`, `/_mock/faults`, `POST /_mock/advance`, `POST /_mock/reset` |
+| Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs` (`?settled=` narrows to what settled one document), `/_mock/tokens`, `/_mock/faults`, `POST /_mock/advance`, `POST /_mock/reset` |
 
 The four `API_*` services carry the S/4HANA field names; `GWSAMPLE_BASIC` is the
 classic Gateway demo service every SAP OData tutorial uses, with its structured
@@ -436,6 +436,25 @@ and status `53`, and can be inspected or re-statused:
 curl http://127.0.0.1:8000/_mock/idocs
 curl -X PUT http://127.0.0.1:8000/sap/bc/idoc/<DOCNUM>/status \
   -H "X-CSRF-Token: $TOKEN" -d '{"status":"51"}'
+```
+
+**Posting a statement is remembered, not just answered.** A `FINSTA01` works out,
+per line, which invoice it cleared and why a line was refused. Reading that IDoc
+back returns the same `APPLIED` the POST did - the clearing document, the
+reference, and for a refused line the mock's own words - so a client that did not
+keep the response is not left guessing:
+
+```bash
+curl http://127.0.0.1:8000/sap/bc/idoc/<DOCNUM>
+```
+
+The listing stays narrow, because one IDoc has one outcome and a listing of fifty
+would carry fifty. It takes `settled` instead, which answers the question an
+integration actually has - not "what did this IDoc do?" but "what settled my
+invoice?":
+
+```bash
+curl "http://127.0.0.1:8000/_mock/idocs?settled=0100000007"
 ```
 
 ## Authentication

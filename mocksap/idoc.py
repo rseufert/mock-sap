@@ -343,7 +343,7 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
     applied = None
     if status == "53":
         try:
-            applied = _apply(ctx, info, body, is_xml)
+            applied = _apply(ctx, info, body, is_xml, docnum)
         except NotPosted as declined:
             status, status_text = "51", str(declined)
 
@@ -374,7 +374,8 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
     return receipt
 
 
-def _apply(ctx, info: dict, body: bytes, is_xml: bool) -> Optional[List[dict]]:
+def _apply(ctx, info: dict, body: bytes, is_xml: bool,
+           docnum: str = "") -> Optional[List[dict]]:
     """Do what posting this IDoc means, or raise NotPosted saying why not.
 
     Only the message types with something to post are here. An ORDERS05 is
@@ -406,7 +407,7 @@ def _apply(ctx, info: dict, body: bytes, is_xml: bool) -> Optional[List[dict]]:
     # nothing, because an item cleared by an IDoc that did not post would be
     # an invoice nobody can find and nobody will pay again.
     if mestyp.startswith("FINSTA"):
-        return [reconcile.apply_statement(ctx, body)]
+        return [reconcile.apply_statement(ctx, body, docnum)]
     return None
 
 
@@ -416,17 +417,44 @@ def receipt_xml(receipt: dict) -> str:
 
 
 def get(ctx, docnum: str) -> Optional[dict]:
+    """One IDoc, and - for a posted FINSTA01 - what posting it decided.
+
+    ``APPLIED`` is the same structure the POST receipt carried, read back from
+    where posting filed it rather than recomputed, so the two agree. It is on
+    the by-docnum read and deliberately not on the listing: one IDoc has one
+    outcome, where a listing of 50 would carry 50 (#105).
+    """
     row = ctx.conn.execute("SELECT * FROM idoc WHERE docnum=?",
                            (docnum.zfill(16),)).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    record = dict(row)
+    applied = reconcile.outcome_of(ctx.conn, record["docnum"])
+    if applied is not None:
+        record["APPLIED"] = [applied]
+    return record
 
 
-def listing(ctx, limit: int = 50, mestyp: str = "") -> list:
+def listing(ctx, limit: int = 50, mestyp: str = "", settled: str = "") -> list:
+    """The IDocs, newest first, seven columns and no payload.
+
+    ``settled`` narrows to the IDocs whose statement named one accounting
+    document - the reverse of the by-docnum read, and the question an
+    integration actually asks: not "what did this IDoc do?" but "what settled
+    my invoice?" Without it that answer costs a read of every IDoc, which is
+    the reason the outcome is a table and not a column (#105).
+    """
     sql = "SELECT docnum,direction,idoctyp,mestyp,status,status_text,created_at FROM idoc"
-    params = []
+    where, params = [], []
     if mestyp:
-        sql += " WHERE mestyp = ?"
+        where.append("mestyp = ?")
         params.append(mestyp.upper())
+    if settled:
+        where.append("docnum IN (SELECT docnum FROM idoc_statement_line "
+                     "WHERE accounting_document = ?)")
+        params.append(settled)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY docnum DESC LIMIT ?"
     params.append(limit)
     return [dict(r) for r in ctx.conn.execute(sql, params).fetchall()]

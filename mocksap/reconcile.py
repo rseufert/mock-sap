@@ -308,8 +308,102 @@ def check_balances(conn, parsed: dict) -> List[str]:
     return findings
 
 
-def apply_statement(ctx, body: bytes) -> dict:
-    """Post a bank statement against the open items it pays."""
+def message_for(statement: str, cleared: list, reopened: list,
+                unprocessed: list) -> str:
+    """The one-line summary of what a statement did.
+
+    Built here rather than stored, so the sentence on the POST receipt and the
+    one a later read of the IDoc returns cannot drift apart.
+    """
+    return ("Statement %s: %d item(s) cleared, %d reopened, %d line(s) "
+            "unprocessed" % (statement or "(unnumbered)", len(cleared),
+                             len(reopened), len(unprocessed)))
+
+
+_LINE_KINDS = (
+    # kind, the key in `applied`, and the column `related_document` holds
+    ("CLEARED", "CLEARED", "CLEARINGDOCUMENT"),
+    ("REOPENED", "REOPENED", "REVERSALDOCUMENT"),
+    ("UNPROCESSED", "UNPROCESSED", ""),
+)
+
+
+def _file_outcome(conn, docnum: str, applied: dict) -> None:
+    """File what posting this statement decided, under the IDoc it arrived on.
+
+    Written even when every list is empty: a statement that cleared nothing is
+    a different answer from an IDoc nobody posted a statement for, and the
+    header row is what tells them apart.
+    """
+    conn.execute("DELETE FROM idoc_statement WHERE docnum = ?", (docnum,))
+    conn.execute("DELETE FROM idoc_statement_line WHERE docnum = ?", (docnum,))
+    conn.execute(
+        "INSERT INTO idoc_statement(docnum,statement,account,findings) "
+        "VALUES(?,?,?,?)",
+        (docnum, applied["STATEMENT"], applied["ACCOUNT"],
+         json.dumps(applied["FINDINGS"])))
+    seq = 0
+    for kind, key, related in _LINE_KINDS:
+        for row in applied[key]:
+            conn.execute(
+                "INSERT INTO idoc_statement_line(docnum,seq,kind,line,reference,"
+                "accounting_document,related_document,amount,reason) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (docnum, seq, kind, row["LINE"], row.get("REFERENCE", ""),
+                 row.get("ACCOUNTINGDOCUMENT", ""),
+                 row.get(related, "") if related else "",
+                 row.get("AMOUNT", ""), row.get("REASON", "")))
+            seq += 1
+    conn.commit()
+
+
+def outcome_of(conn, docnum: str):
+    """What posting the statement on this IDoc decided, or None if it was not one.
+
+    The inverse of :func:`_file_outcome`, rebuilding exactly what the POST
+    receipt said rather than an approximation of it.
+    """
+    head = conn.execute(
+        "SELECT statement,account,findings FROM idoc_statement WHERE docnum = ?",
+        (docnum,)).fetchone()
+    if head is None:
+        return None
+    by_kind = {"CLEARED": [], "REOPENED": [], "UNPROCESSED": []}
+    rows = conn.execute(
+        "SELECT * FROM idoc_statement_line WHERE docnum = ? ORDER BY seq",
+        (docnum,)).fetchall()
+    for row in rows:
+        row = dict(row)
+        if row["kind"] == "UNPROCESSED":
+            by_kind["UNPROCESSED"].append(
+                {"LINE": row["line"], "REASON": row["reason"]})
+            continue
+        related = "CLEARINGDOCUMENT" if row["kind"] == "CLEARED" else "REVERSALDOCUMENT"
+        by_kind[row["kind"]].append({
+            "LINE": row["line"], "REFERENCE": row["reference"],
+            "ACCOUNTINGDOCUMENT": row["accounting_document"],
+            related: row["related_document"], "AMOUNT": row["amount"]})
+    statement = head["statement"] or ""
+    return {
+        "STATEMENT": statement,
+        "ACCOUNT": head["account"] or "",
+        "CLEARED": by_kind["CLEARED"],
+        "REOPENED": by_kind["REOPENED"],
+        "UNPROCESSED": by_kind["UNPROCESSED"],
+        "FINDINGS": json.loads(head["findings"]),
+        "MESSAGE": message_for(statement, by_kind["CLEARED"],
+                               by_kind["REOPENED"], by_kind["UNPROCESSED"]),
+    }
+
+
+def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
+    """Post a bank statement against the open items it pays.
+
+    ``docnum`` is the inbound IDoc this statement arrived on. It is what the
+    outcome is filed under, so a later read of that IDoc can say what posting
+    it did - and so the clearing can be found from the invoice's side. Empty
+    means nothing is filed, which is what a caller with no IDoc gets.
+    """
     parsed = statement_reader.parse(body)
     posting = parsed.get("date") or clock.today().isoformat()
     findings = check_balances(ctx.conn, parsed)
@@ -347,15 +441,16 @@ def apply_statement(ctx, body: bytes) -> dict:
                 "REASON": "the line does not say whether it is money in or out"})
 
     _remember(ctx.conn, parsed, findings)
+    statement = parsed.get("statement") or ""
     applied = {
-        "STATEMENT": parsed.get("statement") or "",
+        "STATEMENT": statement,
         "ACCOUNT": parsed["account"]["number"],
         "CLEARED": cleared,
         "REOPENED": reopened,
         "UNPROCESSED": unprocessed,
         "FINDINGS": findings,
-        "MESSAGE": "Statement %s: %d item(s) cleared, %d reopened, %d line(s) "
-                   "unprocessed" % (parsed.get("statement") or "(unnumbered)",
-                                    len(cleared), len(reopened), len(unprocessed)),
+        "MESSAGE": message_for(statement, cleared, reopened, unprocessed),
     }
+    if docnum:
+        _file_outcome(ctx.conn, docnum, applied)
     return applied
