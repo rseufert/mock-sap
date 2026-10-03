@@ -18,6 +18,12 @@ class DeltaCase(MockServerCase):
         payload.update(extra)
         return payload
 
+    def first_read(self, query="?$top=1"):
+        status, headers, body = self.get(V4 + "/SalesOrder" + query, headers=TRACK)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Preference-Applied"), "odata.track-changes")
+        return body["@odata.deltaLink"]
+
     def relative(self, link):
         return link.split(self.base, 1)[1]
 
@@ -29,24 +35,6 @@ class DeltaCase(MockServerCase):
 
 
 class TestDeltaV4(DeltaCase):
-    def first_read(self, query="?$top=1"):
-        status, headers, body = self.get(V4 + "/SalesOrder" + query, headers=TRACK)
-        self.assertEqual(status, 200)
-        self.assertEqual(headers.get("Preference-Applied"), "odata.track-changes")
-        return body["@odata.deltaLink"]
-
-    def test_a_tracked_read_hands_back_a_link(self):
-        link = self.first_read()
-        self.assertIn("$deltatoken=", link)
-        self.assertIn("/SalesOrder?", link)
-
-        # nothing has happened yet
-        status, _, body = self.get(self.relative(link))
-        self.assertEqual(status, 200)
-        self.assertEqual(body["value"], [])
-        self.assertIn("#SalesOrder/$delta", body["@odata.context"])
-        self.assertIn("$deltatoken=", body["@odata.deltaLink"])
-
     def test_changes_creations_and_deletions(self):
         _, _, body = self.get(V4 + "/SalesOrder?$top=3")
         existing = [row["SalesOrder"] for row in body["value"]]
@@ -121,6 +109,51 @@ class TestDeltaV4(DeltaCase):
                          "a change at the token's own instant must still be reported, "
                          "and nothing older than it should come with it")
 
+    def test_a_filter_survives_in_the_link(self):
+        status, _, body = self.get(
+            V4 + "/SalesOrder?$filter=SalesOrganization eq '1710'".replace(" ", "%20"),
+            headers=TRACK)
+        self.assertEqual(status, 200)
+        link = body["@odata.deltaLink"]
+        self.assertIn("$filter=", link)
+
+        self.create(V4 + "/SalesOrder")
+        _, _, body = self.get(self.relative(link))
+        self.assertTrue(body["value"])
+        for row in body["value"]:
+            if "@removed" not in row:
+                self.assertEqual(row["SalesOrganization"], "1710")
+
+
+class TestDeltaNothingHasChangedYet(DeltaCase):
+    """The two tests whose premise is that nothing has been written yet.
+
+    They get a class of their own, which is the whole point: `setUpClass` gives
+    one server and one database to a class, and `TestDeltaV4` writes orders in
+    two tests that sort before these ones. `changed_since` compares with `>=`
+    on purpose - a change in the token's own millisecond must not be lost - so
+    an order a sibling test created in the same millisecond as the token
+    satisfies it and comes back. On Linux the clock moves between them and it
+    passes; on Windows the timer granularity is about 15.6ms, so the two
+    quantise onto the same value and it fails about once in a while (#117).
+
+    Here the newest row is seeded, nine months old, so "nothing has changed
+    since the token" is true by construction rather than by timing. Both tests
+    only read, so neither spoils it for the other.
+    """
+
+    def test_a_tracked_read_hands_back_a_link(self):
+        link = self.first_read()
+        self.assertIn("$deltatoken=", link)
+        self.assertIn("/SalesOrder?", link)
+
+        # nothing has happened yet
+        status, _, body = self.get(self.relative(link))
+        self.assertEqual(status, 200)
+        self.assertEqual(body["value"], [])
+        self.assertIn("#SalesOrder/$delta", body["@odata.context"])
+        self.assertIn("$deltatoken=", body["@odata.deltaLink"])
+
     def test_the_token_is_taken_before_the_rows_are_read(self):
         """Otherwise a change between the query and the mint is never reported.
 
@@ -140,21 +173,6 @@ class TestDeltaV4(DeltaCase):
         # so early that every read repeats itself
         _, _, body = self.get(self.relative(link))
         self.assertEqual(body["value"], [])
-
-    def test_a_filter_survives_in_the_link(self):
-        status, _, body = self.get(
-            V4 + "/SalesOrder?$filter=SalesOrganization eq '1710'".replace(" ", "%20"),
-            headers=TRACK)
-        self.assertEqual(status, 200)
-        link = body["@odata.deltaLink"]
-        self.assertIn("$filter=", link)
-
-        self.create(V4 + "/SalesOrder")
-        _, _, body = self.get(self.relative(link))
-        self.assertTrue(body["value"])
-        for row in body["value"]:
-            if "@removed" not in row:
-                self.assertEqual(row["SalesOrganization"], "1710")
 
 
 class TestDeltaV2(DeltaCase):
