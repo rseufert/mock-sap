@@ -13,6 +13,44 @@ Entries waiting for a release are one file each in
 cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
 into a dated section here.
 
+## [0.16.0] - 2026-10-03
+
+0.15.0 made the mock remember what posting a bank statement decided. This does
+the same for the other two message types that post something, which dropped
+their answer in exactly the same way: a `DELVRY07` works out which sales orders
+it moved and which it could not find, an `INVOIC02` posts an invoice and a
+payable and reports both numbers, and in each case the POST receipt was the only
+place that answer ever existed. A client that did not keep the response had no
+way back to it - and for the invoice, those two numbers are the ones a payment
+later quotes.
+
+So the asymmetry is gone: a client no longer has to know which of the three
+posting types remembers. That is the whole of this release, and it closes the
+question 0.15.0 left open rather than adding a surface.
+
+Nothing a client does against 0.15.0 behaves differently. `APPLIED` is the same
+structure it already was, on a read that already existed, and an IDoc that
+posted nothing - an `ORDERS05`, or one the application declined - still carries
+no `APPLIED` at all rather than an empty one that would read as an answer.
+
+Two things moved inside the package, neither part of the HTTP surface and both
+introduced by 0.15.0 earlier the same day: `reconcile.outcome_of` is now
+`outcome.of`, and
+`reconcile.message_for` is now `outcome.statement_message`, because filing what
+posting decided is no longer the statement's business alone. A database written
+by 0.15.0 gains the two new tables when this version opens it.
+
+### Changed
+
+- **A posted DELVRY or INVOIC remembers what it decided, the way a FINSTA
+  already did** ([#116]). Reading the IDoc back with
+  `GET /sap/bc/idoc/<DOCNUM>` returns the same `APPLIED` the POST receipt
+  carried: for a delivery, each sales order it moved and the one it could not
+  find; for a supplier's invoice, the invoice and the accounting document a
+  payment later quotes. Posting answered once and kept none of it, so a client
+  that did not hold on to the response had no way back to either. An IDoc that
+  posted nothing still has no outcome at all, rather than an empty one.
+
 ## [0.15.0] - 2026-10-03
 
 The mock stops forgetting what it decided. Posting a `FINSTA01` already worked
@@ -724,7 +762,9 @@ First release.
 
 [#91]: https://github.com/rseufert/mock-sap/issues/91
 [#105]: https://github.com/rseufert/mock-sap/issues/105
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.15.0...HEAD
+[#116]: https://github.com/rseufert/mock-sap/issues/116
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/rseufert/mock-sap/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rseufert/mock-sap/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/rseufert/mock-sap/compare/v0.13.3...v0.14.0
 [0.13.3]: https://github.com/rseufert/mock-sap/compare/v0.13.2...v0.13.3
