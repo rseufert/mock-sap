@@ -93,14 +93,23 @@ file. Read the first before a change of any size.
   tracked file has no row in `docs/FILES.md`, if a row names a file that is gone,
   or if a module is missing from the README's layout block. It checks coverage,
   not prose - keeping the prose true is on you.
-- **A line in the changelog.** `tools/check_changelog.py` fails a pull request
-  that touches `mocksap/` without adding an entry under `## [Unreleased]` - an
-  entry, not merely a changed file, because the merge that lost one still
-  touched the changelog. It is what a user of the published package reads. The
-  same check holds released sections to being history and refuses to let an
-  entry waiting for a release disappear. A change that genuinely needs no entry
-  - a comment, a rename, a pure refactor - can carry the `no changelog` label,
-  which lifts that one rule and leaves the others standing.
+- **A changelog entry, as its own file.** A pull request that touches `mocksap/`
+  adds one file under [`changelog.d/`](changelog.d/), named
+  `<issue>.<kind>.md` and holding the bullet exactly as it will appear in the
+  release. Not a line under `## [Unreleased]`: that section is a pointer at this
+  directory now, and an entry written there is never released. Two pull requests
+  that each add a file cannot conflict, where two editing the same lines of
+  `CHANGELOG.md` conflicted every time - and a pull request that conflicts with
+  its base runs no CI at all, so whatever it said about being green was true of
+  an older `main`. `changelog.d/README.md` has the format and the reason.
+
+  `tools/check_changelog.py` enforces it: an *entry*, not merely a changed file,
+  because the merge that lost one still touched the changelog. The same check
+  holds released sections to being history and refuses to let an entry waiting
+  for a release disappear. A change that genuinely needs no entry - a comment, a
+  rename, a pure refactor - can carry the `no changelog` label, which lifts that
+  one rule and leaves the others standing. Do not add the `[#nn]` link
+  definition by hand; the release writes it.
 - **No new dependencies.** See above.
 - **A commit message that says what changed and why.** The why is the part a
   reader cannot reconstruct. Wrap at 72 characters.
@@ -132,8 +141,21 @@ Publishing the GitHub Release runs the tests, builds the distributions, checks
 that the tag, `pyproject.toml` and the built wheel agree, and uploads to PyPI
 through [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) - there is
 no API token anywhere. Running the `Publish` workflow by hand publishes to
-TestPyPI instead. Add the release to [`CHANGELOG.md`](CHANGELOG.md) in the same
-commit as the version bump.
+TestPyPI instead.
+
+The changelog section is assembled rather than written:
+
+```bash
+python3 tools/check_changelog.py --release 0.15.0
+```
+
+That writes the dated section from the files in `changelog.d/`, in Keep a
+Changelog heading order, adds the version's compare link, re-points
+`[Unreleased]`, defines every `[#nn]` the new section uses, and deletes the
+fragments. Two things it leaves: the paragraph of prose the section opens with,
+saying why anyone should upgrade - no tool can write that, and the check fails
+while the placeholder is still there - and the version bump in
+`pyproject.toml`. Both belong in the same commit as the assembled section.
 
 Verify the release by installing the exact version into a clean environment:
 

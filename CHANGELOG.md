@@ -8,45 +8,10 @@ says so where it does.
 
 ## [Unreleased]
 
-### Added
-
-- **Posting a `FINSTA01` is remembered, not just answered** ([#105]).
-  Posting a bank statement already worked out, per line, which invoice it
-  cleared and why a line was refused, returned that once on the POST receipt
-  and then dropped it: the IDoc's own read gave nine columns and none of them
-  was this, so a client that did not keep the response had no way back to it.
-  `GET /sap/bc/idoc/<DOCNUM>` now returns the same `APPLIED` the POST did, read
-  back from where posting filed it rather than recomputed, and
-  `/_mock/idocs?settled=<AccountingDocument>` answers it from the other side -
-  not "what did this IDoc do?" but "what settled my invoice?", which is the
-  join an integration actually has. The listing itself stays narrow: one IDoc
-  has one outcome, and a listing of fifty would carry fifty.
-
-  The outcome is a header row and its lines rather than a JSON column, because
-  a blob would mean reading every IDoc to answer the backwards question. Both
-  tables are new, so a database written by an earlier version picks them up on
-  open rather than needing a migration; an IDoc posted before this change
-  carries no outcome, and reads without one, which is the truth about it.
-
-### Fixed
-
-- **The architecture notes stop promising something the mock does not do**
-  ([#91]). *One connection, many threads* said `ThreadingHTTPServer` serves
-  requests concurrently against one SQLite connection and that "SQLite
-  serialises the access". `check_same_thread=False` switches off Python's
-  *check* that a connection is used from the thread that opened it; it adds no
-  synchronisation. SQLite serialises individual statements, not the read-decide-
-  write sequences almost everything here is made of, and the only lock in
-  `db.py` guards number-range allocation. Anyone who read that sentence and
-  load-tested a client against this mock was told it would hold, and it does
-  not. The section now says so, and says that one request at a time is the
-  supported shape today.
-
-  Documentation only - no behaviour changed, and the concurrency itself is still
-  wrong. #91 stays open for the fix.
-
-[#91]: https://github.com/rseufert/mock-sap/issues/91
-[#105]: https://github.com/rseufert/mock-sap/issues/105
+Entries waiting for a release are one file each in
+[`changelog.d/`](changelog.d/), so that two pull requests adding an entry
+cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
+into a dated section here.
 
 ## [0.14.0] - 2026-09-30
 
