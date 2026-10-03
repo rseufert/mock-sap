@@ -28,6 +28,24 @@ says so where it does.
   open rather than needing a migration; an IDoc posted before this change
   carries no outcome, and reads without one, which is the truth about it.
 
+### Fixed
+
+- **The architecture notes stop promising something the mock does not do**
+  ([#91]). *One connection, many threads* said `ThreadingHTTPServer` serves
+  requests concurrently against one SQLite connection and that "SQLite
+  serialises the access". `check_same_thread=False` switches off Python's
+  *check* that a connection is used from the thread that opened it; it adds no
+  synchronisation. SQLite serialises individual statements, not the read-decide-
+  write sequences almost everything here is made of, and the only lock in
+  `db.py` guards number-range allocation. Anyone who read that sentence and
+  load-tested a client against this mock was told it would hold, and it does
+  not. The section now says so, and says that one request at a time is the
+  supported shape today.
+
+  Documentation only - no behaviour changed, and the concurrency itself is still
+  wrong. #91 stays open for the fix.
+
+[#91]: https://github.com/rseufert/mock-sap/issues/91
 [#105]: https://github.com/rseufert/mock-sap/issues/105
 
 ## [0.14.0] - 2026-09-30

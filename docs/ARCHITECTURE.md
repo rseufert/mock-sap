@@ -356,7 +356,25 @@ table with a real message number and a 200 status, because that is how BAPIs fai
 ### One connection, many threads
 
 `ThreadingHTTPServer` handles requests concurrently against a single SQLite
-connection opened with `check_same_thread=False`; SQLite serialises the access.
+connection opened with `check_same_thread=False`. **That is not safe, and this
+section used to say it was.** `check_same_thread=False` switches off Python's
+*check* that a connection is used from the thread that made it; it does not add
+any synchronisation of its own.
+
+SQLite serialises individual statements, which is what makes the mock survive
+ordinary use. It does not serialise a *sequence* of them, and almost everything
+here is a sequence: read the row, decide, write it back. Two requests doing that
+at once can interleave between the read and the write. The only lock in
+`db.py` guards number-range allocation, so document numbers are not handed out
+twice; nothing guards anything else.
+
+So concurrent writers can produce errors neither request deserved, and can leave
+behind rows from a request that failed. Do not use this mock to load-test a
+client's concurrency and conclude anything about SAP from the result - the
+failures you get will be the mock's own. One request at a time is the supported
+shape today. Issue #91 tracks the fix, which is a connection per thread or one
+writer lock around the mutating paths; it is not done.
+
 In-memory databases use a *uniquely named* shared-cache URI, so several mocks in one
 process - which is exactly what the test suite does - stay isolated from each other
 instead of silently sharing one database.
