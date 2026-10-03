@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-from . import clock, db, documents, reconcile, store
+from . import clock, db, documents, outcome, reconcile, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -147,7 +147,7 @@ def parse_flat(body: bytes) -> Dict[str, str]:
     return info
 
 
-def _apply_delivery(ctx, body: bytes) -> List[dict]:
+def _apply_delivery(ctx, body: bytes, docnum: str = "") -> List[dict]:
     """Post an inbound DELVRY07 against the sales orders it references.
 
     Each item segment carries the document it was created from (VGBEL/VGPOS)
@@ -192,7 +192,7 @@ def _apply_delivery(ctx, body: bytes) -> List[dict]:
         row = documents.sales_order(ctx, order)
         if row is None:
             applied.append({"SALESORDER": order, "STATUS": "",
-                            "MESSAGE": "Sales order %s does not exist" % order})
+                            "MESSAGE": outcome.delivery_message(order, "", "")})
             continue
 
         items = {item["SalesOrderItem"]: item for item in documents.order_items(ctx, row)}
@@ -210,14 +210,13 @@ def _apply_delivery(ctx, body: bytes) -> List[dict]:
         status = documents.apply_delivery_status(ctx, row, positions)
         entry = {
             "SALESORDER": row["SalesOrder"], "STATUS": status,
-            "MESSAGE": "Delivery status set to %s (%s)"
-                       % (status, "fully delivered" if status == "C" else "partly delivered"),
+            "MESSAGE": outcome.delivery_message(row["SalesOrder"], status, created),
         }
         if created:
             entry["DELIVERY"] = created
-            entry["MESSAGE"] = "Delivery %s created; %s" % (created, entry["MESSAGE"][0].lower()
-                                                            + entry["MESSAGE"][1:])
         applied.append(entry)
+    if docnum:
+        outcome.file_delivery(ctx.conn, docnum, applied)
     return applied
 
 
@@ -229,7 +228,7 @@ def _idoc_date(value: str) -> str:
     return "%s-%s-%s" % (digits[:4], digits[4:6], digits[6:])
 
 
-def _apply_invoice(ctx, body: bytes) -> List[dict]:
+def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
     """Post an inbound INVOIC as a supplier invoice with an open payable.
 
     The segments are the ones this mock writes on the way out, read from the
@@ -307,15 +306,20 @@ def _apply_invoice(ctx, body: bytes) -> List[dict]:
         } for item in items],
     }
     posted = documents.post_supplier_invoice(ctx, invoice)
-    return [{
+    gross_text = "%.2f" % posted["gross"]
+    applied = [{
         "SUPPLIERINVOICE": posted["supplier_invoice"],
         "FISCALYEAR": posted["fiscal_year"],
         "ACCOUNTINGDOCUMENT": posted["accounting_document"],
         "INVOICINGPARTY": supplier,
-        "MESSAGE": "Supplier invoice %s posted; %s %.2f payable to %s"
-                   % (posted["supplier_invoice"], posted["currency"],
-                      posted["gross"], supplier),
+        "MESSAGE": outcome.invoice_message(posted["supplier_invoice"],
+                                           posted["currency"], gross_text,
+                                           supplier),
     }]
+    if docnum:
+        outcome.file_invoice(ctx.conn, docnum, applied, posted["currency"],
+                             gross_text)
+    return applied
 
 
 def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
@@ -397,11 +401,11 @@ def _apply(ctx, info: dict, body: bytes, is_xml: bool,
     # An IDoc that did not post has done nothing to the order, which is the
     # whole difference between status 53 and status 51.
     if mestyp.startswith("DELVRY"):
-        return _apply_delivery(ctx, body)
+        return _apply_delivery(ctx, body, docnum)
     # An INVOIC is a bill: posting it owes somebody money, and that payable is
     # what a payment run later selects. A failed posting owes nobody anything.
     if mestyp.startswith("INVOIC"):
-        return _apply_invoice(ctx, body)
+        return _apply_invoice(ctx, body, docnum)
     # A FINSTA is the bank telling us what happened to the money. Posting it
     # clears what it paid and reopens what came back; a failed posting clears
     # nothing, because an item cleared by an IDoc that did not post would be
@@ -417,21 +421,25 @@ def receipt_xml(receipt: dict) -> str:
 
 
 def get(ctx, docnum: str) -> Optional[dict]:
-    """One IDoc, and - for a posted FINSTA01 - what posting it decided.
+    """One IDoc, and - if posting it decided anything - what that was.
 
-    ``APPLIED`` is the same structure the POST receipt carried, read back from
-    where posting filed it rather than recomputed, so the two agree. It is on
-    the by-docnum read and deliberately not on the listing: one IDoc has one
-    outcome, where a listing of 50 would carry 50 (#105).
+    ``APPLIED`` is the same list the POST receipt carried, read back from where
+    posting filed it rather than recomputed, so the two agree: the statement's
+    lines (#105), the sales orders a DELVRY moved or could not find, or the
+    invoice and payable an INVOIC posted (#116). An ORDERS05 is only filed, so
+    it has no outcome and the key is absent rather than empty.
+
+    It is on the by-docnum read and deliberately not on the listing: one IDoc
+    has one outcome, where a listing of 50 would carry 50.
     """
     row = ctx.conn.execute("SELECT * FROM idoc WHERE docnum=?",
                            (docnum.zfill(16),)).fetchone()
     if row is None:
         return None
     record = dict(row)
-    applied = reconcile.outcome_of(ctx.conn, record["docnum"])
+    applied = outcome.of(ctx.conn, record["docnum"])
     if applied is not None:
-        record["APPLIED"] = [applied]
+        record["APPLIED"] = applied
     return record
 
 

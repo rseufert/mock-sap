@@ -190,6 +190,37 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idoc_statement_line_by_document "
         "ON idoc_statement_line(accounting_document)"
     )
+    # Posting a DELVRY moves one row per sales order it names, so this is a
+    # line table with no header: there is nothing true of the delivery as a
+    # whole that is not true of its orders. A blank `status` is an order the
+    # mock could not find - `documents.apply_delivery_status` answers `C` or
+    # `B` and never blank - which is how a read tells "moved nothing" from
+    # "moved to partly delivered".
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS idoc_delivery (
+            docnum TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            sales_order TEXT NOT NULL,
+            status TEXT,
+            delivery TEXT,
+            PRIMARY KEY (docnum, seq)
+        )"""
+    )
+    # An INVOIC posts one invoice, so the docnum is the whole key. `currency`
+    # and `gross` are not fields of the receipt; they are the words its
+    # sentence needs, kept so `outcome.invoice_message` can rebuild it rather
+    # than this storing a sentence that would go stale when the wording changes.
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS idoc_invoice (
+            docnum TEXT PRIMARY KEY,
+            supplier_invoice TEXT NOT NULL,
+            fiscal_year TEXT,
+            accounting_document TEXT,
+            invoicing_party TEXT,
+            currency TEXT,
+            gross TEXT
+        )"""
+    )
     cur.execute(
         """CREATE TABLE IF NOT EXISTS rfc_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -209,7 +240,8 @@ def reset(conn: sqlite3.Connection) -> None:
         if owns_a_table(et):
             cur.execute('DELETE FROM "%s"' % et.name)
     for t in ("number_range", "idoc", "idoc_statement", "idoc_statement_line",
-              "rfc_log", "deleted_entity", "bank_statement"):
+              "idoc_delivery", "idoc_invoice", "rfc_log", "deleted_entity",
+              "bank_statement"):
         cur.execute("DELETE FROM %s" % t)
     conn.commit()
 
