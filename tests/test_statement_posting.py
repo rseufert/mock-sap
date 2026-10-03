@@ -351,10 +351,21 @@ class TestTheOutcomeOutlivesTheResponse(StatementCase):
         self.assertEqual((applied["CLEARED"], applied["REOPENED"],
                           applied["UNPROCESSED"]), ([], [], []))
 
-    def test_an_idoc_that_posted_no_statement_has_no_outcome(self):
+    def test_an_invoic_outcome_is_not_read_back_as_a_statement(self):
+        """An INVOIC has an outcome of its own since #116, and it is not this one.
+
+        Before #116 this asserted an INVOIC had no outcome at all, which was
+        only true while the statement was the one kind that persisted. What it
+        was guarding is still worth guarding: the statement reader must not
+        answer for an IDoc that posted something else.
+        """
         receipt = self.send(invoic("OUT-D1"))
-        self.assertNotIn("APPLIED", self.idoc(receipt["DOCNUM"]),
-                         "an INVOIC is not a statement and says nothing about one")
+        applied = self.idoc(receipt["DOCNUM"])["APPLIED"][0]
+
+        self.assertNotIn("STATEMENT", applied)
+        self.assertNotIn("CLEARED", applied)
+        self.assertIn("SUPPLIERINVOICE", applied,
+                      "an INVOIC posted an invoice, not a statement")
 
     def test_what_a_statement_said_about_itself_survives_too(self):
         receipt = self.send(finsta(

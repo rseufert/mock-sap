@@ -438,20 +438,24 @@ curl -X PUT http://127.0.0.1:8000/sap/bc/idoc/<DOCNUM>/status \
   -H "X-CSRF-Token: $TOKEN" -d '{"status":"51"}'
 ```
 
-**Posting a statement is remembered, not just answered.** A `FINSTA01` works out,
-per line, which invoice it cleared and why a line was refused. Reading that IDoc
-back returns the same `APPLIED` the POST did - the clearing document, the
-reference, and for a refused line the mock's own words - so a client that did not
-keep the response is not left guessing:
+**What posting an IDoc decided is remembered, not just answered.** A `FINSTA01`
+works out, per line, which invoice it cleared and why a line was refused; a
+`DELVRY07` says which sales orders it moved and names one it could not find; an
+`INVOIC02` reports the supplier invoice and the accounting document it posted.
+Reading that IDoc back returns the same `APPLIED` the POST did, so a client that
+did not keep the response is not left guessing:
 
 ```bash
 curl http://127.0.0.1:8000/sap/bc/idoc/<DOCNUM>
 ```
 
+An IDoc that posts nothing - an `ORDERS05`, or one the application declined -
+has no `APPLIED` at all, rather than an empty one that reads as an answer.
+
 The listing stays narrow, because one IDoc has one outcome and a listing of fifty
 would carry fifty. It takes `settled` instead, which answers the question an
-integration actually has - not "what did this IDoc do?" but "what settled my
-invoice?":
+integration actually has of a statement - not "what did this IDoc do?" but "what
+settled my invoice?":
 
 ```bash
 curl "http://127.0.0.1:8000/_mock/idocs?settled=0100000007"
@@ -519,8 +523,10 @@ curl -X POST http://127.0.0.1:8000/sap/bc/idoc \
   "MESSAGE": "Supplier invoice 5100000001 posted; EUR 1190.00 payable to 1000009"}]}
 ```
 
-The invoice is readable at `API_SUPPLIERINVOICE_PROCESS_SRV` with the supplier's
-own number in `SupplierInvoiceIDByInvcgParty` - the reference a payment quotes
+Those two numbers come back from the IDoc as well as from the receipt, so a
+client that posted an invoice and kept only the `DOCNUM` can still find what it
+created. The invoice is readable at `API_SUPPLIERINVOICE_PROCESS_SRV` with the
+supplier's own number in `SupplierInvoiceIDByInvcgParty` - the reference a payment quotes
 back - and the purchase order each line bills against under
 `to_SuplrInvcItemPurOrdRef`, so a three-way match can be done over OData rather
 than only inside an example. The accounting document it posts leaves an **open
@@ -1051,6 +1057,7 @@ mocksap/documents.py  creating deliveries, invoices and journal entries
 mocksap/bank.py       IBAN and BIC checks, and the accounts the seed builds
 mocksap/statement.py  reading a FINSTA01 bank statement, and checking its sums
 mocksap/reconcile.py  matching a statement to the open items it pays
+mocksap/outcome.py    what posting an IDoc decided, kept so a read can say
 mocksap/idoc.py       IDoc inbox/outbox, ORDERS05 generation
 mocksap/messages.py   sap-message warnings, and the rules that produce them
 mocksap/clock.py      system time: one clock, pinnable and movable
