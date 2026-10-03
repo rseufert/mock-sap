@@ -282,5 +282,126 @@ class TestWhatTheStatementSaysAboutItself(StatementCase):
         self.assertEqual(applied["FINDINGS"], [])
 
 
+class TestTheOutcomeOutlivesTheResponse(StatementCase):
+    """#105: posting a statement decided something; reading it back says what.
+
+    The POST receipt used to be the only place the decision existed, so a
+    client that did not keep the response had no way back to it.
+    """
+
+    def idoc(self, docnum):
+        status, _, record = self.get("/sap/bc/idoc/" + docnum)
+        self.assertEqual(status, 200)
+        return record
+
+    def test_the_read_returns_exactly_what_the_receipt_said(self):
+        paid = self.bill("OUT-A1", "1190.00")
+        receipt = self.send(finsta(
+            line("000001", "1190.00-", reference="OUT-A1")
+            + line("000002", "500.00-", reference="NOT-A-THING")))
+
+        read = self.idoc(receipt["DOCNUM"])
+        self.assertEqual(read["APPLIED"], receipt["APPLIED"],
+                         "the read is the receipt, not an approximation of it")
+        self.assertEqual(read["APPLIED"][0]["CLEARED"][0]["ACCOUNTINGDOCUMENT"],
+                         paid["ACCOUNTINGDOCUMENT"])
+
+    def test_a_cleared_line_still_names_the_document_that_paid_it(self):
+        self.bill("OUT-B1", "1190.00")
+        receipt = self.send(finsta(line("000001", "1190.00-", reference="OUT-B1")))
+        posted = receipt["APPLIED"][0]["CLEARED"][0]
+
+        cleared = self.idoc(receipt["DOCNUM"])["APPLIED"][0]["CLEARED"][0]
+        self.assertEqual(cleared["CLEARINGDOCUMENT"], posted["CLEARINGDOCUMENT"])
+        self.assertEqual(cleared["REFERENCE"], "OUT-B1")
+        self.assertEqual(cleared["AMOUNT"], posted["AMOUNT"])
+
+    def test_a_refused_line_keeps_the_mocks_own_words(self):
+        receipt = self.send(finsta(line("000007", "99.00-", reference="NOBODY")))
+        said = receipt["APPLIED"][0]["UNPROCESSED"][0]["REASON"]
+
+        refused = self.idoc(receipt["DOCNUM"])["APPLIED"][0]["UNPROCESSED"][0]
+        self.assertEqual(refused["REASON"], said)
+        self.assertEqual(refused["LINE"], "000007")
+        self.assertTrue(said, "the reason is prose, and it is the point")
+
+    def test_a_returned_payment_names_the_reversal_document(self):
+        self.bill("OUT-C1", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="OUT-C1"),
+                         statement="00050"))
+        receipt = self.send(finsta(line("000001", "1190.00", reference="OUT-C1"),
+                                   statement="00051"))
+        posted = receipt["APPLIED"][0]["REOPENED"]
+        self.assertEqual(len(posted), 1, "the credit reopened the invoice")
+
+        reopened = self.idoc(receipt["DOCNUM"])["APPLIED"][0]["REOPENED"][0]
+        self.assertEqual(reopened["REVERSALDOCUMENT"],
+                         posted[0]["REVERSALDOCUMENT"])
+        self.assertNotIn("CLEARINGDOCUMENT", reopened,
+                         "a reopened line is not a cleared one")
+
+    def test_a_statement_that_settled_nothing_still_says_it_posted(self):
+        receipt = self.send(finsta(statement="00099"))
+        read = self.idoc(receipt["DOCNUM"])
+
+        self.assertIn("APPLIED", read,
+                      "cleared nothing is a different answer from not a statement")
+        applied = read["APPLIED"][0]
+        self.assertEqual(applied["STATEMENT"], "00099")
+        self.assertEqual((applied["CLEARED"], applied["REOPENED"],
+                          applied["UNPROCESSED"]), ([], [], []))
+
+    def test_an_idoc_that_posted_no_statement_has_no_outcome(self):
+        receipt = self.send(invoic("OUT-D1"))
+        self.assertNotIn("APPLIED", self.idoc(receipt["DOCNUM"]),
+                         "an INVOIC is not a statement and says nothing about one")
+
+    def test_what_a_statement_said_about_itself_survives_too(self):
+        receipt = self.send(finsta(
+            line("000001", "100.00-"), opening="1000.00", closing="5000.00",
+            debits="100.00", credits_="0.00"))
+        said = receipt["APPLIED"][0]["FINDINGS"]
+        self.assertTrue(said, "this statement does not add up")
+        self.assertEqual(self.idoc(receipt["DOCNUM"])["APPLIED"][0]["FINDINGS"],
+                         said)
+
+    def test_the_listing_stays_narrow(self):
+        self.bill("OUT-E1", "1190.00")
+        receipt = self.send(finsta(line("000001", "1190.00-", reference="OUT-E1")))
+
+        _, _, body = self.get("/_mock/idocs")
+        rows = [r for r in body["results"] if r["docnum"] == receipt["DOCNUM"]]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("APPLIED", rows[0],
+                         "one IDoc has one outcome; a listing of 50 would carry 50")
+
+
+class TestFindingTheIDocThatSettledAnInvoice(StatementCase):
+    """The join an integration actually has: from the invoice, not to it."""
+
+    def test_the_listing_narrows_to_the_idocs_that_settled_one_document(self):
+        paid = self.bill("REV-A1", "1190.00")
+        other = self.bill("REV-A2", "2380.00")
+        settling = self.send(finsta(
+            line("000001", "1190.00-", reference="REV-A1"), statement="00060"))
+        self.send(finsta(line("000001", "2380.00-", reference="REV-A2"),
+                         statement="00061"))
+
+        _, _, body = self.get("/_mock/idocs?settled=%s"
+                              % paid["ACCOUNTINGDOCUMENT"])
+        self.assertEqual([r["docnum"] for r in body["results"]],
+                         [settling["DOCNUM"]],
+                         "that invoice was settled by exactly one IDoc")
+        self.assertNotEqual(paid["ACCOUNTINGDOCUMENT"],
+                            other["ACCOUNTINGDOCUMENT"])
+
+    def test_an_unsettled_document_matches_nothing(self):
+        owed = self.bill("REV-B1", "500.00")
+        _, _, body = self.get("/_mock/idocs?settled=%s"
+                              % owed["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(body["results"], [],
+                         "nothing has settled it, so nothing names it")
+
+
 if __name__ == "__main__":
     unittest.main()

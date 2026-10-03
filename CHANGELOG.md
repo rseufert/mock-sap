@@ -8,7 +8,27 @@ says so where it does.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Posting a `FINSTA01` is remembered, not just answered** ([#105]).
+  Posting a bank statement already worked out, per line, which invoice it
+  cleared and why a line was refused, returned that once on the POST receipt
+  and then dropped it: the IDoc's own read gave nine columns and none of them
+  was this, so a client that did not keep the response had no way back to it.
+  `GET /sap/bc/idoc/<DOCNUM>` now returns the same `APPLIED` the POST did, read
+  back from where posting filed it rather than recomputed, and
+  `/_mock/idocs?settled=<AccountingDocument>` answers it from the other side -
+  not "what did this IDoc do?" but "what settled my invoice?", which is the
+  join an integration actually has. The listing itself stays narrow: one IDoc
+  has one outcome, and a listing of fifty would carry fifty.
+
+  The outcome is a header row and its lines rather than a JSON column, because
+  a blob would mean reading every IDoc to answer the backwards question. Both
+  tables are new, so a database written by an earlier version picks them up on
+  open rather than needing a migration; an IDoc posted before this change
+  carries no outcome, and reads without one, which is the truth about it.
+
+[#105]: https://github.com/rseufert/mock-sap/issues/105
 
 ## [0.14.0] - 2026-09-30
 

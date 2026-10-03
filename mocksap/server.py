@@ -571,7 +571,8 @@ class Handler(BaseHTTPRequestHandler):
                 return Response(201, body=receipt)
             if method == "GET":
                 return Response(body={"results": idoc.listing(
-                    ctx, int(opts.get("limit", 50)), opts.get("mestyp", ""))})
+                    ctx, int(opts.get("limit", 50)), opts.get("mestyp", ""),
+                    opts.get("settled", ""))})
             raise SapError("Method %s is not allowed on the IDoc endpoint" % method, 405)
         if rest == "generate":
             if method != "POST":
@@ -683,7 +684,8 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "idocs":
             ctx = mock.context(self._base_url({}), mock.config.client)
             return Response(body={"results": idoc.listing(
-                ctx, int(opts.get("limit", 50)), opts.get("mestyp", ""))})
+                ctx, int(opts.get("limit", 50)), opts.get("mestyp", ""),
+                opts.get("settled", ""))})
         if rest == "tokens":
             if mock.oauth is None:
                 raise SapError("OAuth is not switched on in this mock", 404)
