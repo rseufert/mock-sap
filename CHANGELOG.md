@@ -13,6 +13,34 @@ Entries waiting for a release are one file each in
 cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
 into a dated section here.
 
+## [0.17.1] - 2026-10-05
+
+A patch for one startup failure, and the reason it is not part of 0.17.0 is
+only that it landed an hour after that tag was cut.
+
+Starting the mock ran a reverse DNS lookup on the address it had just bound, to
+fill in a name nothing reads. The port was bound by then but not yet listening,
+so where the resolver is slow to answer for that address - a CI runner, a
+container with no reverse record - nothing answered until the lookup returned,
+and whoever was polling `/_mock/health` gave up first and reported a start that
+had failed for no visible reason. That is what happened to rseufert/mock-acme on
+a macOS runner against 0.16.0.
+
+Upgrade if you start this mock anywhere you do not control the resolver. If
+startup has always been instant for you, nothing here changes anything: the only
+visible difference is that `httpd.server_name` is now the bound address rather
+than whatever the lookup returned, and nothing in the package reads it.
+
+### Fixed
+
+- **Startup no longer waits on a reverse DNS lookup of the bind address**
+  ([#127]). The server bound through `http.server.HTTPServer.server_bind`,
+  which calls `socket.getfqdn` on the address it has just bound to fill in a
+  `server_name` nothing here reads. Where the resolver is slow to answer, the
+  port did not open until it had, and a caller polling `/_mock/health` gave up
+  first. The server now binds without the lookup, as mock-edi and mock-bank do;
+  `server_name` is the bound address.
+
 ## [0.17.0] - 2026-10-04
 
 The mock can tell a supplier what it paid them. Generating a `REMADV` from a
@@ -831,7 +859,9 @@ First release.
 [#116]: https://github.com/rseufert/mock-sap/issues/116
 [#106]: https://github.com/rseufert/mock-sap/issues/106
 [#107]: https://github.com/rseufert/mock-sap/issues/107
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.17.0...HEAD
+[#127]: https://github.com/rseufert/mock-sap/issues/127
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/rseufert/mock-sap/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/rseufert/mock-sap/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rseufert/mock-sap/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rseufert/mock-sap/compare/v0.14.0...v0.15.0
