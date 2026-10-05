@@ -151,6 +151,138 @@ class TestWhatItLeavesAlone(StatementCase):
                       "an invoice nobody can find")
 
 
+class TestWhenTwoSuppliersShareAnInvoiceNumber(StatementCase):
+    """#87: an invoice number is one supplier's sequence, not a key.
+
+    Two suppliers both numbering an invoice `INV-100` is ordinary, and nothing
+    the mock reads off a statement line says which was paid. Clearing whichever
+    was found first paid one supplier's invoice with another's money and left
+    an item open for the next payment run to pay again - and since #107 it
+    also decided which supplier's payment document the invoice landed in, so
+    the wrong party was credited as well.
+    """
+
+    def test_a_line_that_fits_two_suppliers_clears_neither(self):
+        first = self.bill("SHARED-1", "1190.00", supplier="1000009")
+        second = self.bill("SHARED-1", "1190.00", supplier="1000010")
+        before = {r["AccountingDocument"] for r in self.open_payables()}
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="SHARED-1")))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertEqual(before,
+                         {r["AccountingDocument"] for r in self.open_payables()},
+                         "both suppliers are still owed")
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        for named in (first["ACCOUNTINGDOCUMENT"], second["ACCOUNTINGDOCUMENT"],
+                      "1000009", "1000010"):
+            self.assertIn(named, reason,
+                          "the reason has to name what a person now has to "
+                          "tell apart by hand")
+
+    def test_the_amount_still_tells_them_apart(self):
+        """The party decides only what reference and amount left undecided."""
+        theirs = self.bill("SHARED-2", "1190.00", supplier="1000009")
+        ours = self.bill("SHARED-2", "500.00", supplier="1000010")
+
+        applied = self.send(finsta(
+            line("000001", "500.00-", reference="SHARED-2")))["APPLIED"][0]
+
+        self.assertEqual(applied["UNPROCESSED"], [])
+        cleared = applied["CLEARED"][0]
+        self.assertEqual(cleared["ACCOUNTINGDOCUMENT"],
+                         ours["ACCOUNTINGDOCUMENT"])
+        self.assertIn(theirs["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()],
+                      "and the other supplier is still owed 1190.00")
+        self.assertEqual(self.item_of(cleared["CLEARINGDOCUMENT"])["Supplier"],
+                         "1000010",
+                         "the payment credits the supplier whose invoice it was")
+
+    def test_a_wrong_amount_against_a_shared_number_names_every_candidate(self):
+        """The mismatch stops naming one of several candidates arbitrarily."""
+        first = self.bill("SHARED-3", "1190.00", supplier="1000009")
+        second = self.bill("SHARED-3", "500.00", supplier="1000010")
+
+        applied = self.send(finsta(
+            line("000001", "700.00-", reference="SHARED-3")))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        for named in (first["ACCOUNTINGDOCUMENT"], second["ACCOUNTINGDOCUMENT"],
+                      "1190.00", "500.00", "700.00"):
+            self.assertIn(named, reason)
+
+    def test_two_lines_for_two_suppliers_are_both_reported(self):
+        """The limit this draws, said out loud rather than papered over.
+
+        Two lines of 1190.00 against two items of 1190.00 do add up, but
+        which line paid which supplier is not in the file - and that is what
+        decides whose payment document each invoice lands in. Pairing them by
+        the order the database returned them was the arbitrary part; refusing
+        is the honest one.
+        """
+        self.bill("SHARED-4", "1190.00", supplier="1000009")
+        self.bill("SHARED-4", "1190.00", supplier="1000010")
+        before = {r["AccountingDocument"] for r in self.open_payables()}
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="SHARED-4")
+            + line("000002", "1190.00-", reference="SHARED-4")))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertEqual(len(applied["UNPROCESSED"]), 2)
+        self.assertEqual(before,
+                         {r["AccountingDocument"] for r in self.open_payables()})
+
+    def test_one_supplier_billing_the_same_number_twice_is_still_paid(self):
+        """A duplicate invoice is a different fault, and not this refusal.
+
+        Either item clears the right supplier for the right money, so there
+        is nothing here a person could tell apart by hand - which is the test
+        of whether reporting a line is worth anything.
+        """
+        both = {self.bill("SHARED-5", "1190.00", supplier="1000009")
+                ["ACCOUNTINGDOCUMENT"],
+                self.bill("SHARED-5", "1190.00", supplier="1000009")
+                ["ACCOUNTINGDOCUMENT"]}
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="SHARED-5")))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 1, applied["UNPROCESSED"])
+        self.assertIn(applied["CLEARED"][0]["ACCOUNTINGDOCUMENT"], both)
+        open_now = {r["AccountingDocument"] for r in self.open_payables()}
+        self.assertEqual(len(both & open_now), 1,
+                         "the money was paid once, so one of the two is still "
+                         "open and the duplicate is visible")
+
+    def test_a_return_quoting_a_shared_number_reopens_neither(self):
+        """The credit side runs the same match, so it refuses the same way.
+
+        Reopening the wrong supplier's invoice is the mirror of clearing it:
+        a payment run would pay money back out on a payment nobody returned.
+        """
+        first = self.bill("SHARED-6", "1190.00", supplier="1000009")
+        self.send(finsta(line("000001", "1190.00-", reference="SHARED-6"),
+                         statement="00070"))
+        second = self.bill("SHARED-6", "1190.00", supplier="1000010")
+        self.send(finsta(line("000001", "1190.00-", reference="SHARED-6"),
+                         statement="00071"))
+
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="SHARED-6"),
+            statement="00072"))["APPLIED"][0]
+
+        self.assertEqual(applied["REOPENED"], [])
+        self.assertEqual(len(applied["UNPROCESSED"]), 1)
+        open_now = {r["AccountingDocument"] for r in self.open_payables()}
+        self.assertNotIn(first["ACCOUNTINGDOCUMENT"], open_now)
+        self.assertNotIn(second["ACCOUNTINGDOCUMENT"], open_now,
+                         "neither supplier's invoice came back open")
+
+
 class TestAReturnedPayment(StatementCase):
     def test_a_credit_reopens_the_item_it_paid(self):
         invoice = self.bill("SUP-G1", "1190.00")

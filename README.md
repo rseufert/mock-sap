@@ -709,6 +709,18 @@ searched both as written and with its spaces removed - a bank wraps the note at
 70 characters wherever it falls, so `SUP-9001` can arrive as `SUP- 9001` and an
 exact search would quietly miss it.
 
+**An invoice number is no key, so a line that fits two suppliers clears
+neither.** The number is a supplier's own sequence, so two of them can both
+have an `INV-100`, and nothing read off a statement line says which was paid -
+`E1IDPF1` gives a reference, a note to payee and amounts, and the account the
+file names is the one being reconciled, not the payee's. Where the amount does
+not separate the candidates either, nothing is cleared and the reason names every
+item and its supplier. Clearing whichever was found first paid one supplier's
+invoice with another's money, left an item open for the next payment run to
+pay again, and - with one payment document per supplier - credited the wrong
+party too. Two items of the same supplier sharing a number are a duplicate
+invoice, not this, and are still settled once.
+
 **One payment document per supplier, not per line.** A payment run pays a
 supplier, so every item one statement settles for them is cleared by a single
 document: one supplier line per invoice, one credit to the bank for the total,
