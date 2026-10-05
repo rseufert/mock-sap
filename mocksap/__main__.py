@@ -53,6 +53,36 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def banner(args, httpd) -> list[str]:
+    """The lines printed at startup, built from the server, not the request.
+
+    The port is read off the bound socket rather than taken from `args`.
+    `--port 0` asks the operating system to choose a free port - the sensible
+    way to run several mocks at once, or to avoid a clash in CI - and a banner
+    built from `args.port` then advertises eighteen URLs ending `:0` while the
+    only record of the port that was actually bound is in `lsof` (#129).
+
+    The host stays as it was typed. It is not the same case: `0.0.0.0` is what
+    the reader asked for and reads back as the thing they can edit, whereas
+    nobody typed the port.
+    """
+    base = "http://%s:%d" % (args.host, httpd.server_port)
+    lines = ["mock-sap %s listening on %s  (client %s, db %s)"
+             % (__version__, base, args.client, args.db_path)]
+    for svc in SERVICES.values():
+        lines.append("  OData  %s%s" % (base, svc.path))
+    lines.append("  RFC    %s/sap/bc/rfc/<FUNCTION>" % base)
+    lines.append("  IDoc   %s/sap/bc/idoc" % base)
+    if args.oauth:
+        lines.append("  OAuth  %s/sap/bc/sec/oauth2/token  (client %s, tokens live %ds)"
+                     % (base, args.oauth.split(":", 1)[0], args.token_ttl))
+    lines.append("  Admin  %s/_mock/health" % base)
+    if args.clock:
+        lines.append("  Clock  pinned at %s UTC  (move it with POST %s/_mock/advance)"
+                     % (args.clock, base))
+    return lines
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     # Line-buffer the output: piped or run in a container, a block-buffered
@@ -70,20 +100,8 @@ def main(argv=None) -> int:
         # than a traceback from inside the server.
         print("mock-sap: %s" % bad, file=sys.stderr)
         return 2
-    base = "http://%s:%d" % (args.host, args.port)
-    print("mock-sap %s listening on %s  (client %s, db %s)"
-          % (__version__, base, args.client, args.db_path))
-    for svc in SERVICES.values():
-        print("  OData  %s%s" % (base, svc.path))
-    print("  RFC    %s/sap/bc/rfc/<FUNCTION>" % base)
-    print("  IDoc   %s/sap/bc/idoc" % base)
-    if args.oauth:
-        print("  OAuth  %s/sap/bc/sec/oauth2/token  (client %s, tokens live %ds)"
-              % (base, args.oauth.split(":", 1)[0], args.token_ttl))
-    print("  Admin  %s/_mock/health" % base)
-    if args.clock:
-        print("  Clock  pinned at %s UTC  (move it with POST %s/_mock/advance)"
-              % (args.clock, base))
+    for line in banner(args, httpd):
+        print(line)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
