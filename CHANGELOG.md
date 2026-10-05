@@ -13,6 +13,72 @@ Entries waiting for a release are one file each in
 cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
 into a dated section here.
 
+## [0.17.0] - 2026-10-04
+
+The mock can tell a supplier what it paid them. Generating a `REMADV` from a
+payment document renders a `PEXR2002` naming every invoice that payment settled,
+with the number the supplier quotes and what came off it. That closes the one
+leg of the procure-to-pay loop where SAP and the bank agreed and the supplier was
+never told - and it is written from the payment's own data, so the advice says
+what the system did rather than what something downstream composed on its behalf.
+
+**Read this part before upgrading.** Making the advice worth sending meant
+changing how a payment posts, and that is a behaviour change rather than an
+addition. A statement that settles three invoices for one supplier now posts
+*one* payment document covering all three, where it previously posted three. A
+remittance advice generated from a payment that settled exactly one invoice has
+one row and a total that trivially equals it, which is why the two go out
+together: nothing the mock emitted could otherwise exercise a reader's check
+that a total agrees with its parts.
+
+Three things a client may have assertions on:
+
+- **One payment document can now settle several invoices.** Code that read a
+  clearing document and expected a single invoice behind it will see more.
+- **`ClearingItem` is no longer always `000001`.** It points at the line of the
+  payment document that paid that invoice, which is what makes an advice's rows
+  agree with the payment.
+- **A payment's `ReferenceDocument` is the statement that produced it**, not one
+  of the invoices it covers - a field that stopped meaning anything at two. Each
+  invoice's own reference is still on its item and in the posting outcome.
+
+Returns now post after payments within one statement, so a statement that pays
+an invoice and takes the money back reads the same whichever order the bank
+listed those two lines in. Previously a credit could only reverse a clearing
+made by a line above it.
+
+Nothing else moved: no database migration, and the advice is a new generator
+rather than a change to an existing one.
+
+### Added
+
+- **A supplier can be told what was paid: a `REMADV` generated from the
+  payment** ([#106]). `POST /sap/bc/idoc/generate` with `mestyp=REMADV` and a
+  clearing document renders a `PEXR2002` naming every invoice that payment
+  settled — each with the number the supplier quotes and what came off it —
+  and a total that is the sum of those rows rather than a figure of its own.
+  The advice is dated by the payment's own posting date, so it cannot claim a
+  settlement that has not happened; a document that settled nothing is refused
+  rather than advised. It is the first generator whose source is not a sales
+  order, so the route now asks what a message type reads instead of assuming.
+
+### Changed
+
+- **One payment document per supplier, not per statement line** ([#107]). A
+  statement that settles three invoices for one supplier now posts one payment
+  document covering all three — one supplier line per invoice, one credit to
+  the bank for the total — and each item's `ClearingItem` points at the line
+  that paid it, where it was previously hardcoded to `000001` because there
+  was only ever one. This is how a payment run pays, and it is what makes a
+  remittance advice worth sending: the supplier gets a single credit and has
+  to be told which invoices it covers. Items that disagree on company code or
+  currency still get separate documents, since a document header carries one
+  of each. Two further changes follow from it: a payment's
+  `ReferenceDocument` is now the statement that produced it rather than one of
+  the invoices it covers, and returns are posted after payments, so a
+  statement that pays an invoice and takes the money back reads the same
+  whichever order the bank listed those lines in.
+
 ## [0.16.0] - 2026-10-03
 
 0.15.0 made the mock remember what posting a bank statement decided. This does
@@ -763,7 +829,10 @@ First release.
 [#91]: https://github.com/rseufert/mock-sap/issues/91
 [#105]: https://github.com/rseufert/mock-sap/issues/105
 [#116]: https://github.com/rseufert/mock-sap/issues/116
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.16.0...HEAD
+[#106]: https://github.com/rseufert/mock-sap/issues/106
+[#107]: https://github.com/rseufert/mock-sap/issues/107
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/rseufert/mock-sap/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rseufert/mock-sap/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rseufert/mock-sap/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/rseufert/mock-sap/compare/v0.13.3...v0.14.0
