@@ -548,8 +548,8 @@ when the vendor master decides.
 Three things it deliberately does not do:
 
 - **It does not check the invoice against the purchase order.** That is the
-  payer's job, and [`examples/invoice_check.py`](examples/invoice_check.py) does
-  it. A mock that silently refused a mismatched invoice would hide the bug its
+  payer's job, and mock-acme's
+  [`invoice_check.py`](https://github.com/rseufert/mock-acme/blob/main/mockacme/invoice_check.py) does it. A mock that silently refused a mismatched invoice would hide the bug its
   user is looking for.
 - **It does not deduplicate.** The same invoice sent twice creates two, because
   SAP's duplicate check is configuration and inventing one here would hide the
@@ -1016,31 +1016,28 @@ httpd.shutdown()
 
 `examples/client.py` is a dependency-free client showing the token/cookie flow.
 
-Three fuller examples use this mock together with
-[mock-edi](https://github.com/rseufert/mock-edi), a mock EDI trading partner:
+The fuller examples that used this mock together with
+[mock-edi](https://github.com/rseufert/mock-edi) and
+[mock-bank](https://github.com/rseufert/mock-bank) have moved to
+[mock-acme](https://github.com/rseufert/mock-acme), which holds the integration between the mocks in one place
+and tests it against all three:
 
-- [`examples/invoice_check.py`](examples/invoice_check.py) checks a supplier's
-  X12 invoices against the purchase order in `API_PURCHASEORDER_PROCESS_SRV` and
-  the supplier's ship notice, and posts the ones that match here as `INVOIC`
-  IDocs. [`examples/test_invoice_check.py`](examples/test_invoice_check.py) covers
-  a clean invoice, a short shipment, a price disagreement and a duplicate invoice.
-- [`examples/remittance.py`](examples/remittance.py) runs the other way: it takes
-  the `PEXR2002` payment advice this mock generates from a payment document and
-  sends the supplier the X12 820 they read. The perspective flips in the
-  conversion rather than in the IDoc — money out of our account becomes `BPR03`
-  `C`, a credit on theirs — and an amount that is not money out is refused
-  instead of relabelled.
-  [`examples/test_remittance.py`](examples/test_remittance.py) covers the
-  supplier accepting it and agreeing with it, and the two refusals that make
-  that mean something: a total that is not the sum of its rows, and a settlement
-  date ahead of the supplier's clock.
-- mock-edi's [`examples/po_bridge.py`](https://github.com/rseufert/mock-edi/blob/main/examples/po_bridge.py)
-  sends purchase orders from here to the supplier as 850s and posts the 855
-  confirmations back as `ORDRSP` IDocs, and its tests use this mock's fault rules
-  to take the IDoc endpoint down mid-run.
+- [`mockacme/invoice_check.py`](https://github.com/rseufert/mock-acme/blob/main/mockacme/invoice_check.py), which
+  was `examples/invoice_check.py` here, checks a supplier's X12 invoices against
+  the purchase order in `API_PURCHASEORDER_PROCESS_SRV` and the supplier's ship
+  notice, and posts the ones that match here as `INVOIC` IDocs.
+- [`mockacme/remittance.py`](https://github.com/rseufert/mock-acme/blob/main/mockacme/remittance.py), which was
+  `examples/remittance.py` here, runs the other way: it takes the `PEXR2002`
+  payment advice this mock generates from a payment document and sends the
+  supplier the X12 820 they read.
+- [`mockacme/po_bridge.py`](https://github.com/rseufert/mock-acme/blob/main/mockacme/po_bridge.py) sends purchase
+  orders from here to the supplier as 850s and posts the 855 confirmations back
+  as `ORDRSP` IDocs, and its tests use this mock's fault rules to take the IDoc
+  endpoint down mid-run.
 
-Both are walked through, test by test, in
-[Testing an SAP-to-EDI Integration Without SAP or a Trading Partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration).
+The first and the last are walked through, test by test, in
+[Testing an SAP-to-EDI Integration Without SAP or a Trading Partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration),
+which was written when they lived in the mocks' own `examples/` folders.
 
 ## Adding entity sets
 
@@ -1173,7 +1170,8 @@ acknowledgment, order response, ship notice and invoice a real one sends, and
 misbehaves on demand. An IDoc `ORDERS05` and an X12 850 are the same business
 document, so the two mocks make a reasonable pair of ends for testing the
 middleware between SAP and a trading partner.
-[`examples/invoice_check.py`](examples/invoice_check.py) is one.
+[mock-acme](https://github.com/rseufert/mock-acme) is that middleware, and
+[`invoice_check.py`](https://github.com/rseufert/mock-acme/blob/main/mockacme/invoice_check.py) there is one piece of it.
 
 [Testing an SAP-to-EDI Integration Without SAP or a Trading Partner](https://rickseufert.com/blog/2026/09/24/testing-an-sap-to-edi-integration)
 uses the two mocks together: purchase orders out and confirmations in, then

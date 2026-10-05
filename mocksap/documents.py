@@ -212,7 +212,7 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
 
     The invoice is recorded whatever it says; the open item is what makes it
     payable. Nothing here checks the invoice against a purchase order - that
-    is the payer's job, and `examples/invoice_check.py` does it. A mock that
+    is the payer's job, and mock-acme's `invoice_check.py` does it. A mock that
     silently refused a mismatched invoice would hide the bug its user is
     looking for.
     """
