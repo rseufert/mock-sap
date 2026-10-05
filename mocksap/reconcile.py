@@ -5,10 +5,12 @@ it, which is the half that can be wrong in expensive ways.
 
 Electronic bank statement processing in miniature.  A debit line - money that
 left the account - clears the open item it names, if the reference matches
-*and* the amount matches.  A credit line that carries the reference of an
-item already cleared is a returned payment: the clearing is reversed and the
-item is open again, which is the only thing that makes a returned payment
-visible in SAP.
+*and* the amount matches *and* only one party's item does: an invoice number
+is a supplier's own sequence, so two suppliers can both have an `INV-100`, and
+what a statement line gives this mock does not say which of them was paid.  A
+credit line that carries the reference of an item already cleared is a
+returned payment: the clearing is reversed and the item is open again, which
+is the only thing that makes a returned payment visible in SAP.
 
 **Everything else is left alone and reported.**  A line that matches nothing,
 or matches a reference but not the amount, clears nothing and comes back as
@@ -133,8 +135,69 @@ def _quotes(reference: str, line: dict) -> bool:
     return reference in note or _tight(reference) in _tight(note)
 
 
+# The field naming the party an item's account belongs to, by the side the
+# item is on. A payable names the supplier we owe; a receivable, the customer.
+_PARTY_FIELD = {CUSTOMER_LINE: ("customer", "Customer")}
+
+
+def _party_of(item: dict) -> str:
+    """Whose account this item sits on, as a reader names it.
+
+    Dispatch is on the item, the way `_invoice_reference` dispatches: an item
+    already knows which side it is on. The label is part of the answer, so a
+    supplier and a customer who happen to share a number are not read as one
+    party. Empty for an item naming neither, which is not something two
+    candidates can be told apart by.
+    """
+    label, field = _PARTY_FIELD.get(
+        item.get("AccountingDocumentItemType"), ("supplier", "Supplier"))
+    value = item.get(field) or ""
+    return "%s %s" % (label, value) if value else ""
+
+
+def _named(item: dict) -> str:
+    """One candidate item, as a refusal naming several of them has to.
+
+    The document number alone stops being enough once the reason for refusing
+    is that two parties are involved: naming them is the difference between a
+    line somebody can now settle by hand and one they have to go and look up.
+    """
+    party = _party_of(item)
+    return ("item %s of %s" % (item["AccountingDocument"], party) if party
+            else "item %s" % item["AccountingDocument"])
+
+
+def _in_words(parts: List[str]) -> str:
+    """A list as a person reads one: `a`, `a and b`, `a, b and c`."""
+    if len(parts) < 3:
+        return " and ".join(parts)
+    return "%s and %s" % (", ".join(parts[:-1]), parts[-1])
+
+
 def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
-    """The item this line pays, or why it pays none of them."""
+    """The item this line pays, or why it pays none of them.
+
+    The reference and the amount narrow the candidates; the party decides
+    whether what is left is one answer or none.  An invoice number is a
+    supplier's own sequence and means nothing across suppliers, so two of
+    them numbering an invoice `INV-100` is ordinary - and nothing this mock
+    reads off a statement line separates them: `E1IDPF1` gives it a
+    reference, a note to payee and amounts, and the account `statement.py`
+    takes from the file is the one being reconciled, not the payee's.  So
+    where two parties' items fit the line equally well, neither is cleared
+    and the reason names both (#87).
+
+    Taking the first instead cleared one supplier's invoice with another's
+    money and left an item open for the next payment run to pay a second
+    time.  Since #107 it also decided which supplier's payment document the
+    invoice landed in, so the wrong party was credited as well.
+
+    Two items of the *same* party sharing a reference and an amount is a
+    different fault - the invoice was posted twice - and is still settled
+    once, by whichever is found first.  Either one clears the right party for
+    the right money, so refusing there would report a line that is not the
+    reconciliation gap this reports.
+    """
     amount = line.get("amount")
     if amount is None:
         return {"item": None, "reason": "the line carries several amounts and "
@@ -148,16 +211,31 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
         return {"item": None, "reason": "no open item quotes this reference"}
 
     wanted = abs(_decimal(amount))
-    for item, reference in quoted:
-        if abs(_decimal(item["AmountInTransactionCurrency"])) == wanted:
-            return {"item": item, "reference": reference}
+    paying = [(item, reference) for item, reference in quoted
+              if abs(_decimal(item["AmountInTransactionCurrency"])) == wanted]
+    if len({_party_of(item) for item, _ in paying}) > 1:
+        return {"item": None, "reason":
+                "this line's reference is %s, each for %s, and nothing else "
+                "on the line says which was paid"
+                % (_in_words([_named(item) for item, _ in paying]),
+                   _money(amount))}
+    if paying:
+        item, reference = paying[0]
+        return {"item": item, "reference": reference}
     # The reference found something and the amount did not agree. Say both
     # numbers: a part payment and a wrong payment look identical otherwise.
-    item, reference = quoted[0]
+    if len(quoted) == 1:
+        item, reference = quoted[0]
+        return {"item": None, "reason":
+                "reference %s is item %s for %s, but the line is for %s"
+                % (reference, item["AccountingDocument"],
+                   _money(item["AmountInTransactionCurrency"]), _money(amount))}
     return {"item": None, "reason":
-            "reference %s is item %s for %s, but the line is for %s"
-            % (reference, item["AccountingDocument"],
-               _money(item["AmountInTransactionCurrency"]), _money(amount))}
+            "this line's reference is %s, but the line is for %s"
+            % (_in_words(["%s for %s"
+                          % (_named(item),
+                             _money(item["AmountInTransactionCurrency"]))
+                          for item, _ in quoted]), _money(amount))}
 
 
 def _set_clearing(ctx, item: dict, values: dict) -> None:
