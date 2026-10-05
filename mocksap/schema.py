@@ -879,6 +879,11 @@ _register(
             DT("DueCalculationBaseDate", label="Baseline Date"),
             Prop("NetPaymentDays", "Edm.Int32", label="Net Payment Days"),
             S("PaymentBlockingReason", max_length=1, label="Payment Block"),
+            # F110's own key for a payment run: the identification feature and
+            # the run date. Together they say *which* run has this invoice in
+            # flight, which a block cannot (#90).
+            S("PaymentRunID", max_length=6, label="Payment Run"),
+            DT("PaymentRunDate", label="Payment Run Date"),
             S("PaymentMethod", max_length=1, label="Payment Method"),
             # which of the supplier's accounts to pay into: the
             # BankIdentification of A_BusinessPartnerBank
@@ -960,6 +965,10 @@ _register(
             DT("NetDueDate", label="Net Due Date"),
             S("PaymentTerms", max_length=4, label="Payment Terms"),
             S("PaymentBlockingReason", max_length=1, label="Payment Block"),
+            # Selected for payment but not yet paid: the state between open and
+            # cleared, so the next reader of this list can see it (#90).
+            S("PaymentRunID", max_length=6, label="Payment Run"),
+            DT("PaymentRunDate", label="Payment Run Date"),
             S("ClearingAccountingDocument", max_length=10, label="Clearing Document"),
             DT("ClearingDate", label="Clearing Date"),
             DT("ClearingCreationDate", label="Clearing Entry Date"),

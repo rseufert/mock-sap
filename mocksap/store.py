@@ -30,7 +30,13 @@ ITEM_TYPE_CUSTOMER = "D"
 ITEM_TYPE_SUPPLIER = "K"
 
 
-def _invoice_block_reaches_its_open_item(conn, row: dict) -> None:
+# What a client writes on a supplier invoice that the open item has to agree
+# with: whether it may be paid at all, and which payment run has it in flight.
+_INVOICE_STATE_TO_ITEM = ("PaymentBlockingReason", "PaymentRunID",
+                          "PaymentRunDate")
+
+
+def _invoice_state_reaches_its_open_item(conn, row: dict) -> None:
     """A supplier invoice and the item that owes the money are one decision.
 
     Blocking the invoice and leaving its open item payable is the worst of
@@ -38,24 +44,64 @@ def _invoice_block_reaches_its_open_item(conn, row: dict) -> None:
     the money goes out anyway. They are separate rows - the invoice is a
     document, the item is a line of the accounting document it posted - so
     keeping them in step has to be done rather than assumed.
+
+    The payment run's own key travels the same road (#90). A run that has
+    selected an invoice writes its identification on the invoice; what the
+    *next* run reads is the open item, so the claim has to arrive there or it
+    says nothing to the reader it was written for.
     """
     document = row.get("AccountingDocument")
     if not document:
         return
     et = ENTITY_TYPES["A_OperationalAcctgDocItemCube"]
+    sets = ", ".join('"%s" = ?' % name for name in _INVOICE_STATE_TO_ITEM)
+    values = [row.get(name) if name == "PaymentRunDate"
+              else (row.get(name) or "") for name in _INVOICE_STATE_TO_ITEM]
     conn.execute(
-        'UPDATE "%s" SET "PaymentBlockingReason" = ? WHERE "AccountingDocument" = ? '
+        'UPDATE "%s" SET %s WHERE "AccountingDocument" = ? '
         'AND "CompanyCode" = ? AND "FiscalYear" = ? '
-        'AND "AccountingDocumentItemType" = ?' % et.table,
-        (row.get("PaymentBlockingReason") or "", document,
-         row.get("CompanyCode"), row.get("FiscalYear"), "K"))
+        'AND "AccountingDocumentItemType" = ?' % (et.table, sets),
+        values + [document, row.get("CompanyCode"), row.get("FiscalYear"), "K"])
+    conn.commit()
+
+
+def release_payment_run(conn, item: dict) -> None:
+    """Forget which run had this item, on both rows that say it (#90).
+
+    A claim is a statement about an item that is *waiting* to be paid, so it
+    has to go when the item stops waiting - whether it was paid or the payment
+    came back. Leaving it on a reopened item would be the opposite fault to
+    the one the claim exists to prevent: an invoice paid, returned, and then
+    never selected again because a run that finished still appeared to hold
+    it.
+
+    The invoice is cleared too, where there is one. A client writes the claim
+    there, so an invoice still naming a run whose item is free would be the
+    two rows disagreeing about one decision - the thing
+    `_invoice_state_reaches_its_open_item` exists to stop. An item posted
+    without an invoice behind it simply has no second row to clear.
+    """
+    cube = ENTITY_TYPES["A_OperationalAcctgDocItemCube"]
+    conn.execute(
+        'UPDATE "%s" SET "PaymentRunID" = \'\', "PaymentRunDate" = NULL '
+        'WHERE "AccountingDocument" = ? AND "CompanyCode" = ? '
+        'AND "FiscalYear" = ?' % cube.table,
+        (item.get("AccountingDocument"), item.get("CompanyCode"),
+         item.get("FiscalYear")))
+    invoice = ENTITY_TYPES["A_SupplierInvoice"]
+    conn.execute(
+        'UPDATE "%s" SET "PaymentRunID" = \'\', "PaymentRunDate" = NULL '
+        'WHERE "AccountingDocument" = ? AND "CompanyCode" = ? '
+        'AND "FiscalYear" = ?' % invoice.table,
+        (item.get("AccountingDocument"), item.get("CompanyCode"),
+         item.get("FiscalYear")))
     conn.commit()
 
 
 # Run after a row is written, on the merged row: for keeping two rows that
 # describe one decision from disagreeing.
 AFTER_WRITE = {
-    "A_SupplierInvoice": _invoice_block_reaches_its_open_item,
+    "A_SupplierInvoice": _invoice_state_reaches_its_open_item,
 }
 
 
@@ -245,7 +291,8 @@ def _flatten_complex(et: EntityType, prop, value) -> Dict[str, Any]:
 # --------------------------------------------------------------------------
 
 OPEN_ITEM_FIELDS = (
-    "PaymentBlockingReason", "PaymentTerms", "NetDueDate",
+    "PaymentBlockingReason", "PaymentRunID", "PaymentRunDate",
+    "PaymentTerms", "NetDueDate",
     "ClearingAccountingDocument", "ClearingDate", "ClearingCreationDate",
     "ClearingItem", "ClearingDocFiscalYear", "ClearingIsReversed",
 )

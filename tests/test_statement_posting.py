@@ -11,6 +11,7 @@ from support import MockServerCase, balances, finsta, invoic, line
 
 CUBE = ("/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV"
         "/A_OperationalAcctgDocItemCube")
+INVOICE_SRV = "/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV"
 
 
 class StatementCase(MockServerCase):
@@ -1054,3 +1055,93 @@ class TestFindingTheIDocThatSettledAnInvoice(StatementCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestWhenAPaymentRunHasClaimedAnItem(StatementCase):
+    """A claim says an item is *waiting* to be paid, so it goes when it stops.
+
+    `PaymentRunID` keeps a second run from paying an invoice the first one has
+    already sent to the bank (#90). What posting a statement has to get right
+    is the other end of that: the claim must not survive the item it was made
+    about, or an invoice whose payment came back would never be selected
+    again - the opposite fault to the one the claim prevents.
+    """
+
+    def claim(self, billed, run="F110B"):
+        status, _, _ = self.request(
+            "PATCH",
+            INVOICE_SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+            % (billed["SUPPLIERINVOICE"], billed["FISCALYEAR"]),
+            body={"PaymentRunID": run, "PaymentRunDate": "2026-10-05"},
+            headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+        self.assertEqual(status, 204)
+
+    def invoice_of(self, billed):
+        _, _, body = self.get(
+            INVOICE_SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+            "?$format=json" % (billed["SUPPLIERINVOICE"], billed["FISCALYEAR"]))
+        return body["d"]
+
+    def test_a_claimed_item_is_still_cleared_by_the_statement(self):
+        """The claim stops a *payment run*, not the bank statement.
+
+        Clearing reads the open items directly rather than through a client's
+        filter, and it has to: the statement arriving is the whole point of
+        having sent the payment, so an item in flight is exactly the one it
+        should settle.
+        """
+        billed = self.bill("CLAIM-1", "1190.00")
+        self.claim(billed)
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="CLAIM-1"),
+            statement="00110"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 1, applied["UNPROCESSED"])
+        self.assertNotIn(billed["ACCOUNTINGDOCUMENT"],
+                         [r["AccountingDocument"] for r in self.open_payables()])
+
+    def test_clearing_releases_the_claim_on_both_rows(self):
+        """The run that paid it has finished with it, and so have both rows.
+
+        The invoice is checked as well as the item, because a client writes
+        the claim on the invoice: one of them still naming a finished run
+        would be the two rows disagreeing about one decision.
+        """
+        billed = self.bill("CLAIM-2", "1190.00")
+        self.claim(billed)
+        self.assertEqual(self.item_of(billed["ACCOUNTINGDOCUMENT"])
+                         ["PaymentRunID"], "F110B")
+
+        self.send(finsta(line("000001", "1190.00-", reference="CLAIM-2"),
+                         statement="00111"))
+
+        item = self.item_of(billed["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(item["PaymentRunID"], "")
+        self.assertIsNone(item["PaymentRunDate"])
+        self.assertEqual(self.invoice_of(billed)["PaymentRunID"], "",
+                         "the invoice let go too")
+
+    def test_a_returned_payment_releases_the_claim(self):
+        """Paid, returned, and payable again - including by a new run.
+
+        If the claim outlived the return, this invoice would sit open forever
+        with a finished run's name on it, and every later selection would
+        skip it. That is the fault this field exists to prevent, arrived at
+        from the other side.
+        """
+        billed = self.bill("CLAIM-3", "1190.00")
+        self.claim(billed)
+        self.send(finsta(line("000001", "1190.00-", reference="CLAIM-3"),
+                         statement="00112"))
+        self.send(finsta(
+            line("000001", "1190.00", reference="CLAIM-3", action="RET"),
+            statement="00113"))
+
+        item = self.item_of(billed["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(item["ClearingAccountingDocument"], "",
+                         "open again")
+        self.assertTrue(item["ClearingIsReversed"],
+                        "and known to have been paid once")
+        self.assertEqual(item["PaymentRunID"], "",
+                         "so a payment run can select it again")
+        self.assertEqual(self.invoice_of(billed)["PaymentRunID"], "")

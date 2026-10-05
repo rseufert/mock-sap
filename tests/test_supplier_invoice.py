@@ -301,3 +301,122 @@ class TestBlockingAnInvoice(SupplierInvoiceCase):
             SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
             "?$format=json" % (applied["SUPPLIERINVOICE"], applied["FISCALYEAR"]))
         self.assertEqual(body["d"]["PaymentMethod"], "")
+
+
+class TestClaimingAnInvoiceForAPaymentRun(SupplierInvoiceCase):
+    """The state between open and cleared, so a second run can see it (#90).
+
+    A run selected open items, paid them, and the fact that it had paid them
+    lived only in its own memory until the statement came back days later. A
+    second run started in between selected the same invoice and paid it
+    again - one 1190.00 invoice paid 2380.00 - and the bank's duplicate check
+    could not catch it, being keyed on a `MsgId` the second run made fresh.
+
+    `PaymentRunID` and `PaymentRunDate` are F110's own key for a run, and
+    saying which run holds an item is what a payment block cannot do: a block
+    is one character and means nobody should pay this at all.
+    """
+
+    SELECTION = (CUBE + "?$filter=AccountingDocumentItemType%20eq%20'K'%20and%20"
+                 "ClearingAccountingDocument%20eq%20''%20and%20"
+                 "PaymentBlockingReason%20eq%20''%20and%20"
+                 "PaymentRunID%20eq%20''&$format=json")
+
+    def payable_of(self, accounting_document):
+        _, _, body = self.get(
+            CUBE + "?$filter=AccountingDocument%%20eq%%20'%s'%%20and%%20"
+            "AccountingDocumentItemType%%20eq%%20'K'&$format=json"
+            % accounting_document)
+        return body["d"]["results"][0]
+
+    def claim(self, applied, run="F110A", date="2026-10-05"):
+        body = {"PaymentRunID": run}
+        if date is not None:
+            body["PaymentRunDate"] = date
+        return self.request(
+            "PATCH", SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+            % (applied["SUPPLIERINVOICE"], applied["FISCALYEAR"]),
+            body=body, headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+
+    def selected(self):
+        _, _, body = self.get(self.SELECTION)
+        return [r["AccountingDocument"] for r in body["d"]["results"]]
+
+    def test_an_invoice_posts_with_no_run_on_it(self):
+        """Nothing has selected it yet, and that is a state it can be in."""
+        applied = self.send(reference="SUP-RUN0")["APPLIED"][0]
+        item = self.payable_of(applied["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(item["PaymentRunID"], "")
+        self.assertIsNone(item["PaymentRunDate"])
+
+    def test_claiming_the_invoice_claims_its_open_item(self):
+        """A run writes it on the invoice; the next run reads the item."""
+        applied = self.send(reference="SUP-RUN1")["APPLIED"][0]
+
+        status, _, _ = self.claim(applied, run="F110A")
+        self.assertEqual(status, 204)
+
+        item = self.payable_of(applied["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(item["PaymentRunID"], "F110A",
+                         "a payment run reads the item, not the invoice")
+        self.assertTrue(item["PaymentRunDate"],
+                        "and the run date travelled with it")
+
+    def test_a_claimed_item_drops_out_of_the_payment_run_selection(self):
+        """The fault itself: the second run no longer sees it."""
+        applied = self.send(reference="SUP-RUN2")["APPLIED"][0]
+        document = applied["ACCOUNTINGDOCUMENT"]
+        self.assertIn(document, self.selected(), "the first run selects it")
+
+        self.claim(applied)
+
+        self.assertNotIn(document, self.selected(),
+                         "a second run started before the statement comes "
+                         "back does not pay it again")
+
+    def test_a_claim_is_not_a_block(self):
+        """Two different states, and a run has to be able to tell them apart.
+
+        A blocked item is one nobody should pay. A claimed item is one being
+        paid right now. Reporting the second as the first would tell a
+        treasury team to go and unblock something that is simply in flight.
+        """
+        applied = self.send(reference="SUP-RUN3")["APPLIED"][0]
+        self.claim(applied)
+
+        item = self.payable_of(applied["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(item["PaymentBlockingReason"], "",
+                         "nothing blocked it")
+        self.assertEqual(item["ClearingAccountingDocument"], "",
+                         "and nothing has cleared it either - it is open, and "
+                         "in flight")
+
+    def test_releasing_the_claim_puts_it_back(self):
+        """A run that was cancelled has to be able to let go."""
+        applied = self.send(reference="SUP-RUN4")["APPLIED"][0]
+        document = applied["ACCOUNTINGDOCUMENT"]
+        self.claim(applied)
+        self.assertNotIn(document, self.selected())
+
+        status, _, _ = self.request(
+            "PATCH", SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+            % (applied["SUPPLIERINVOICE"], applied["FISCALYEAR"]),
+            body={"PaymentRunID": "", "PaymentRunDate": None},
+            headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+        self.assertEqual(status, 204)
+
+        self.assertIn(document, self.selected(), "payable again")
+
+    def test_a_run_identification_too_long_is_refused_not_truncated(self):
+        """`LAUFI` is six characters. A seventh is a different run.
+
+        Truncating would make two runs look like one, which is the fault this
+        field exists to prevent rather than a formatting detail.
+        """
+        applied = self.send(reference="SUP-RUN5")["APPLIED"][0]
+
+        status, _, body = self.claim(applied, run="F110-ABC")
+
+        self.assertEqual(status, 400, body)
+        self.assertEqual(self.payable_of(applied["ACCOUNTINGDOCUMENT"])
+                         ["PaymentRunID"], "", "and nothing was claimed")

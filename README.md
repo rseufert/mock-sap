@@ -568,6 +568,7 @@ curl "$SRV/A_OperationalAcctgDocItemCube?\$filter=\
 AccountingDocumentItemType%20eq%20'K'%20and%20\
 ClearingAccountingDocument%20eq%20''%20and%20\
 PaymentBlockingReason%20eq%20''%20and%20\
+PaymentRunID%20eq%20''%20and%20\
 NetDueDate%20le%20datetime'2026-09-30T00:00:00'&\$format=json"
 ```
 
@@ -576,6 +577,7 @@ NetDueDate%20le%20datetime'2026-09-30T00:00:00'&\$format=json"
 | `AccountingDocumentItemType` | `K` supplier, `D` customer, `S` G/L - SAP's account type |
 | `NetDueDate` | the baseline date plus what the terms allow |
 | `PaymentTerms`, `PaymentBlockingReason` | why it may not be paid yet |
+| `PaymentRunID`, `PaymentRunDate` | which payment run has it in flight, if one does |
 | `ClearingAccountingDocument`, `ClearingDate`, `ClearingItem` | what paid it, once something has |
 | `ClearingIsReversed` | the clearing was undone - a returned payment, not an unpaid invoice |
 
@@ -583,6 +585,43 @@ NetDueDate%20le%20datetime'2026-09-30T00:00:00'&\$format=json"
 real empty string rather than a missing field, because that is what clients
 filter on. A mock that left it null would answer `eq ''` with nothing at all and
 a payment run would quietly find no work to do.
+
+**There is a state between open and cleared, and it has a name.** A payment run
+selects open items and pays them, but the statement that clears them comes back
+days later - so without somewhere to record the selection, a second run started
+in between selects the same invoice and pays it again. One 1190.00 invoice paid
+2380.00, and the bank cannot catch it, because its duplicate check is keyed on a
+`MsgId` the second run makes fresh.
+
+So a run writes its own key, F110's `PaymentRunID` and `PaymentRunDate`, on
+`A_SupplierInvoice`, and it reaches the open item the same way a payment block
+does - because what the *next* run reads is the item:
+
+```bash
+curl -X PATCH "$SRV/A_SupplierInvoice(SupplierInvoice='5105600001',FiscalYear='2026')" \
+  -H "X-CSRF-Token: $TOKEN" -H 'If-Match: *' -H 'Content-Type: application/json' \
+  -d '{"PaymentRunID":"F110A","PaymentRunDate":"2026-10-05"}'
+```
+
+**A claim is not a block.** A block says nobody should pay this at all; a claim
+says somebody is paying it right now, and reporting the second as the first
+sends a treasury team to unblock something that is merely in flight. That is
+why it is the run's identification rather than one more blocking reason:
+`PaymentRunID` says *which* run, which one character cannot. Six characters,
+because `LAUFI` is six - a seventh is refused rather than truncated, since
+truncating would make two runs look like one.
+
+**A claim does not outlive the item it was made about.** Clearing releases it,
+and so does a return: an invoice that was paid and came back has to be
+selectable again, or the claim becomes a worse fault than the one it prevents -
+an invoice no run will ever pick up, because a run that finished still appears
+to hold it. Both rows are released together. A run that was cancelled lets go
+by writing the identification back to `''`.
+
+**What it does not do is stop the statement.** Clearing reads the open items
+directly rather than through a client's filter, so an item in flight is exactly
+the one an arriving statement should settle. The claim constrains the next
+payment run, not the bank.
 
 **This is a view, not a copy.** The cube reads the same rows as
 `A_JournalEntryItem`, so the two services cannot disagree; it stores nothing of

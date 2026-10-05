@@ -316,6 +316,11 @@ def _set_clearing(ctx, item: dict, values: dict) -> None:
         "FiscalYear": item["FiscalYear"],
         "AccountingDocumentItem": item["AccountingDocumentItem"],
     }, values, user=ctx.user)
+    # Every route through here changes whether the item is waiting to be paid
+    # - cleared by a payment, cleared as a payment's own line, or opened again
+    # by a return - and a payment run's claim is a statement about an item
+    # that is waiting (#90). So it goes, on both rows that carry it.
+    store.release_payment_run(ctx.conn, item)
 
 
 def _self_clear(ctx, document: str, company: str, year: str,
