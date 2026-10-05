@@ -704,6 +704,14 @@ searched both as written and with its spaces removed - a bank wraps the note at
 70 characters wherever it falls, so `SUP-9001` can arrive as `SUP- 9001` and an
 exact search would quietly miss it.
 
+**One payment document per supplier, not per line.** A payment run pays a
+supplier, so every item one statement settles for them is cleared by a single
+document: one supplier line per invoice, one credit to the bank for the total,
+and each item's `ClearingItem` pointing at the line that paid it. That is what
+makes a remittance advice worth sending — the supplier sees one credit and has
+to be told which invoices it covers. Items that disagree on company code or
+currency cannot share a document, because its header carries one of each.
+
 **Everything else is left alone and listed.** A line that matches nothing, or
 matches a reference but not the amount, clears nothing and says why, naming both
 numbers. That is not a gap in the mock: it is the reconciliation gap a treasury
@@ -711,7 +719,9 @@ team works through every morning, and guessing at those lines would invent the
 answer they are paid to find.
 
 **A credit that quotes a cleared item is a returned payment.** The clearing is
-reversed and the item is open again, so a payment run will try it again. The
+reversed and the item is open again, so a payment run will try it again. Returns
+are posted after the payments, so a statement that pays an invoice and takes the
+money back reads the same whichever order the bank listed those two lines in. The
 clearing document is removed from the item - the way reversing a clearing in SAP
 puts it back among the open items - but `ClearingIsReversed` stays set, so
 *paid and returned* can still be told from *never paid*. Without that they look

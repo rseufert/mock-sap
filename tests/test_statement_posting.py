@@ -14,12 +14,12 @@ CUBE = ("/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV"
 
 
 def invoic(reference, gross="1190.00", net="1000.00", tax="190.00",
-           supplier="1000009"):
+           supplier="1000009", currency="EUR"):
     return (
         '<?xml version="1.0" encoding="utf-8"?><INVOIC02><IDOC BEGIN="1">'
         '<EDI_DC40 SEGMENT="1"><IDOCTYP>INVOIC02</IDOCTYP>'
         "<MESTYP>INVOIC</MESTYP></EDI_DC40>"
-        '<E1EDK01 SEGMENT="1"><CURCY>EUR</CURCY><ZTERM>NT30</ZTERM>'
+        '<E1EDK01 SEGMENT="1"><CURCY>%s</CURCY><ZTERM>NT30</ZTERM>'
         "<BELNR>%s</BELNR></E1EDK01>"
         '<E1EDK02 SEGMENT="1"><QUALF>009</QUALF><BELNR>%s</BELNR></E1EDK02>'
         '<E1EDK03 SEGMENT="1"><IDDAT>026</IDDAT><DATUM>20260927</DATUM></E1EDK03>'
@@ -30,8 +30,8 @@ def invoic(reference, gross="1190.00", net="1000.00", tax="190.00",
         '<E1EDS01 SEGMENT="1"><SUMID>010</SUMID><SUMME>%s</SUMME></E1EDS01>'
         '<E1EDS01 SEGMENT="1"><SUMID>011</SUMID><SUMME>%s</SUMME></E1EDS01>'
         '<E1EDS01 SEGMENT="1"><SUMID>205</SUMID><SUMME>%s</SUMME></E1EDS01>'
-        "</IDOC></INVOIC02>") % (reference, reference, supplier, net, gross,
-                                 net, tax)
+        "</IDOC></INVOIC02>") % (currency, reference, reference, supplier,
+                                 net, gross, net, tax)
 
 
 def line(number, amount, reference=None, note=None):
@@ -89,11 +89,13 @@ class StatementCase(MockServerCase):
         self.assertEqual(status, 201)
         return receipt
 
-    def bill(self, reference, gross="1190.00"):
+    def bill(self, reference, gross="1190.00", supplier="1000009",
+             currency="EUR"):
         """A supplier invoice, so there is something open to pay."""
         net = "%.2f" % (float(gross) / 1.19)
         tax = "%.2f" % (float(gross) - float(net))
-        return self.send(invoic(reference, gross, net, tax))["APPLIED"][0]
+        return self.send(invoic(reference, gross, net, tax, supplier,
+                                currency))["APPLIED"][0]
 
     def open_payables(self):
         _, _, body = self.get(
@@ -385,6 +387,201 @@ class TestTheOutcomeOutlivesTheResponse(StatementCase):
         self.assertEqual(len(rows), 1)
         self.assertNotIn("APPLIED", rows[0],
                          "one IDoc has one outcome; a listing of 50 would carry 50")
+
+
+class TestOnePaymentPerPayee(StatementCase):
+    """A payment run pays a supplier, not an invoice (#107).
+
+    Until this, `apply_statement` posted a journal entry per statement line,
+    so one payment document settled exactly one invoice - and a remittance
+    advice generated from one could only ever name a single invoice, whose
+    total trivially equals its single part.
+    """
+
+    JOURNAL = "/sap/opu/odata/sap/API_JOURNALENTRY_SRV"
+
+    def entry(self, document):
+        """A payment document with its lines, found without guessing its year."""
+        _, _, body = self.get(
+            self.JOURNAL + "/A_JournalEntry?$filter=AccountingDocument%%20eq%%20"
+            "'%s'&$expand=to_JournalEntryItem&$format=json" % document)
+        results = body["d"]["results"]
+        self.assertEqual(len(results), 1, "one document for that number")
+        return results[0]
+
+    def test_two_invoices_from_one_supplier_share_one_payment(self):
+        first = self.bill("PAY-A1", "1190.00")
+        second = self.bill("PAY-A2", "2380.00")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="PAY-A1")
+            + line("000002", "2380.00-", reference="PAY-A2"),
+            statement="00070"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 2)
+        documents = {row["CLEARINGDOCUMENT"] for row in applied["CLEARED"]}
+        self.assertEqual(len(documents), 1,
+                         "one supplier, one statement, one payment")
+        paying = documents.pop()
+        for invoice in (first, second):
+            self.assertEqual(self.item_of(invoice["ACCOUNTINGDOCUMENT"])
+                             ["ClearingAccountingDocument"], paying)
+
+    def test_the_payment_has_a_line_per_invoice_and_one_for_the_bank(self):
+        self.bill("PAY-B1", "1190.00")
+        self.bill("PAY-B2", "2380.00")
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="PAY-B1")
+            + line("000002", "2380.00-", reference="PAY-B2"),
+            statement="00071"))["APPLIED"][0]
+        paying = applied["CLEARED"][0]["CLEARINGDOCUMENT"]
+
+        entry = self.entry(paying)
+        lines = entry["to_JournalEntryItem"]["results"]
+        payables = [x for x in lines if x["Supplier"]]
+        bank = [x for x in lines if not x["Supplier"]]
+        self.assertEqual(len(payables), 2, "one supplier line per invoice")
+        self.assertEqual(len(bank), 1, "and a single credit to the bank")
+        self.assertAlmostEqual(
+            float(bank[0]["AmountInTransactionCurrency"]), 3570.00, places=2,
+            msg="the bank pays the sum, which is what the advice must total")
+        self.assertEqual(entry["AccountingDocumentType"], "ZP")
+        self.assertEqual(entry["ReferenceDocument"], "00071",
+                         "a payment's reference is the statement that made it")
+
+    def test_each_invoice_points_at_its_own_line_of_the_payment(self):
+        """`ClearingItem` was hardcoded `000001`, which only one line can be."""
+        first = self.bill("PAY-C1", "1190.00")
+        second = self.bill("PAY-C2", "2380.00")
+        self.send(finsta(line("000001", "1190.00-", reference="PAY-C1")
+                         + line("000002", "2380.00-", reference="PAY-C2"),
+                         statement="00072"))
+
+        items = [self.item_of(invoice["ACCOUNTINGDOCUMENT"])
+                 for invoice in (first, second)]
+        self.assertEqual([x["ClearingItem"] for x in items],
+                         ["000001", "000002"])
+        entry = self.entry(items[0]["ClearingAccountingDocument"])
+        lines = {x["AccountingDocumentItem"]: x
+                 for x in entry["to_JournalEntryItem"]["results"]}
+        for invoice, item in zip((first, second), items):
+            named = lines[item["ClearingItem"]]
+            self.assertIn(invoice["ACCOUNTINGDOCUMENT"],
+                          named["DocumentItemText"],
+                          "the line it points at is the line that cleared it")
+
+    def test_two_suppliers_in_one_statement_get_a_payment_each(self):
+        self.bill("PAY-D1", "1190.00", supplier="1000009")
+        self.bill("PAY-D2", "2380.00", supplier="1000010")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="PAY-D1")
+            + line("000002", "2380.00-", reference="PAY-D2"),
+            statement="00073"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 2)
+        self.assertEqual(
+            len({row["CLEARINGDOCUMENT"] for row in applied["CLEARED"]}), 2,
+            "a payment document belongs to one supplier")
+
+    def test_a_grouped_payment_leaves_no_payables_of_its_own(self):
+        """`_self_clear` assumed one subledger line; now there are several."""
+        self.bill("PAY-E1", "1190.00")
+        self.bill("PAY-E2", "2380.00")
+        before = len(self.open_payables())
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="PAY-E1")
+            + line("000002", "2380.00-", reference="PAY-E2"),
+            statement="00074"))["APPLIED"][0]
+
+        self.assertEqual(len(self.open_payables()), before - 2,
+                         "two fewer open items, not two fewer and two more")
+        paying = applied["CLEARED"][0]["CLEARINGDOCUMENT"]
+        self.assertNotIn(paying, [r["AccountingDocument"]
+                                 for r in self.open_payables()])
+
+    def test_the_outcome_still_reads_in_the_statement_s_line_order(self):
+        """Grouping posts by payee; what a client is shown is the statement."""
+        self.bill("PAY-F1", "1190.00", supplier="1000009")
+        self.bill("PAY-F2", "2380.00", supplier="1000010")
+        self.bill("PAY-F3", "500.00", supplier="1000009")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="PAY-F1")
+            + line("000002", "2380.00-", reference="PAY-F2")
+            + line("000003", "500.00-", reference="PAY-F3"),
+            statement="00075"))["APPLIED"][0]
+
+        self.assertEqual([row["LINE"] for row in applied["CLEARED"]],
+                         ["000001", "000002", "000003"])
+        first, second, third = applied["CLEARED"]
+        self.assertEqual(first["CLEARINGDOCUMENT"], third["CLEARINGDOCUMENT"],
+                         "lines 1 and 3 are the same supplier")
+        self.assertNotEqual(first["CLEARINGDOCUMENT"],
+                            second["CLEARINGDOCUMENT"])
+
+    def test_two_lines_quoting_one_invoice_do_not_settle_it_twice(self):
+        """Clearing used to take the item out of `_open_items` as it went."""
+        invoice = self.bill("PAY-G1", "1190.00")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="PAY-G1")
+            + line("000002", "1190.00-", reference="PAY-G1"),
+            statement="00076"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 1)
+        self.assertEqual(len(applied["UNPROCESSED"]), 1)
+        self.assertEqual(applied["UNPROCESSED"][0]["LINE"], "000002")
+        item = self.item_of(invoice["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(item["ClearingAccountingDocument"],
+                         applied["CLEARED"][0]["CLEARINGDOCUMENT"])
+
+    def test_a_payable_in_another_currency_is_not_paid_by_the_same_document(self):
+        """A document header carries one currency, whatever it shares a payee with.
+
+        Matching still does not check a line's currency against the item's,
+        which is #88; this is only that grouping cannot paper over it by
+        putting both in one payment.
+        """
+        self.bill("PAY-H1", "1190.00", supplier="1000009", currency="EUR")
+        self.bill("PAY-H2", "2380.00", supplier="1000009", currency="USD")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="PAY-H1")
+            + line("000002", "2380.00-", reference="PAY-H2"),
+            statement="00077"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 2)
+        self.assertEqual(
+            len({row["CLEARINGDOCUMENT"] for row in applied["CLEARED"]}), 2)
+
+
+class TestWhenAStatementPaysAndTakesItBack(StatementCase):
+    """Returns post after the payments, whatever order the lines are in (#107)."""
+
+    def test_a_credit_above_the_debit_it_returns_still_reopens_it(self):
+        """While clearing posted line by line, this credit matched nothing.
+
+        It is a behaviour change, and the honest one: a statement is a day's
+        movements on an account, and nothing says the bank lists a payment
+        before the return of it.
+        """
+        invoice = self.bill("BACK-A1", "1190.00")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="BACK-A1")      # money in
+            + line("000002", "1190.00-", reference="BACK-A1"),  # money out
+            statement="00078"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 1, applied["UNPROCESSED"])
+        self.assertEqual(len(applied["REOPENED"]), 1, applied["UNPROCESSED"])
+        self.assertEqual(applied["REOPENED"][0]["LINE"], "000001",
+                         "reported against the line it was read on")
+        item = self.item_of(invoice["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(item["ClearingAccountingDocument"], "",
+                         "paid and returned, so open again")
+        self.assertTrue(item["ClearingIsReversed"])
 
 
 class TestFindingTheIDocThatSettledAnInvoice(StatementCase):
