@@ -13,6 +13,138 @@ Entries waiting for a release are one file each in
 cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
 into a dated section here.
 
+## [0.18.0] - 2026-10-05
+
+Reconciliation stopped guessing. Three separate ways a statement line could
+clear an invoice it had not paid all ended in the same place: an item marked
+settled that nobody had settled, and the invoice that *was* paid left open for
+the next payment run to pay a second time. A note to payee could beat the
+structured reference the bank had already given ([#86]), two suppliers both
+numbering an invoice `INV-100` were separated by whichever one the database
+returned first ([#87]), and a line for 1190.00 USD cleared a payable of
+1190.00 EUR because nothing compared the money the number was in ([#88]).
+
+**Read this part before upgrading.** Every one of those is a narrowing: a line
+that used to clear may now clear nothing, and where this mock cannot tell what
+was paid it leaves the item open and says what it could not separate, rather
+than picking a candidate. If you have assertions on a statement clearing
+something, some of them are about to be right for a new reason - and a few will
+fail.
+
+- **A line that fits two suppliers' identically numbered invoices now clears
+  neither.** Where the amount does not separate them either, both are reported
+  and neither is settled. Two 1190.00 lines against two suppliers' 1190.00
+  items used to clear both; they now clear nothing, because which line paid
+  which supplier is not in the file - and since [#107] that choice also decides
+  whose payment document the invoice lands in. Two invoices of the *same*
+  supplier sharing a number are a duplicate, not this fault, and still settle
+  once.
+- **Currency decides alongside the amount.** An equal number in another
+  currency is no longer a payment, both ways round rather than against a house
+  currency, and a statement that names a currency nowhere clears nothing rather
+  than assuming one.
+- **A structured reference ends the comparison.** The note to payee is read
+  only for a line that carries no reference, so a line whose reference is
+  simply wrong no longer finds an invoice by appearing inside the note.
+- **Every figure a refusal prints now carries its currency.** The reason
+  strings are prose for a person reading why a line was left alone, but if
+  anything of yours matches on their text, that text has changed.
+
+**If you drive this mock from mock-bank's packaged payment run, read this
+too.** mock-bank 0.7.0 on PyPI still writes `CUXWAERZ` and `FIIKWAER` as EUR
+whatever account it is paying from, which is the error that hid [#88] for as
+long as it lasted: its ACH run against 0.18.0 fails until mock-bank's next
+release carries the fix that is already on their `main`. A euro run is
+unaffected, which is exactly why their SEPA suite never caught this.
+
+The code that sits *between* this mock and the others has moved out to
+[mock-acme](https://github.com/rseufert/mock-acme) ([#137]), which now holds one
+copy of each integration and runs them against all three mocks. One of them is
+newer than it looks: the X12 820 remittance converter ([#132]) was written after
+0.17.1 and moved before this tag, so **no release of this package ever carried
+`examples/remittance.py`** - read its entry below for what the work was for
+rather than for a file to go and find. `demo.sh` and `client.py` stay here.
+Nothing else moved: no database migration, and `--port 0` finally prints the
+port it bound ([#129]).
+
+### Changed
+
+- **An example that tells a supplier what was paid, as an X12 820**
+  ([#132]). [#106] generates the `PEXR2002` payment advice; nothing converted
+  it, so its segment choices had never been read by anything but their own
+  tests. `examples/remittance.py` is the other direction from
+  `invoice_check.py`: it reads an advice generated from a payment document and
+  sends mock-edi the 820 a supplier reads, which is where the perspective
+  flips — money leaving this account becomes `BPR03` `C`, a credit on theirs —
+  and an amount that is not money out is refused rather than relabelled.
+  `examples/test_remittance.py` runs against both mocks and shows the supplier
+  accepting the advice and agreeing with it, plus the two refusals that make
+  that worth anything: a total that is not the sum of its rows, and a
+  settlement date ahead of the supplier's own clock.
+
+- **The integrations in `examples/` have moved to mock-acme** ([#137]).
+  `invoice_check.py`, `remittance.py` and their tests sat between this mock and
+  the others, so they now live in [mock-acme](https://github.com/rseufert/mock-acme)
+  with the rest of that code, one copy of each, tested against all three mocks.
+  `examples/README.md` says which file became which. `demo.sh` and `client.py`
+  stay. `examples/remittance.py` was added and moved between two releases, so no
+  release of this package ever carried it.
+
+### Fixed
+
+- **A note-to-payee substring no longer beats a structured reference** ([#86]).
+  A line whose structured reference names `INV-10` was also matched to `INV-1`,
+  because the shorter number appears inside the longer one: the exact reference
+  was compared first but failing it fell through to searching the note to payee
+  instead of ending the comparison. The wrong invoice cleared and the right one
+  stayed open for the next payment run to pay a second time; where the two
+  invoices belonged to different suppliers, the line looked ambiguous under
+  [#87] and cleared nothing at all. A bank that said which document it paid is
+  now believed, and the note is read only for a line that carries no structured
+  reference - the rule `references_in()` had documented all along without ever
+  being called.
+
+- **A statement line that fits two suppliers now clears neither** ([#87]). An
+  invoice number is a supplier's own sequence, so two suppliers both numbering
+  an invoice `INV-100` is ordinary - and nothing the mock reads off a statement
+  line says which of them was paid: `E1IDPF1` gives it a reference, a note to
+  payee and amounts, and the account the file names is the one being
+  reconciled, not the payee's. Matching on reference and amount alone took
+  whichever candidate the database happened to return first, which cleared one
+  supplier's invoice with another's money and left an item open for the next
+  payment run to pay a second time. Since [#107] it also decided which
+  supplier's payment document the invoice landed in, so the wrong party was
+  credited as well. Where the amount does not separate the candidates either,
+  the line is now left alone and the reason names every item and its supplier
+  - which is the difference between a line somebody can settle by hand and one
+  they have to go and look up. Two items of the *same* supplier sharing a
+  number are a duplicate invoice rather than this fault, and are still
+  settled once.
+
+- **A statement line is matched on its currency as well as its amount**
+  ([#88]). A line for 1190.00 USD cleared a payable of 1190.00 EUR, because
+  matching compared the reference and the number and never the money the
+  number was in. An amount without a currency is not an amount, and two that
+  happen to be equal are not a payment - which is the one disagreement that
+  reads as agreement, and is why this survived as long as it did: mock-bank's
+  payment run wrote `CUXWAERZ` and `FIIKWAER` as EUR even for a dollar
+  account, and the two errors cancelled. The currency now decides alongside
+  the amount, both ways round rather than against a house currency; a code is
+  read whatever case it arrives in; and a statement that names a currency
+  nowhere clears nothing, since filling in a default would invent the half of
+  the amount that decides whether a line is a payment at all. Every figure a
+  refusal prints now carries its currency, so `1190.00 EUR` against
+  `1190.00 USD` reads as the disagreement it is.
+
+- **The startup banner prints the port the server bound, not the one requested**
+  ([#129]). `--port 0` asks the operating system to choose a free port, which is
+  how several mocks run side by side and how CI avoids a clash. The banner was
+  built from the parsed arguments, so every URL it offered ended `:0` - and
+  since the banner is the only place the port is reported, there was no way to
+  find the server short of `lsof`. The port now comes from the bound socket.
+  The host is still the one that was typed: `0.0.0.0` reads back as what the
+  caller asked to bind, where nobody typed the port.
+
 ## [0.17.1] - 2026-10-05
 
 A patch for one startup failure, and the reason it is not part of 0.17.0 is
@@ -860,7 +992,14 @@ First release.
 [#106]: https://github.com/rseufert/mock-sap/issues/106
 [#107]: https://github.com/rseufert/mock-sap/issues/107
 [#127]: https://github.com/rseufert/mock-sap/issues/127
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.17.1...HEAD
+[#86]: https://github.com/rseufert/mock-sap/issues/86
+[#87]: https://github.com/rseufert/mock-sap/issues/87
+[#88]: https://github.com/rseufert/mock-sap/issues/88
+[#129]: https://github.com/rseufert/mock-sap/issues/129
+[#132]: https://github.com/rseufert/mock-sap/issues/132
+[#137]: https://github.com/rseufert/mock-sap/issues/137
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/rseufert/mock-sap/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/rseufert/mock-sap/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/rseufert/mock-sap/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rseufert/mock-sap/compare/v0.15.0...v0.16.0
