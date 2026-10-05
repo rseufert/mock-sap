@@ -194,33 +194,91 @@ def _self_clear(ctx, document: str, company: str, year: str,
         })
 
 
-def _clear(ctx, item: dict, line: dict, posting: str) -> dict:
-    """Pay an open item: post the clearing document, then point the item at it."""
-    amount = abs(_decimal(line.get("amount")))
+def _item_key(item: dict) -> tuple:
+    """The four fields that identify one accounting document item."""
+    return (item["AccountingDocument"], item["CompanyCode"],
+            item["FiscalYear"], item["AccountingDocumentItem"])
+
+
+def _payee_of(item: dict) -> tuple:
+    """What decides which payment document settles this item.
+
+    A payment run pays a *supplier*, not an invoice: one document settles
+    everything of theirs that fell due, which is the whole reason the supplier
+    has to be told which invoices the credit covers (#107). The company code
+    and the currency are in the key because a document carries one of each in
+    its header, so items that disagree on either cannot share a payment
+    however much they share a payee.
+
+    The last element is empty for a real payable and the item's own document
+    for one with no supplier, so rows that are not payables are not merged
+    into one payment on the strength of both being blank.
+    """
+    supplier = item.get("Supplier") or ""
+    return (supplier, item["CompanyCode"],
+            item["TransactionCurrency"] or "EUR",
+            "" if supplier else item["AccountingDocument"])
+
+
+def _payment_text(settling: List[dict]) -> str:
+    """A payment document's header text, which SAP gives 25 characters.
+
+    `BKTXT` is `CHAR(25)`, and this mock enforces the declared length rather
+    than truncating, so naming the supplier here does not fit and does not
+    need to: the supplier is on every line of the document.
+    """
+    if len(settling) == 1:
+        return "Payment of %s" % settling[0]["item"]["AccountingDocument"]
+    return "Payment of %d invoices" % len(settling)
+
+
+def _pay(ctx, settling: List[dict], posting: str, statement: str) -> List[dict]:
+    """Post one payment document for everything this statement settles for one payee.
+
+    One supplier line per invoice and one bank line for the total, which is how
+    a payment run pays: the supplier receives a single credit on their account,
+    and the remittance advice is what tells them which invoices it covers.
+
+    `post_journal_entry` numbers a document's items in the order it is given
+    them, so the invoice settled by the *n*th supplier line points at item *n*.
+    That is what `ClearingItem` is for, and a hardcoded `000001` could only
+    ever be right while a payment settled exactly one invoice.
+    """
+    first = settling[0]["item"]
+    amounts = [abs(_decimal(s["line"].get("amount"))) for s in settling]
+    total = sum(amounts, Decimal("0"))
+    # the payables go away, the bank account pays for all of them at once
+    lines = [{"Supplier": s["item"].get("Supplier") or "",
+              "Amount": float(amount),
+              "Text": "Clearing %s" % s["item"]["AccountingDocument"]}
+             for s, amount in zip(settling, amounts)]
+    lines.append({"GLAccount": "0000113100", "Amount": -float(total),
+                  "Text": "Bank"})
     document, company, year = documents.post_journal_entry(ctx, {
-        "CompanyCode": item["CompanyCode"],
+        "CompanyCode": first["CompanyCode"],
         "AccountingDocumentType": "ZP",          # a payment, in FI terms
         "PostingDate": posting,
-        "TransactionCurrency": item["TransactionCurrency"] or "EUR",
-        "HeaderText": "Payment of %s" % item["AccountingDocument"],
-        "ReferenceDocument": line.get("reference") or "",
-    }, [
-        # the payable goes away, the bank account pays for it
-        {"Supplier": item["Supplier"], "Amount": float(amount),
-         "Text": "Clearing %s" % item["AccountingDocument"]},
-        {"GLAccount": "0000113100", "Amount": -float(amount), "Text": "Bank"},
-    ])
-    _set_clearing(ctx, item, {
-        "ClearingAccountingDocument": document,
-        "ClearingDate": posting,
-        "ClearingCreationDate": posting,
-        "ClearingItem": "000001",
-        "ClearingDocFiscalYear": year,
-        "ClearingIsReversed": False,
-    })
+        "TransactionCurrency": first["TransactionCurrency"] or "EUR",
+        "HeaderText": _payment_text(settling),
+        # A payment's own reference is the statement that produced it, not one
+        # of the invoices it covers - which could only have been right while
+        # there was exactly one of those. Each invoice's reference stays on its
+        # own item, and in the outcome's REFERENCE.
+        "ReferenceDocument": statement,
+    }, lines)
+    paid = []
+    for index, (s, amount) in enumerate(zip(settling, amounts), start=1):
+        _set_clearing(ctx, s["item"], {
+            "ClearingAccountingDocument": document,
+            "ClearingDate": posting,
+            "ClearingCreationDate": posting,
+            "ClearingItem": str(index).zfill(6),
+            "ClearingDocFiscalYear": year,
+            "ClearingIsReversed": False,
+        })
+        paid.append({"settling": s, "document": document, "amount": amount})
     _self_clear(ctx, document, company, year)
-    return {"document": document, "company": company, "year": year,
-            "amount": amount}
+    return paid
 
 
 def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
@@ -310,6 +368,16 @@ def check_balances(conn, parsed: dict) -> List[str]:
 
 
 
+def _in_line_order(rows: List[tuple]) -> List[dict]:
+    """Every list the outcome carries reads in the statement's own line order.
+
+    Grouping posts by payee, so the order things happen in is no longer the
+    order they were read in. What a client is shown is the statement, not the
+    posting sequence.
+    """
+    return [row for _, row in sorted(rows, key=lambda pair: pair[0])]
+
+
 def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
     """Post a bank statement against the open items it pays.
 
@@ -321,41 +389,75 @@ def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
     parsed = statement_reader.parse(body)
     posting = parsed.get("date") or clock.today().isoformat()
     findings = check_balances(ctx.conn, parsed)
+    statement = parsed.get("statement") or ""
 
     cleared, reopened, unprocessed = [], [], []
-    for line in parsed["lines"]:
+    settling: List[dict] = []
+    returning: List[tuple] = []
+    claimed = set()
+    for seq, line in enumerate(parsed["lines"]):
         side = line.get("side")
         if side == "debit":
-            matched = _match(ctx.conn, line, _open_items(ctx.conn))
+            # An item a line above has already spoken for is not open to this
+            # one. Clearing used to post as each line was read, which took the
+            # item out of `_open_items` for free; the payment is now posted
+            # once per payee after every line has been read, so what is
+            # already claimed is tracked here instead.
+            candidates = [item for item in _open_items(ctx.conn)
+                          if _item_key(item) not in claimed]
+            matched = _match(ctx.conn, line, candidates)
             if matched["item"] is None:
-                unprocessed.append({"LINE": line["line"], "REASON": matched["reason"]})
+                unprocessed.append((seq, {"LINE": line["line"],
+                                          "REASON": matched["reason"]}))
                 continue
-            posted = _clear(ctx, matched["item"], line, posting)
-            cleared.append({
-                "LINE": line["line"], "REFERENCE": matched["reference"],
-                "ACCOUNTINGDOCUMENT": matched["item"]["AccountingDocument"],
-                "CLEARINGDOCUMENT": posted["document"],
-                "AMOUNT": str(posted["amount"]),
-            })
+            claimed.add(_item_key(matched["item"]))
+            settling.append({"seq": seq, "line": line,
+                             "item": matched["item"],
+                             "reference": matched["reference"]})
         elif side == "credit":
-            matched = _match(ctx.conn, line, _cleared_items(ctx.conn))
-            if matched["item"] is None:
-                unprocessed.append({"LINE": line["line"], "REASON": matched["reason"]})
-                continue
-            posted = _reopen(ctx, matched["item"], line, posting)
-            reopened.append({
-                "LINE": line["line"], "REFERENCE": matched["reference"],
-                "ACCOUNTINGDOCUMENT": matched["item"]["AccountingDocument"],
-                "REVERSALDOCUMENT": posted["document"],
-                "AMOUNT": str(posted["amount"]),
-            })
+            returning.append((seq, line))
         else:
-            unprocessed.append({
+            unprocessed.append((seq, {
                 "LINE": line["line"],
-                "REASON": "the line does not say whether it is money in or out"})
+                "REASON": "the line does not say whether it is money in or out"}))
+
+    by_payee: Dict[tuple, List[dict]] = {}
+    for item in settling:
+        by_payee.setdefault(_payee_of(item["item"]), []).append(item)
+    for group in by_payee.values():
+        for paid in _pay(ctx, group, posting, statement):
+            settled = paid["settling"]
+            cleared.append((settled["seq"], {
+                "LINE": settled["line"]["line"],
+                "REFERENCE": settled["reference"],
+                "ACCOUNTINGDOCUMENT": settled["item"]["AccountingDocument"],
+                "CLEARINGDOCUMENT": paid["document"],
+                "AMOUNT": str(paid["amount"]),
+            }))
+
+    # The returns are posted after the payments. A statement that pays an
+    # invoice and takes the money back now names the clearing it reverses
+    # whichever order those two lines are in; while clearing posted line by
+    # line, a credit could only see a clearing made by a line above it.
+    for seq, line in returning:
+        matched = _match(ctx.conn, line, _cleared_items(ctx.conn))
+        if matched["item"] is None:
+            unprocessed.append((seq, {"LINE": line["line"],
+                                      "REASON": matched["reason"]}))
+            continue
+        posted = _reopen(ctx, matched["item"], line, posting)
+        reopened.append((seq, {
+            "LINE": line["line"], "REFERENCE": matched["reference"],
+            "ACCOUNTINGDOCUMENT": matched["item"]["AccountingDocument"],
+            "REVERSALDOCUMENT": posted["document"],
+            "AMOUNT": str(posted["amount"]),
+        }))
+
+    cleared = _in_line_order(cleared)
+    reopened = _in_line_order(reopened)
+    unprocessed = _in_line_order(unprocessed)
 
     _remember(ctx.conn, parsed, findings)
-    statement = parsed.get("statement") or ""
     applied = {
         "STATEMENT": statement,
         "ACCOUNT": parsed["account"]["number"],
