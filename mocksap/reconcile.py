@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from . import clock, db, documents, outcome, statement as statement_reader, store
+from .odata import SapError
 from .schema import ENTITY_TYPES
 
 CUBE = "A_OperationalAcctgDocItemCube"
@@ -314,6 +315,87 @@ def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
     # The reversal's own supplier line is not a new debt either.
     _self_clear(ctx, document, company, year)
     return {"document": document, "amount": amount}
+
+
+def settlement_of(ctx, document: str) -> dict:
+    """What one payment document settled, as a remittance advice needs it (#106).
+
+    The payer's side of what a supplier has to be told: who was paid, the day
+    the payment settled, and one row per invoice carrying the number that
+    supplier quotes and what came off it.
+
+    The rows are found through `ClearingItem` rather than by re-matching
+    anything: an invoice points at the line of the payment document that paid
+    it, so each row's amount is what that payment actually paid for it, not
+    what the invoice happened to be for. The two can differ once there is a
+    short payment, and the advice has to say what was paid.
+
+    The total is the sum of those rows and never a figure of its own, so an
+    advice built from this cannot claim a total its parts do not add up to -
+    which is one of the two things mock-edi's reader refuses. It is still
+    checked against the payment's own credit to the bank, because if those
+    disagree the payment does not balance and an advice from it would be a
+    lie the supplier acts on.
+    """
+    items = ENTITY_TYPES[CUBE].table
+    header = ctx.conn.execute(
+        'SELECT * FROM "A_JournalEntry" WHERE "AccountingDocument" = ?',
+        (document.zfill(10),)).fetchone()
+    if header is None:
+        header = ctx.conn.execute(
+            'SELECT * FROM "A_JournalEntry" WHERE "AccountingDocument" = ?',
+            (document,)).fetchone()
+    if header is None:
+        raise SapError("Accounting document %s does not exist" % document, 404)
+    header = dict(header)
+    paying = header["AccountingDocument"]
+
+    settled = [dict(row) for row in ctx.conn.execute(
+        'SELECT * FROM "%s" WHERE "ClearingAccountingDocument" = ? '
+        'AND "AccountingDocument" <> ? AND "AccountingDocumentItemType" = ? '
+        'ORDER BY "ClearingItem"' % items,
+        (paying, paying, SUPPLIER_LINE)).fetchall()]
+    if not settled:
+        raise SapError(
+            "Accounting document %s settled nothing, so there is no payment to "
+            "advise anyone of" % paying, 400)
+
+    lines = {dict(row)["AccountingDocumentItem"]: dict(row)
+             for row in ctx.conn.execute(
+                 'SELECT * FROM "%s" WHERE "AccountingDocument" = ?' % items,
+                 (paying,)).fetchall()}
+    rows, total = [], Decimal("0")
+    for item in settled:
+        paid = lines.get(item["ClearingItem"])
+        amount = _decimal((paid or item)["AmountInTransactionCurrency"])
+        total += amount
+        rows.append({
+            "invoice": item["AccountingDocument"],
+            "reference": _invoice_reference(ctx.conn, item),
+            "amount": amount,
+            "item": item["ClearingItem"],
+        })
+
+    bank = [row for row in lines.values() if not (row.get("Supplier") or "")]
+    credited = sum((_decimal(row["AmountInTransactionCurrency"]) for row in bank),
+                   Decimal("0"))
+    if bank and credited != total:
+        raise SapError(
+            "Accounting document %s credits the bank %s but settles %s, so it "
+            "does not balance" % (paying, _money(credited), _money(total)), 409)
+
+    payees = {item.get("Supplier") or "" for item in settled}
+    return {
+        "document": paying,
+        "company": header["CompanyCode"],
+        "year": header["FiscalYear"],
+        "payee": sorted(payees)[0],
+        "currency": header["TransactionCurrency"] or "EUR",
+        "settled": header["PostingDate"],
+        "reference": header["ReferenceDocument"] or "",
+        "total": total,
+        "rows": rows,
+    }
 
 
 def _previous(conn, account: str) -> Optional[dict]:

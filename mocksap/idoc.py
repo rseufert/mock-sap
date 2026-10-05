@@ -708,21 +708,113 @@ def generate_delvry07(ctx, sales_order: str) -> dict:
     return {"docnum": docnum, "xml": xml, "delivery": delivery}
 
 
+def _money_out(amount) -> str:
+    """An amount leaving this account, written the way SAP writes a negative.
+
+    The minus goes after the number, and the sign is the whole direction: no
+    `EDIF5025` qualifier says debit or credit, which `statement.py` sets out
+    for the inbound side. An advice says the same thing the same way, so the
+    mock has one convention for both rather than one per direction. A reader
+    converting this to an X12 820 maps money out of the payer to `BPR03` `C`,
+    a credit on the supplier's account; the perspective flips in the
+    conversion, not here.
+    """
+    return "%.2f-" % amount
+
+
+def generate_pexr2002(ctx, clearing_document: str) -> dict:
+    """Render what a payment document settled as an outbound REMADV (#106).
+
+    The one generator whose source is not a sales order. A remittance advice
+    tells a supplier which of their invoices one credit covered, and those
+    facts belong to a payment, which is why `generate` asks `source_of` what
+    a message type is generated from rather than assuming an order.
+
+    The segments are the payment family's own, the ones `statement.py`
+    already reads on a `FINSTA01` for the same kinds of fact: `E1IDKU1` for
+    the advice, `E1EDK03` for its date, `E1EDKA1` for who is being paid,
+    `E1EDP02` for the number they quote and `E1IDPU5` for an amount. This is
+    a subset of what SAP sends and is deliberately short: nothing is emitted
+    that the mock does not actually know. There is no `E1IDB02`, because the
+    account the money left is not in this mock's data and inventing one would
+    be output nothing wrote.
+
+    Both of mock-edi's findings for a payer are answered by construction
+    rather than checked afterwards. The total is `settlement_of`'s sum of the
+    rows and nothing here recomputes it, so it cannot disagree with its parts.
+    The date is the payment's own posting date, so the advice cannot claim a
+    settlement the payment has not reached.
+    """
+    paid = reconcile.settlement_of(ctx, clearing_document)
+    docnum = db.next_number(ctx.conn, "IDOC", 16)
+    settled = str(paid["settled"] or "").replace("-", "")[:8]
+
+    rows = []
+    for row in paid["rows"]:
+        # A settled item with no supplier invoice behind it has no number the
+        # supplier would recognise. The row carries its amount and no
+        # reference, rather than quoting our document as though it were theirs.
+        reference = (_seg("E1EDP02", {"QUALF": "009", "BELNR": row["reference"]})
+                     if row["reference"] else "")
+        rows.append(_seg("E1IDPU1", {}, reference + _seg("E1IDPU5", {
+            "MOAQUAL": "001", "MOABETR": _money_out(row["amount"]),
+            "CUXWAERZ": paid["currency"]})))
+
+    segments = [
+        _control_record(docnum, "PEXR2002", "REMADV", ctx.client),
+        _seg("E1IDKU1", {"BGMREF": paid["document"]},
+             _seg("E1EDK03", {"IDDAT": "026", "DATUM": settled})
+             + _seg("E1EDKA1", {"PARVW": "LF", "LIFNR": paid["payee"]})
+             + _seg("E1IDPU5", {"MOAQUAL": "001",
+                                "MOABETR": _money_out(paid["total"]),
+                                "CUXWAERZ": paid["currency"]})
+             + "".join(rows)),
+    ]
+    xml = ('<?xml version="1.0" encoding="utf-8"?><PEXR2002><IDOC BEGIN="1">%s'
+           "</IDOC></PEXR2002>" % "".join(segments))
+    _store_idoc(ctx, docnum, "PEXR2002", "REMADV", xml)
+    return {"docnum": docnum, "xml": xml,
+            "clearing_document": paid["document"],
+            "payee": paid["payee"],
+            "total": "%.2f" % paid["total"],
+            "invoices": [row["reference"] or row["invoice"]
+                         for row in paid["rows"]]}
+
+
+# message type -> (basic type, what it is generated *from*, the generator)
 GENERATORS = {
-    "ORDERS": ("ORDERS05", lambda ctx, order: generate_orders05(ctx, order)),
-    "ORDERS05": ("ORDERS05", lambda ctx, order: generate_orders05(ctx, order)),
-    "INVOIC": ("INVOIC02", generate_invoic02),
-    "INVOIC02": ("INVOIC02", generate_invoic02),
-    "DELVRY": ("DELVRY07", generate_delvry07),
-    "DELVRY07": ("DELVRY07", generate_delvry07),
+    "ORDERS": ("ORDERS05", "SalesOrder",
+               lambda ctx, order: generate_orders05(ctx, order)),
+    "ORDERS05": ("ORDERS05", "SalesOrder",
+                 lambda ctx, order: generate_orders05(ctx, order)),
+    "INVOIC": ("INVOIC02", "SalesOrder", generate_invoic02),
+    "INVOIC02": ("INVOIC02", "SalesOrder", generate_invoic02),
+    "DELVRY": ("DELVRY07", "SalesOrder", generate_delvry07),
+    "DELVRY07": ("DELVRY07", "SalesOrder", generate_delvry07),
+    "REMADV": ("PEXR2002", "ClearingAccountingDocument", generate_pexr2002),
+    "PEXR2002": ("PEXR2002", "ClearingAccountingDocument", generate_pexr2002),
 }
 
 
-def generate(ctx, mestyp: str, sales_order: str) -> dict:
-    """Generate an outbound IDoc of the requested message type."""
+def _generator_for(mestyp: str) -> tuple:
     entry = GENERATORS.get((mestyp or "ORDERS").upper())
     if entry is None:
         raise SapError(
             "Message type %s cannot be generated; this mock generates %s"
             % (mestyp, ", ".join(sorted({v[0] for v in GENERATORS.values()}))), 400)
-    return entry[1](ctx, sales_order)
+    return entry
+
+
+def source_of(mestyp: str) -> str:
+    """What this message type is generated *from*.
+
+    Three of the four read a sales order; a remittance advice reads a payment
+    (#106). The route asks rather than assuming, so a generator with a new
+    kind of source does not mean editing the route again.
+    """
+    return _generator_for(mestyp)[1]
+
+
+def generate(ctx, mestyp: str, source: str) -> dict:
+    """Generate an outbound IDoc of the requested message type."""
+    return _generator_for(mestyp)[2](ctx, source)

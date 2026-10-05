@@ -578,12 +578,19 @@ class Handler(BaseHTTPRequestHandler):
             if method != "POST":
                 raise SapError("IDoc generation requires POST", 405)
             payload = json.loads(body.decode("utf-8")) if body.strip() else {}
-            order = str(payload.get("SalesOrder") or opts.get("salesorder") or "")
-            if not order:
-                raise SapError("Provide a SalesOrder to generate an IDoc from", 400)
             mestyp = str(payload.get("mestyp") or payload.get("MESTYP")
                          or opts.get("mestyp") or "ORDERS")
-            out = idoc.generate(ctx, mestyp, order)
+            # What a message type is generated *from* is the generator's to
+            # say: three read a sales order and a REMADV reads the payment it
+            # advises (#106). An unknown type is refused by name here, before
+            # anything is asked for, so the answer is about the type and not
+            # about a missing field.
+            wanted = idoc.source_of(mestyp)
+            source = str(payload.get(wanted) or opts.get(wanted.lower()) or "")
+            if not source:
+                raise SapError("Provide a %s to generate a %s IDoc from"
+                               % (wanted, mestyp.upper()), 400)
+            out = idoc.generate(ctx, mestyp, source)
             if wants_xml or opts.get("format") == "xml":
                 return Response(201, body=out["xml"], content_type="text/xml;charset=utf-8",
                                 headers={"sap-idoc-docnum": out["docnum"]})
@@ -834,7 +841,9 @@ code{background:#f3f4f6;padding:.1rem .3rem;border-radius:3px}</style>
 <li><code>POST /sap/bc/rfc/&lt;FUNCTION&gt;</code> - BAPI over JSON: %s</li>
 <li><code>POST /sap/bc/srt/rfc/sap/&lt;service&gt;</code> - the same functions over SOAP</li>
 <li><code>POST /sap/bc/idoc</code> - inbound IDoc (XML or EDI_DC40 flat file)</li>
-<li><code>POST /sap/bc/idoc/generate</code> - outbound ORDERS05 from a sales order</li>
+<li><code>POST /sap/bc/idoc/generate</code> - outbound ORDERS05, INVOIC02 or
+    DELVRY07 from a sales order, or a PEXR2002 remittance advice
+    (<code>mestyp=REMADV</code>) from a clearing document</li>
 <li><code>GET /sap/opu/odata/IWFND/CATALOGSERVICE;v=2/ServiceCollection</code> - service catalog</li>
 <li><code>GET /sap/bc/idoc/&lt;DOCNUM&gt;</code> - read a stored IDoc,
     <code>PUT /sap/bc/idoc/&lt;DOCNUM&gt;/status</code> - set its status</li>
