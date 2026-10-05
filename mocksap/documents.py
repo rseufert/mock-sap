@@ -183,6 +183,8 @@ def _open_item(line: Dict[str, Any], posting: str) -> Dict[str, Any]:
         "PostingDate": posting,
         "PaymentTerms": "",
         "PaymentBlockingReason": "",
+        "PaymentRunID": "",
+        "PaymentRunDate": None,
         "NetDueDate": None,
         "ClearingAccountingDocument": "",
         "ClearingDate": None,
@@ -196,6 +198,10 @@ def _open_item(line: Dict[str, Any], posting: str) -> Dict[str, Any]:
     terms = str(line.get("PaymentTerms") or "")
     state["PaymentTerms"] = terms
     state["PaymentBlockingReason"] = str(line.get("PaymentBlockingReason") or "")
+    # A line can arrive already claimed, because /_mock and a deep insert both
+    # post items a test needs in that state; nothing else sets it on a post.
+    state["PaymentRunID"] = str(line.get("PaymentRunID") or "")
+    state["PaymentRunDate"] = line.get("PaymentRunDate")
     state["NetDueDate"] = net_due_date(
         str(line.get("DueCalculationBaseDate") or posting), terms,
         line.get("NetPaymentDays"))

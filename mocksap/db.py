@@ -799,6 +799,7 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
                 PostingDate=_iso(billed),
                 PaymentTerms="NT30" if owed else "",
                 PaymentBlockingReason="",
+                PaymentRunID="", PaymentRunDate=None,
                 NetDueDate=_iso(billed + _dt.timedelta(days=30)) if owed else None,
                 ClearingAccountingDocument="", ClearingDate=None,
                 ClearingCreationDate=None, ClearingItem="",
