@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import unittest
 
-from support import MockServerCase, SRV
+from support import MockServerCase, SRV, invoic
 
 ORDERS05 = ('<?xml version="1.0" encoding="utf-8"?><ORDERS05><IDOC BEGIN="1">'
             '<EDI_DC40 SEGMENT="1"><IDOCTYP>ORDERS05</IDOCTYP>'
@@ -37,28 +37,6 @@ def delvry(*orders, announced="0080007777"):
         "</EDI_DC40>"
         '<E1EDL20 SEGMENT="1"><VBELN>%s</VBELN>%s</E1EDL20>'
         "</IDOC></DELVRY07>") % (announced, items)
-
-
-def invoic(reference, gross="1190.00", supplier="1000009"):
-    net = "%.2f" % (float(gross) / 1.19)
-    tax = "%.2f" % (float(gross) - float(net))
-    return (
-        '<?xml version="1.0" encoding="utf-8"?><INVOIC02><IDOC BEGIN="1">'
-        '<EDI_DC40 SEGMENT="1"><IDOCTYP>INVOIC02</IDOCTYP>'
-        "<MESTYP>INVOIC</MESTYP></EDI_DC40>"
-        '<E1EDK01 SEGMENT="1"><CURCY>EUR</CURCY><ZTERM>NT30</ZTERM>'
-        "<BELNR>%s</BELNR></E1EDK01>"
-        '<E1EDK02 SEGMENT="1"><QUALF>009</QUALF><BELNR>%s</BELNR></E1EDK02>'
-        '<E1EDK03 SEGMENT="1"><IDDAT>026</IDDAT><DATUM>20260927</DATUM></E1EDK03>'
-        '<E1EDKA1 SEGMENT="1"><PARVW>LF</PARVW><LIFNR>%s</LIFNR></E1EDKA1>'
-        '<E1EDP01 SEGMENT="1"><POSEX>000010</POSEX><MENGE>1.000</MENGE>'
-        "<MENEE>PC</MENEE><NETWR>%s</NETWR><VGBEL>4500000100</VGBEL>"
-        "<VGPOS>00010</VGPOS></E1EDP01>"
-        '<E1EDS01 SEGMENT="1"><SUMID>010</SUMID><SUMME>%s</SUMME></E1EDS01>'
-        '<E1EDS01 SEGMENT="1"><SUMID>011</SUMID><SUMME>%s</SUMME></E1EDS01>'
-        '<E1EDS01 SEGMENT="1"><SUMID>205</SUMID><SUMME>%s</SUMME></E1EDS01>'
-        "</IDOC></INVOIC02>") % (reference, reference, supplier, net, gross,
-                                 net, tax)
 
 
 class OutcomeCase(MockServerCase):

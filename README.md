@@ -102,7 +102,7 @@ bash examples/demo.sh
 | BAPI over JSON | `POST /sap/bc/rfc/<FUNCTION_MODULE>` |
 | BAPI over SOAP | `POST /sap/bc/srt/rfc/sap/<service>/<client>/<name>/<binding>` |
 | IDoc inbound | `POST /sap/bc/idoc` (XML or flat file) |
-| IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05, INVOIC02 or DELVRY07 |
+| IDoc outbound | `POST /sap/bc/idoc/generate` → ORDERS05, INVOIC02 or DELVRY07 from a sales order; PEXR2002 (`mestyp=REMADV`) from a clearing document |
 | OAuth token endpoint | `POST /sap/bc/sec/oauth2/token`, `POST /sap/bc/sec/oauth2/revoke` |
 | Mock control plane | `/_mock/health`, `/_mock/state`, `/_mock/services`, `/_mock/requests`, `/_mock/rfc-log`, `/_mock/idocs` (`?settled=` narrows to what settled one document), `/_mock/tokens`, `/_mock/faults`, `POST /_mock/advance`, `POST /_mock/reset` |
 
@@ -353,6 +353,11 @@ exception. Use `sap-mock-scenario` for those.
 curl -X POST "http://127.0.0.1:8000/sap/bc/idoc/generate?format=xml" \
   -H "X-CSRF-Token: $TOKEN" -H 'Content-Type: application/json' \
   -d '{"mestyp":"INVOIC","SalesOrder":"0000004712"}'
+
+# outbound: tell a supplier what a payment covered, from the payment itself
+curl -X POST "http://127.0.0.1:8000/sap/bc/idoc/generate?format=xml" \
+  -H "X-CSRF-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"mestyp":"REMADV","ClearingAccountingDocument":"0100000011"}'
 
 # inbound: post an IDoc and get its status record back
 curl -X POST http://127.0.0.1:8000/sap/bc/idoc \
@@ -726,6 +731,24 @@ clearing document is removed from the item - the way reversing a clearing in SAP
 puts it back among the open items - but `ClearingIsReversed` stays set, so
 *paid and returned* can still be told from *never paid*. Without that they look
 identical, and telling them apart is the whole job.
+
+**A supplier can be told what was paid.** Generating a `REMADV` from a payment
+document renders a `PEXR2002` naming every invoice that payment settled, each
+with the number the supplier quotes and what came off it, and a total that is
+the sum of those rows:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/sap/bc/idoc/generate?format=xml" \
+  -H "X-CSRF-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"mestyp":"REMADV","ClearingAccountingDocument":"0100000011"}'
+```
+
+It is the only generator whose source is not a sales order, and it is
+deliberately short: it carries what the mock knows and nothing else, so there
+is no bank account on it — that is not in this mock's data, and inventing one
+would be output nothing wrote. The advice is dated by the payment's own posting
+date, so it cannot claim a settlement that has not happened, and a document
+that settled nothing is refused rather than advised.
 
 Two checks on the statement itself, reported separately because they are
 different failures:

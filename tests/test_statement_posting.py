@@ -7,77 +7,10 @@ from __future__ import annotations
 
 import unittest
 
-from support import MockServerCase
+from support import MockServerCase, balances, finsta, invoic, line
 
 CUBE = ("/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV"
         "/A_OperationalAcctgDocItemCube")
-
-
-def invoic(reference, gross="1190.00", net="1000.00", tax="190.00",
-           supplier="1000009", currency="EUR"):
-    return (
-        '<?xml version="1.0" encoding="utf-8"?><INVOIC02><IDOC BEGIN="1">'
-        '<EDI_DC40 SEGMENT="1"><IDOCTYP>INVOIC02</IDOCTYP>'
-        "<MESTYP>INVOIC</MESTYP></EDI_DC40>"
-        '<E1EDK01 SEGMENT="1"><CURCY>%s</CURCY><ZTERM>NT30</ZTERM>'
-        "<BELNR>%s</BELNR></E1EDK01>"
-        '<E1EDK02 SEGMENT="1"><QUALF>009</QUALF><BELNR>%s</BELNR></E1EDK02>'
-        '<E1EDK03 SEGMENT="1"><IDDAT>026</IDDAT><DATUM>20260927</DATUM></E1EDK03>'
-        '<E1EDKA1 SEGMENT="1"><PARVW>LF</PARVW><LIFNR>%s</LIFNR></E1EDKA1>'
-        '<E1EDP01 SEGMENT="1"><POSEX>000010</POSEX><MENGE>1.000</MENGE>'
-        "<MENEE>PC</MENEE><NETWR>%s</NETWR><VGBEL>4500000100</VGBEL>"
-        "<VGPOS>00010</VGPOS></E1EDP01>"
-        '<E1EDS01 SEGMENT="1"><SUMID>010</SUMID><SUMME>%s</SUMME></E1EDS01>'
-        '<E1EDS01 SEGMENT="1"><SUMID>011</SUMID><SUMME>%s</SUMME></E1EDS01>'
-        '<E1EDS01 SEGMENT="1"><SUMID>205</SUMID><SUMME>%s</SUMME></E1EDS01>'
-        "</IDOC></INVOIC02>") % (currency, reference, reference, supplier,
-                                 net, gross, net, tax)
-
-
-def line(number, amount, reference=None, note=None):
-    """One statement line: a trailing minus is money out."""
-    parts = ['<E1IDPF1 SEGMENT="1"><LINLINEIT>%s</LINLINEIT>' % number]
-    if reference is not None:
-        parts.append('<E1EDP02 SEGMENT="1"><QUALF>009</QUALF><BELNR>%s</BELNR>'
-                     "</E1EDP02>" % reference)
-    if note is not None:
-        chunks = [note[i:i + 70] for i in range(0, len(note), 70)] or [""]
-        inner = "".join("<TXT%02d>%s</TXT%02d>" % (n, chunk, n)
-                        for n, chunk in enumerate(chunks, start=1))
-        parts.append('<E1IDT01 SEGMENT="1">%s</E1IDT01>' % inner)
-    parts.append('<E1IDPU5 SEGMENT="1"><MOAQUAL>001</MOAQUAL>'
-                 "<MOABETR>%s</MOABETR><CUXWAERZ>EUR</CUXWAERZ></E1IDPU5>" % amount)
-    parts.append("</E1IDPF1>")
-    return "".join(parts)
-
-
-def balances(opening=None, closing=None, debits=None, credits_=None):
-    amounts = []
-    for qualifier, value in (("019", opening), ("021", closing),
-                             ("023", debits), ("024", credits_)):
-        if value is not None:
-            amounts.append('<E1IDPU5 SEGMENT="1"><MOAQUAL>%s</MOAQUAL>'
-                           "<MOABETR>%s</MOABETR><CUXWAERZ>EUR</CUXWAERZ>"
-                           "</E1IDPU5>" % (qualifier, value))
-    if not amounts:
-        return ""
-    return ('<E1IDPF1 SEGMENT="1"><LINLINEIT>000900</LINLINEIT>%s</E1IDPF1>'
-            % "".join(amounts))
-
-
-def finsta(lines="", statement="00042", date="20260927", account="0007000063",
-           opening=None, closing=None, debits=None, credits_=None):
-    return (
-        '<?xml version="1.0" encoding="utf-8"?><FINSTA01><IDOC BEGIN="1">'
-        '<EDI_DC40 SEGMENT="1"><IDOCTYP>FINSTA01</IDOCTYP>'
-        "<MESTYP>FINSTA</MESTYP></EDI_DC40>"
-        '<E1IDKU1 SEGMENT="1"><BGMREF>%s</BGMREF>'
-        '<E1EDK03 SEGMENT="1"><IDDAT>026</IDDAT><DATUM>%s</DATUM></E1EDK03>'
-        '<E1IDB02 SEGMENT="1"><FIIBKENN>37040044</FIIBKENN>'
-        "<FIIKONTO>%s</FIIKONTO><FIIBLAND>DE</FIIBLAND><FIIKWAER>EUR</FIIKWAER>"
-        "</E1IDB02>%s%s</E1IDKU1></IDOC></FINSTA01>"
-    ) % (statement, date, account, lines,
-         balances(opening, closing, debits, credits_))
 
 
 class StatementCase(MockServerCase):

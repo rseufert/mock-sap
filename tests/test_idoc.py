@@ -1,10 +1,13 @@
 """IDoc round-trip: ORDERS05 generation, inbound XML and flat files, status."""
 from __future__ import annotations
 
+import datetime
+import json
+import re
 import unittest
 from xml.etree import ElementTree as ET
 
-from support import MockServerCase, SRV
+from support import MockServerCase, SRV, finsta, invoic, line
 
 
 class TestIdoc(MockServerCase):
@@ -434,6 +437,190 @@ class TestInvoiceAndDelivery(MockServerCase):
         _, _, invoices = self.get("/_mock/idocs?mestyp=INVOIC")
         self.assertTrue(invoices["results"])
         self.assertTrue(all(r["mestyp"] == "INVOIC" for r in invoices["results"]))
+
+
+class TestTellingASupplierWhatWasPaid(MockServerCase):
+    """A REMADV generated from the clearing a statement posted (#106).
+
+    The one generator whose source is not a sales order. mock-edi 0.7.0 ships
+    the receiving half, and two of its findings are aimed at a payer that gets
+    this wrong: a total that is not the sum of its parts, and an advice that
+    claims a settlement the payment has not reached.
+    """
+
+    CUBE = ("/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV"
+            "/A_OperationalAcctgDocItemCube")
+
+    # -- helpers
+
+    def send(self, body):
+        headers = dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                             "Accept": "application/json"})
+        status, _, receipt = self.request("POST", "/sap/bc/idoc", body=body,
+                                          headers=headers)
+        self.assertEqual(status, 201)
+        return receipt
+
+    def bill(self, reference, gross="1190.00", supplier="1000009"):
+        net = "%.2f" % (float(gross) / 1.19)
+        tax = "%.2f" % (float(gross) - float(net))
+        return self.send(invoic(reference, gross, net, tax,
+                                supplier))["APPLIED"][0]
+
+    def advise(self, clearing_document):
+        return self.request(
+            "POST", "/sap/bc/idoc/generate",
+            body={"mestyp": "REMADV",
+                  "ClearingAccountingDocument": clearing_document},
+            headers=self.csrf_token())
+
+    def a_payment_of(self, *invoices, **kwargs):
+        """Pay these invoices with one statement, and return the clearing."""
+        statement = kwargs.pop("statement", "00080")
+        lines = "".join(
+            line("%06d" % (n + 1), "%.2f-" % float(gross), reference=reference)
+            for n, (reference, gross) in enumerate(invoices))
+        applied = self.send(finsta(lines, statement=statement))["APPLIED"][0]
+        self.assertEqual(len(applied["CLEARED"]), len(invoices),
+                         applied["UNPROCESSED"])
+        documents = {row["CLEARINGDOCUMENT"] for row in applied["CLEARED"]}
+        self.assertEqual(len(documents), 1, "one supplier, one payment")
+        return documents.pop()
+
+    def xml_of(self, response):
+        status, _, out = response
+        self.assertEqual(status, 201, out)
+        return out, ET.fromstring(out["xml"])
+
+    def eight_digits(self, odata_date):
+        """`/Date(ms)/` as the eight digits an IDoc date carries."""
+        ms = int(re.search(r"-?\d+", odata_date).group())
+        return (datetime.datetime(1970, 1, 1)
+                + datetime.timedelta(milliseconds=ms)).strftime("%Y%m%d")
+
+    # -- tests
+
+    def test_an_advice_names_every_invoice_the_payment_settled(self):
+        self.bill("ADV-A1", "1190.00")
+        self.bill("ADV-A2", "2380.00")
+        paying = self.a_payment_of(("ADV-A1", "1190.00"), ("ADV-A2", "2380.00"),
+                                   statement="00081")
+
+        out, root = self.xml_of(self.advise(paying))
+
+        self.assertEqual(root.tag, "PEXR2002")
+        self.assertEqual(root.find(".//EDI_DC40/IDOCTYP").text, "PEXR2002")
+        self.assertEqual(root.find(".//EDI_DC40/MESTYP").text, "REMADV")
+        rows = root.findall(".//E1IDPU1")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r.find("E1EDP02/BELNR").text for r in rows],
+                         ["ADV-A1", "ADV-A2"])
+        self.assertEqual(out["invoices"], ["ADV-A1", "ADV-A2"])
+        self.assertEqual(out["payee"], "1000009")
+
+    def test_the_total_is_the_sum_of_the_rows(self):
+        """mock-edi's `remittance-total-not-parts`, which #107 made reachable."""
+        self.bill("ADV-B1", "1190.00")
+        self.bill("ADV-B2", "2380.00")
+        paying = self.a_payment_of(("ADV-B1", "1190.00"), ("ADV-B2", "2380.00"),
+                                   statement="00082")
+
+        out, root = self.xml_of(self.advise(paying))
+
+        header = root.find("./IDOC/E1IDKU1/E1IDPU5/MOABETR").text
+        rows = [r.find("E1IDPU5/MOABETR").text
+                for r in root.findall(".//E1IDPU1")]
+        self.assertEqual(rows, ["1190.00-", "2380.00-"])
+        self.assertEqual(header, "3570.00-")
+        self.assertEqual(float(header[:-1]),
+                         round(sum(float(x[:-1]) for x in rows), 2))
+        self.assertEqual(out["total"], "3570.00")
+
+    def test_the_advice_is_dated_by_the_payment_it_advises(self):
+        """mock-edi's `remitted-before-settlement` cannot fire: the same date."""
+        invoice = self.bill("ADV-C1", "1190.00")
+        paying = self.a_payment_of(("ADV-C1", "1190.00"), statement="00083")
+
+        _, root = self.xml_of(self.advise(paying))
+
+        _, _, item = self.get(
+            self.CUBE + "?$filter=AccountingDocument%%20eq%%20'%s'%%20and%%20"
+            "AccountingDocumentItemType%%20eq%%20'K'&$format=json"
+            % invoice["ACCOUNTINGDOCUMENT"])
+        cleared = item["d"]["results"][0]["ClearingDate"]
+        self.assertTrue(cleared, "the item was cleared on a day")
+        self.assertEqual(root.find("./IDOC/E1IDKU1/E1EDK03/DATUM").text,
+                         self.eight_digits(cleared),
+                         "an advice cannot be dated after the settlement")
+
+    def test_the_advice_quotes_the_payment_as_its_trace(self):
+        self.bill("ADV-D1", "1190.00")
+        paying = self.a_payment_of(("ADV-D1", "1190.00"), statement="00084")
+
+        out, root = self.xml_of(self.advise(paying))
+
+        self.assertEqual(root.find("./IDOC/E1IDKU1/BGMREF").text, paying)
+        self.assertEqual(out["clearing_document"], paying)
+        self.assertEqual(root.find("./IDOC/E1IDKU1/E1EDKA1/LIFNR").text, "1000009")
+        self.assertEqual(root.find("./IDOC/E1IDKU1/E1EDKA1/PARVW").text, "LF")
+
+    def test_one_invoice_still_makes_an_advice_that_adds_up(self):
+        """The feature does not depend on #107's grouping to be correct."""
+        self.bill("ADV-E1", "500.00")
+        paying = self.a_payment_of(("ADV-E1", "500.00"), statement="00085")
+
+        _, root = self.xml_of(self.advise(paying))
+
+        rows = root.findall(".//E1IDPU1")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(root.find("./IDOC/E1IDKU1/E1IDPU5/MOABETR").text, "500.00-")
+        self.assertEqual(rows[0].find("E1IDPU5/MOABETR").text, "500.00-")
+
+    def test_the_advice_is_stored_as_an_outbound_idoc(self):
+        self.bill("ADV-F1", "1190.00")
+        paying = self.a_payment_of(("ADV-F1", "1190.00"), statement="00086")
+
+        out, _ = self.xml_of(self.advise(paying))
+
+        _, _, stored = self.get("/sap/bc/idoc/%s" % out["docnum"])
+        self.assertEqual(stored["idoctyp"], "PEXR2002")
+        self.assertEqual(stored["mestyp"], "REMADV")
+        self.assertEqual(stored["direction"], "1", "outbound")
+        self.assertNotIn("APPLIED", stored, "generating one posts nothing")
+
+    def test_a_document_that_settled_nothing_is_refused(self):
+        invoice = self.bill("ADV-G1", "1190.00")
+
+        status, _, body = self.advise(invoice["ACCOUNTINGDOCUMENT"])
+
+        self.assertEqual(status, 400, body)
+        self.assertIn("settled nothing", json.dumps(body))
+
+    def test_a_document_that_does_not_exist_is_refused(self):
+        status, _, body = self.advise("0199999999")
+
+        self.assertEqual(status, 404, body)
+        self.assertIn("does not exist", json.dumps(body))
+
+    def test_asking_for_an_advice_without_a_payment_says_what_is_missing(self):
+        """The route no longer assumes every generator wants a sales order."""
+        status, _, body = self.request(
+            "POST", "/sap/bc/idoc/generate",
+            body={"mestyp": "REMADV", "SalesOrder": "0000000001"},
+            headers=self.csrf_token())
+
+        self.assertEqual(status, 400, body)
+        self.assertIn("ClearingAccountingDocument", json.dumps(body))
+
+    def test_an_unknown_message_type_is_still_refused_by_name(self):
+        status, _, body = self.request(
+            "POST", "/sap/bc/idoc/generate", body={"mestyp": "PAYEXT"},
+            headers=self.csrf_token())
+
+        self.assertEqual(status, 400, body)
+        said = json.dumps(body)
+        self.assertIn("PAYEXT", said)
+        self.assertIn("PEXR2002", said, "and lists what it can generate")
 
 
 if __name__ == "__main__":
