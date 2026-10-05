@@ -409,6 +409,94 @@ class TestWhenTheCurrencyDisagrees(StatementCase):
                          "the paid invoice stayed paid")
 
 
+class TestWhenOneInvoiceNumberContainsAnother(StatementCase):
+    """#86: a structured reference is believed over a substring of the note.
+
+    `INV-1` appears inside `INV-10`, so a note naming the invoice the bank
+    actually paid also matched the shorter number of a different invoice. The
+    structured reference was compared first but was not decisive: failing it
+    fell through to searching the note, so a line that said exactly which
+    invoice it paid was matched to one it did not.
+
+    What that cost depended on who the other invoice belonged to. The same
+    supplier: the wrong invoice cleared and the right one stayed open for the
+    next payment run to pay a second time. Two suppliers: the line became
+    ambiguous under #87 and cleared nothing, which is a refusal the bank had
+    already answered.
+    """
+
+    def test_the_wrong_invoice_is_not_the_one_that_clears(self):
+        shorter = self.bill("LONG-1", "1190.00")
+        named = self.bill("LONG-10", "1190.00")
+
+        applied = self.send(finsta(line(
+            "000001", "1190.00-", reference="LONG-10",
+            note="PAYMENT FOR LONG-10")))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 1, applied["UNPROCESSED"])
+        self.assertEqual(applied["CLEARED"][0]["ACCOUNTINGDOCUMENT"],
+                         named["ACCOUNTINGDOCUMENT"],
+                         "the invoice the bank named is the one that clears")
+        self.assertIn(shorter["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()],
+                      "and LONG-1 is still owed, not paid by LONG-10's money")
+
+    def test_and_the_shorter_number_is_still_paid_when_it_is_the_one_named(self):
+        """The rule is 'believe the reference', not 'prefer the longer'."""
+        shorter = self.bill("LONG-2", "1190.00")
+        self.bill("LONG-20", "1190.00")
+
+        applied = self.send(finsta(line(
+            "000001", "1190.00-", reference="LONG-2",
+            note="PAYMENT FOR LONG-2")))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 1, applied["UNPROCESSED"])
+        self.assertEqual(applied["CLEARED"][0]["ACCOUNTINGDOCUMENT"],
+                         shorter["ACCOUNTINGDOCUMENT"])
+
+    def test_a_line_two_suppliers_seemed_to_fit_is_decided_by_its_reference(self):
+        """#87's refusal was reached by #86's false match.
+
+        Each supplier has one of the two numbers, so the substring match made
+        the line look like it fitted both parties and nothing was cleared -
+        for a line whose structured reference says which invoice was paid.
+        """
+        theirs = self.bill("LONG-3", "1190.00", supplier="1000009")
+        ours = self.bill("LONG-30", "1190.00", supplier="1000010")
+
+        applied = self.send(finsta(line(
+            "000001", "1190.00-", reference="LONG-30",
+            note="PAYMENT FOR LONG-30")))["APPLIED"][0]
+
+        self.assertEqual(applied["UNPROCESSED"], [],
+                         "the bank said which invoice, so nothing is ambiguous")
+        self.assertEqual(applied["CLEARED"][0]["ACCOUNTINGDOCUMENT"],
+                         ours["ACCOUNTINGDOCUMENT"])
+        self.assertIn(theirs["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()])
+
+    def test_a_structured_reference_that_names_nothing_open_ends_it(self):
+        """The cost of the rule, stated: the note is not a second chance.
+
+        A line carrying a structured reference is answered on that reference
+        alone. Where the bank quotes something this mock has no open item for,
+        the line is reported rather than matched on prose that happens to name
+        an invoice - which is the same refusal a treasury team works through,
+        and the alternative is guessing against what the bank said.
+        """
+        invoice = self.bill("LONG-4", "1190.00")
+
+        applied = self.send(finsta(line(
+            "000001", "1190.00-", reference="PAYRUN-2026-04",
+            note="PAYMENT FOR LONG-4")))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertIn(invoice["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()])
+        self.assertIn("no open item quotes this reference",
+                      applied["UNPROCESSED"][0]["REASON"])
+
+
 class TestAReturnedPayment(StatementCase):
     def test_a_credit_reopens_the_item_it_paid(self):
         invoice = self.bill("SUP-G1", "1190.00")
