@@ -90,6 +90,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_operations.py` | Failure scenarios, fault rules and their `count`, `sap-client` rejection, the `/_mock` endpoints, and reset. |
 | `test_auth.py` | Basic authentication, against a server started with `--auth` and CSRF disabled. |
 | `test_startup.py` | Starting up: the bind never reverse-resolves its own address, so a slow resolver cannot delay the port opening, and `server_name`/`server_port` are still set. |
+| `test_banner.py` | The startup banner: every URL it prints carries the port the socket actually bound rather than the one asked for, so `--port 0` advertises a reachable server and not eighteen URLs ending `:0`, each line answers when a client follows it, and the host stays the one that was typed. |
 
 ## `examples/`
 
