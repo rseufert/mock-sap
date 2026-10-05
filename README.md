@@ -703,11 +703,15 @@ processing does, in miniature:
  "FINDINGS":  []}
 ```
 
-**A debit clears an open item when the reference *and* the amount agree.** The
-structured reference (`E1EDP02`) is matched first and the note to payee second,
-searched both as written and with its spaces removed - a bank wraps the note at
-70 characters wherever it falls, so `SUP-9001` can arrive as `SUP- 9001` and an
-exact search would quietly miss it.
+**A debit clears an open item when the reference *and* the amount agree.** A
+structured reference (`E1EDP02`) settles the question on its own: a bank that
+named the document it paid is believed, and the note to payee is not read. A
+line carrying no structured reference is matched on its note instead, searched
+both as written and with its spaces removed - a bank wraps the note at 70
+characters wherever it falls, so `SUP-9001` can arrive as `SUP- 9001` and an
+exact search would quietly miss it. Reading the note *as well* matched `INV-1`
+to a line that said `INV-10`, because the shorter number is inside the longer
+one.
 
 **An invoice number is no key, so a line that fits two suppliers clears
 neither.** The number is a supplier's own sequence, so two of them can both

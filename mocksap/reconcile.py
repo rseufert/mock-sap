@@ -64,15 +64,23 @@ def _tight(text: str) -> str:
 
 
 def references_in(line: dict) -> List[str]:
-    """What this line could be quoting, best first.
+    """What this line states it is paying, exactly.
 
-    The structured reference is exact.  The note to payee is prose that a
-    human typed into a payment form, so it is searched only when there is no
-    structured one.
+    The structured reference is a field a bank filled in to say which document
+    the money settles, so it is matched exactly and nothing else on the line
+    is consulted.  Empty when the line carries none, which is the only
+    circumstance in which the note to payee - prose a human typed into a
+    payment form - is worth searching.
+
+    That ordering is the whole of the rule `_quotes` applies, and it lives
+    here so there is one place to read it.  It used to live only in this
+    docstring: the function had no callers and the matching path searched the
+    note even when the reference was there and disagreed (#86).
     """
     found = []
-    if line.get("reference"):
-        found.append(line["reference"])
+    reference = (line.get("reference") or "").strip()
+    if reference:
+        found.append(reference)
     return found
 
 
@@ -126,11 +134,23 @@ def _invoice_reference(conn, item: dict) -> str:
 
 
 def _quotes(reference: str, line: dict) -> bool:
-    """Whether a statement line names this reference at all."""
+    """Whether a statement line names this reference.
+
+    A structured reference ends the question.  `INV-1` is a substring of
+    `INV-10`, so a note naming the invoice that was paid also named a
+    different one, and searching the note after the reference had disagreed
+    settled the wrong invoice while leaving the right one open for the next
+    payment run to pay again (#86).  A bank that told us which document it
+    paid is believed over prose that merely contains a number.
+
+    The note is read only for a line that states no reference, which is the
+    ordering `references_in` holds.
+    """
     if not reference:
         return False
-    if line.get("reference") and line["reference"].strip() == reference:
-        return True
+    stated = references_in(line)
+    if stated:
+        return reference in stated
     note = line.get("note_to_payee") or ""
     return reference in note or _tight(reference) in _tight(note)
 
