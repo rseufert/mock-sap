@@ -698,20 +698,28 @@ processing does, in miniature:
                 "CLEARINGDOCUMENT": "0100000009", "AMOUNT": "1190.00"}],
  "REOPENED":  [],
  "UNPROCESSED": [{"LINE": "000002",
-                  "REASON": "reference SUP-E1 is item 0100000008 for 1190.00, "
-                            "but the line is for 1000.00"}],
+                  "REASON": "reference SUP-E1 is item 0100000008 for "
+                            "1190.00 EUR, but the line is for 1000.00 EUR"}],
  "FINDINGS":  []}
 ```
 
-**A debit clears an open item when the reference *and* the amount agree.** A
-structured reference (`E1EDP02`) settles the question on its own: a bank that
-named the document it paid is believed, and the note to payee is not read. A
-line carrying no structured reference is matched on its note instead, searched
-both as written and with its spaces removed - a bank wraps the note at 70
-characters wherever it falls, so `SUP-9001` can arrive as `SUP- 9001` and an
-exact search would quietly miss it. Reading the note *as well* matched `INV-1`
-to a line that said `INV-10`, because the shorter number is inside the longer
-one.
+**A debit clears an open item when the reference, the amount *and* its
+currency agree.** A structured reference (`E1EDP02`) settles the question on its
+own: a bank that named the document it paid is believed, and the note to payee
+is not read. A line carrying no structured reference is matched on its note
+instead, searched both as written and with its spaces removed - a bank wraps the
+note at 70 characters wherever it falls, so `SUP-9001` can arrive as `SUP- 9001`
+and an exact search would quietly miss it. Reading the note *as well* matched
+`INV-1` to a line that said `INV-10`, because the shorter number is inside the
+longer one.
+
+**An amount without a currency is not an amount.** A line for 1190.00 USD does
+not pay a payable of 1190.00 EUR, and every figure in a refusal is printed with
+its currency, because two amounts that happen to be equal are the one
+disagreement that reads as agreement. A statement naming a currency nowhere -
+no `CUXWAERZ` on the line, no `FIIKWAER` on the account - clears nothing:
+filling in a house currency would invent the half of the amount that decides
+whether this is a payment at all. A code is read whatever case it arrives in.
 
 **An invoice number is no key, so a line that fits two suppliers clears
 neither.** The number is a supplier's own sequence, so two of them can both

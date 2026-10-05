@@ -5,11 +5,12 @@ it, which is the half that can be wrong in expensive ways.
 
 Electronic bank statement processing in miniature.  A debit line - money that
 left the account - clears the open item it names, if the reference matches
-*and* the amount matches *and* only one party's item does: an invoice number
-is a supplier's own sequence, so two suppliers can both have an `INV-100`, and
-what a statement line gives this mock does not say which of them was paid.  A
-credit line that carries the reference of an item already cleared is a
-returned payment: the clearing is reversed and the item is open again, which
+*and* the amount and its currency match *and* only one party's item does: an
+amount without a currency is not an amount, two that happen to be equal are
+not a payment, and an invoice number is a supplier's own sequence, so two
+suppliers can both have an `INV-100` and nothing on the line says which was
+paid.  A credit line that carries the reference of an item already cleared is
+a returned payment: the clearing is reversed and the item is open again, which
 is the only thing that makes a returned payment visible in SAP.
 
 **Everything else is left alone and reported.**  A line that matches nothing,
@@ -194,11 +195,35 @@ def _in_words(parts: List[str]) -> str:
     return "%s and %s" % (", ".join(parts[:-1]), parts[-1])
 
 
+def _currency_of(item: dict) -> str:
+    """The currency an open item is owed in, compared as a file writes one."""
+    return (item.get("TransactionCurrency") or "").strip().upper()
+
+
+def _priced(amount, currency: str) -> str:
+    """An amount as a reason has to give one: the number and its currency.
+
+    Two amounts that happen to be equal are not a payment (#88), so a
+    sentence naming a figure without its currency is not saying what
+    disagreed - and a mock whose refusals read `1190.00 vs 1190.00` would be
+    unreadable in exactly the case worth reading.
+    """
+    return "%s %s" % (_money(amount), currency or "(no currency)")
+
+
+def _item_price(item: dict) -> str:
+    return _priced(item["AmountInTransactionCurrency"], _currency_of(item))
+
+
 def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
     """The item this line pays, or why it pays none of them.
 
-    The reference and the amount narrow the candidates; the party decides
-    whether what is left is one answer or none.  An invoice number is a
+    The reference, the amount *and its currency* narrow the candidates; the
+    party decides whether what is left is one answer or none.  An amount
+    without a currency is not an amount, and two amounts that happen to be
+    equal are not a payment (#88): a line for 1190.00 USD does not pay a
+    payable of 1190.00 EUR, and the refusal prints both currencies, because
+    that is the one disagreement which reads as agreement.  An invoice number is a
     supplier's own sequence and means nothing across suppliers, so two of
     them numbering an invoice `INV-100` is ordinary - and nothing this mock
     reads off a statement line separates them: `E1IDPF1` gives it a
@@ -231,31 +256,50 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
         return {"item": None, "reason": "no open item quotes this reference"}
 
     wanted = abs(_decimal(amount))
-    paying = [(item, reference) for item, reference in quoted
-              if abs(_decimal(item["AmountInTransactionCurrency"])) == wanted]
+    paid_in = (line.get("currency") or "").strip().upper()
+    if not paid_in:
+        # `statement.py` falls back to the account's own FIIKWAER when a line
+        # carries no CUXWAERZ, so this is a statement that names no currency
+        # anywhere. There is nothing to compare and nothing to assume.
+        return {"item": None, "reason":
+                "neither the line nor the account it is on names a currency, "
+                "and an amount without one is not an amount"}
+    equal = [(item, reference) for item, reference in quoted
+             if abs(_decimal(item["AmountInTransactionCurrency"])) == wanted]
+    paying = [(item, reference) for item, reference in equal
+              if _currency_of(item) == paid_in]
     if len({_party_of(item) for item, _ in paying}) > 1:
         return {"item": None, "reason":
                 "this line's reference is %s, each for %s, and nothing else "
                 "on the line says which was paid"
                 % (_in_words([_named(item) for item, _ in paying]),
-                   _money(amount))}
+                   _priced(amount, paid_in))}
     if paying:
         item, reference = paying[0]
         return {"item": item, "reference": reference}
+    # An equal number in another currency gets its own sentence. It is the
+    # one disagreement that reads as agreement, which is how a bank writing
+    # the wrong currency code and a mock not looking at it cancelled out.
+    if equal:
+        return {"item": None, "reason":
+                "this line is for %s, and %s: two amounts that happen to be "
+                "equal are not a payment"
+                % (_priced(amount, paid_in),
+                   _in_words(["%s is for %s" % (_named(item), _item_price(item))
+                              for item, _ in equal]))}
     # The reference found something and the amount did not agree. Say both
     # numbers: a part payment and a wrong payment look identical otherwise.
     if len(quoted) == 1:
         item, reference = quoted[0]
         return {"item": None, "reason":
                 "reference %s is item %s for %s, but the line is for %s"
-                % (reference, item["AccountingDocument"],
-                   _money(item["AmountInTransactionCurrency"]), _money(amount))}
+                % (reference, item["AccountingDocument"], _item_price(item),
+                   _priced(amount, paid_in))}
     return {"item": None, "reason":
             "this line's reference is %s, but the line is for %s"
-            % (_in_words(["%s for %s"
-                          % (_named(item),
-                             _money(item["AmountInTransactionCurrency"]))
-                          for item, _ in quoted]), _money(amount))}
+            % (_in_words(["%s for %s" % (_named(item), _item_price(item))
+                          for item, _ in quoted]),
+               _priced(amount, paid_in))}
 
 
 def _set_clearing(ctx, item: dict, values: dict) -> None:

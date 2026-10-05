@@ -283,6 +283,132 @@ class TestWhenTwoSuppliersShareAnInvoiceNumber(StatementCase):
                          "neither supplier's invoice came back open")
 
 
+class TestWhenTheCurrencyDisagrees(StatementCase):
+    """#88: an amount without a currency is not an amount.
+
+    Matching compared the reference and the number, so a line for 1190.00 USD
+    cleared a payable of 1190.00 EUR. That is the one disagreement which reads
+    as agreement, and it is how a bank writing the wrong currency code and a
+    mock not looking at it cancelled each other out for as long as they did.
+    """
+
+    def test_a_usd_line_does_not_clear_a_eur_payable(self):
+        invoice = self.bill("CCY-1", "1190.00", currency="EUR")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="CCY-1", currency="USD"),
+            statement="00080"))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertIn(invoice["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()],
+                      "still owed, in euros")
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        for named in ("USD", "EUR", "1190.00",
+                      invoice["ACCOUNTINGDOCUMENT"]):
+            self.assertIn(named, reason)
+        self.assertIn("not a payment", reason,
+                      "the reason has to say the two numbers being equal is "
+                      "not the point")
+
+    def test_a_eur_line_does_not_clear_a_usd_payable(self):
+        """The mirror, so the check is not one currency against the house's."""
+        invoice = self.bill("CCY-2", "1190.00", currency="USD")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="CCY-2"),
+            statement="00081"))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertIn(invoice["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()])
+
+    def test_a_line_in_the_payables_own_currency_clears_it(self):
+        invoice = self.bill("CCY-3", "1190.00", currency="USD")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="CCY-3", currency="USD"),
+            statement="00082"))["APPLIED"][0]
+
+        self.assertEqual(applied["UNPROCESSED"], [])
+        cleared = applied["CLEARED"][0]
+        self.assertEqual(cleared["ACCOUNTINGDOCUMENT"],
+                         invoice["ACCOUNTINGDOCUMENT"])
+        self.assertEqual(self.item_of(cleared["CLEARINGDOCUMENT"])
+                         ["TransactionCurrency"], "USD",
+                         "and the payment is posted in that currency")
+
+    def test_a_currency_code_is_read_whatever_case_it_arrives_in(self):
+        """`usd` is USD. Normalising a code is not guessing at one."""
+        invoice = self.bill("CCY-4", "1190.00", currency="USD")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="CCY-4", currency=" usd "),
+            statement="00083"))["APPLIED"][0]
+
+        self.assertEqual(applied["UNPROCESSED"], [])
+        self.assertEqual(applied["CLEARED"][0]["ACCOUNTINGDOCUMENT"],
+                         invoice["ACCOUNTINGDOCUMENT"])
+
+    def test_the_currency_tells_two_suppliers_apart(self):
+        """What #87 refuses is only what nothing in the file separates.
+
+        The same invoice number for the same number of units of different
+        money is two payables, and the line says which one it paid.
+        """
+        theirs = self.bill("CCY-5", "1190.00", supplier="1000009", currency="EUR")
+        ours = self.bill("CCY-5", "1190.00", supplier="1000010", currency="USD")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="CCY-5", currency="USD"),
+            statement="00084"))["APPLIED"][0]
+
+        self.assertEqual(applied["UNPROCESSED"], [])
+        self.assertEqual(applied["CLEARED"][0]["ACCOUNTINGDOCUMENT"],
+                         ours["ACCOUNTINGDOCUMENT"])
+        self.assertIn(theirs["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()])
+
+    def test_a_statement_that_names_no_currency_clears_nothing(self):
+        """No `CUXWAERZ` on the line and no `FIIKWAER` on the account.
+
+        There is nothing to compare and nothing a mock may assume: filling in
+        the house currency would be inventing the half of the amount that
+        decides whether this is a payment at all.
+        """
+        invoice = self.bill("CCY-6", "1190.00", currency="EUR")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="CCY-6", currency=""),
+            statement="00085", currency=""))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertIn("currency", applied["UNPROCESSED"][0]["REASON"])
+        self.assertIn(invoice["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()])
+
+    def test_a_return_in_another_currency_reopens_nothing(self):
+        """The credit side runs the same match, so it compares the same way.
+
+        A euro credit quoting a dollar payment would reverse a clearing that
+        was never made in that money, and put the invoice back among the open
+        items for the next payment run to pay again.
+        """
+        invoice = self.bill("CCY-7", "1190.00", currency="USD")
+        self.send(finsta(line("000001", "1190.00-", reference="CCY-7",
+                              currency="USD"), statement="00086"))
+
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="CCY-7"),
+            statement="00087"))["APPLIED"][0]
+
+        self.assertEqual(applied["REOPENED"], [])
+        self.assertEqual(len(applied["UNPROCESSED"]), 1)
+        self.assertNotIn(invoice["ACCOUNTINGDOCUMENT"],
+                         [r["AccountingDocument"] for r in self.open_payables()],
+                         "the paid invoice stayed paid")
+
+
 class TestWhenOneInvoiceNumberContainsAnother(StatementCase):
     """#86: a structured reference is believed over a substring of the note.
 
@@ -693,21 +819,26 @@ class TestOnePaymentPerPayee(StatementCase):
     def test_a_payable_in_another_currency_is_not_paid_by_the_same_document(self):
         """A document header carries one currency, whatever it shares a payee with.
 
-        Matching still does not check a line's currency against the item's,
-        which is #88; this is only that grouping cannot paper over it by
-        putting both in one payment.
+        One supplier, two payables in different money, each paid by a line in
+        its own: the two cannot share a payment document however much they
+        share a payee.
         """
         self.bill("PAY-H1", "1190.00", supplier="1000009", currency="EUR")
         self.bill("PAY-H2", "2380.00", supplier="1000009", currency="USD")
 
         applied = self.send(finsta(
             line("000001", "1190.00-", reference="PAY-H1")
-            + line("000002", "2380.00-", reference="PAY-H2"),
+            + line("000002", "2380.00-", reference="PAY-H2", currency="USD"),
             statement="00077"))["APPLIED"][0]
 
-        self.assertEqual(len(applied["CLEARED"]), 2)
+        self.assertEqual(len(applied["CLEARED"]), 2, applied["UNPROCESSED"])
+        paid_by = {row["REFERENCE"]: row["CLEARINGDOCUMENT"]
+                   for row in applied["CLEARED"]}
+        self.assertEqual(len(set(paid_by.values())), 2)
         self.assertEqual(
-            len({row["CLEARINGDOCUMENT"] for row in applied["CLEARED"]}), 2)
+            self.item_of(paid_by["PAY-H1"])["TransactionCurrency"], "EUR")
+        self.assertEqual(
+            self.item_of(paid_by["PAY-H2"])["TransactionCurrency"], "USD")
 
 
 class TestWhenAStatementPaysAndTakesItBack(StatementCase):
