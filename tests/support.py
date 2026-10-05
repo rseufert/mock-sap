@@ -109,8 +109,13 @@ def invoic(reference, gross="1190.00", net="1000.00", tax="190.00",
                                  net, gross, net, tax)
 
 
-def line(number, amount, reference=None, note=None):
-    """One statement line: a trailing minus is money out."""
+def line(number, amount, reference=None, note=None, currency="EUR"):
+    """One statement line: a trailing minus is money out.
+
+    `currency` is the line's own `CUXWAERZ`. It is a parameter because a
+    number without one is not an amount (#88): a line for 1190.00 pays a
+    payable of 1190.00 only if both are in the same money.
+    """
     parts = ['<E1IDPF1 SEGMENT="1"><LINLINEIT>%s</LINLINEIT>' % number]
     if reference is not None:
         parts.append('<E1EDP02 SEGMENT="1"><QUALF>009</QUALF><BELNR>%s</BELNR>'
@@ -121,7 +126,8 @@ def line(number, amount, reference=None, note=None):
                         for n, chunk in enumerate(chunks, start=1))
         parts.append('<E1IDT01 SEGMENT="1">%s</E1IDT01>' % inner)
     parts.append('<E1IDPU5 SEGMENT="1"><MOAQUAL>001</MOAQUAL>'
-                 "<MOABETR>%s</MOABETR><CUXWAERZ>EUR</CUXWAERZ></E1IDPU5>" % amount)
+                 "<MOABETR>%s</MOABETR><CUXWAERZ>%s</CUXWAERZ></E1IDPU5>"
+                 % (amount, currency))
     parts.append("</E1IDPF1>")
     return "".join(parts)
 
@@ -141,7 +147,8 @@ def balances(opening=None, closing=None, debits=None, credits_=None):
 
 
 def finsta(lines="", statement="00042", date="20260927", account="0007000063",
-           opening=None, closing=None, debits=None, credits_=None):
+           opening=None, closing=None, debits=None, credits_=None,
+           currency="EUR"):
     return (
         '<?xml version="1.0" encoding="utf-8"?><FINSTA01><IDOC BEGIN="1">'
         '<EDI_DC40 SEGMENT="1"><IDOCTYP>FINSTA01</IDOCTYP>'
@@ -149,7 +156,7 @@ def finsta(lines="", statement="00042", date="20260927", account="0007000063",
         '<E1IDKU1 SEGMENT="1"><BGMREF>%s</BGMREF>'
         '<E1EDK03 SEGMENT="1"><IDDAT>026</IDDAT><DATUM>%s</DATUM></E1EDK03>'
         '<E1IDB02 SEGMENT="1"><FIIBKENN>37040044</FIIBKENN>'
-        "<FIIKONTO>%s</FIIKONTO><FIIBLAND>DE</FIIBLAND><FIIKWAER>EUR</FIIKWAER>"
+        "<FIIKONTO>%s</FIIKONTO><FIIBLAND>DE</FIIBLAND><FIIKWAER>%s</FIIKWAER>"
         "</E1IDB02>%s%s</E1IDKU1></IDOC></FINSTA01>"
-    ) % (statement, date, account, lines,
+    ) % (statement, date, account, currency, lines,
          balances(opening, closing, debits, credits_))
