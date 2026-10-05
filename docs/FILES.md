@@ -99,6 +99,8 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `client.py` | A dependency-free client showing the flow a real SAP OData client needs: fetch a CSRF token, keep the session cookie, read with query options, write a deep insert. |
 | `invoice_check.py` | An example of the code the mock exists to test: accounts-payable middleware that checks a supplier's X12 810 invoices against the purchase order and the 856 ship notice, and posts the ones that match into SAP as `INVOIC` IDocs. Uses [mock-edi](https://github.com/rseufert/mock-edi) as the supplier. |
 | `test_invoice_check.py` | Integration tests for `invoice_check.py` against both mocks: a clean invoice, a short shipment billed as shipped, a price disagreement, and a duplicate invoice that must be posted once. |
+| `remittance.py` | The other direction: a `PEXR2002` payment advice generated from a clearing document, converted to the X12 820 a supplier reads and sent to mock-edi. The perspective flips here rather than in the IDoc - money out of our account becomes `BPR03` `C`, a credit on theirs - and an amount that is not money out is refused instead of relabelled. |
+| `test_remittance.py` | That the supplier *reads* the advice and agrees with it: accepted with no disagreements, the total surviving the conversion as the sum of its rows, and the advice listed against the payment. Also the two refusals that make the clean run mean something - a tampered total, and a settlement date ahead of mock-edi's clock, which is a different clock from mock-sap's. |
 
 ## `tools/`
 

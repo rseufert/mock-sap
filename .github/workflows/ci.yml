@@ -94,7 +94,7 @@ jobs:
               && curl -sf http://127.0.0.1:8080/_mock/health >/dev/null && break
             sleep 0.25
           done
-          cd examples && python -m unittest -v test_invoice_check
+          cd examples && python -m unittest -v test_invoice_check test_remittance
 
   package:
     name: package builds and installs

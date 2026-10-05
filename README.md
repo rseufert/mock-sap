@@ -992,7 +992,7 @@ httpd.shutdown()
 
 `examples/client.py` is a dependency-free client showing the token/cookie flow.
 
-Two fuller examples use this mock together with
+Three fuller examples use this mock together with
 [mock-edi](https://github.com/rseufert/mock-edi), a mock EDI trading partner:
 
 - [`examples/invoice_check.py`](examples/invoice_check.py) checks a supplier's
@@ -1000,6 +1000,16 @@ Two fuller examples use this mock together with
   the supplier's ship notice, and posts the ones that match here as `INVOIC`
   IDocs. [`examples/test_invoice_check.py`](examples/test_invoice_check.py) covers
   a clean invoice, a short shipment, a price disagreement and a duplicate invoice.
+- [`examples/remittance.py`](examples/remittance.py) runs the other way: it takes
+  the `PEXR2002` payment advice this mock generates from a payment document and
+  sends the supplier the X12 820 they read. The perspective flips in the
+  conversion rather than in the IDoc — money out of our account becomes `BPR03`
+  `C`, a credit on theirs — and an amount that is not money out is refused
+  instead of relabelled.
+  [`examples/test_remittance.py`](examples/test_remittance.py) covers the
+  supplier accepting it and agreeing with it, and the two refusals that make
+  that mean something: a total that is not the sum of its rows, and a settlement
+  date ahead of the supplier's clock.
 - mock-edi's [`examples/po_bridge.py`](https://github.com/rseufert/mock-edi/blob/main/examples/po_bridge.py)
   sends purchase orders from here to the supplier as 850s and posts the 855
   confirmations back as `ORDRSP` IDocs, and its tests use this mock's fault rules
