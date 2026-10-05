@@ -7,6 +7,7 @@ import json
 import random
 import re
 import secrets
+import socketserver
 import threading
 import time
 import uuid
@@ -859,6 +860,23 @@ code{background:#f3f4f6;padding:.1rem .3rem;border-radius:3px}</style>
 </ul>""" % (SYSTEM_ID, SYSTEM_ID, rows, functions)
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_bind(self):
+        # HTTPServer.server_bind sets `server_name` from socket.getfqdn(host),
+        # a reverse lookup on the address it just bound. Nothing here reads
+        # the name, and on a host whose resolver is slow to answer for that
+        # address - a CI runner, a container with no reverse record - the
+        # port does not open until the lookup returns, by which time whoever
+        # was polling /_mock/health has given up on a start that failed for
+        # no visible reason (#127). mock-edi and mock-bank bind the same way.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def make_server(config: Config):
     mock = MockSap(config)
 
@@ -867,7 +885,6 @@ def make_server(config: Config):
 
     BoundHandler.mock = mock
 
-    httpd = ThreadingHTTPServer((config.host, config.port), BoundHandler)
-    httpd.daemon_threads = True
+    httpd = _Server((config.host, config.port), BoundHandler)
     httpd.mock = mock
     return httpd

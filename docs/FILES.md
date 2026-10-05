@@ -89,6 +89,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_messages.py` | Warnings from the data and from injection: the header shape, several messages travelling together, the V4 `SAP__Messages` collection and its declaration in CSDL, and the line between a warning and a failure. |
 | `test_operations.py` | Failure scenarios, fault rules and their `count`, `sap-client` rejection, the `/_mock` endpoints, and reset. |
 | `test_auth.py` | Basic authentication, against a server started with `--auth` and CSRF disabled. |
+| `test_startup.py` | Starting up: the bind never reverse-resolves its own address, so a slow resolver cannot delay the port opening, and `server_name`/`server_port` are still set. |
 
 ## `examples/`
 
