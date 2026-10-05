@@ -109,14 +109,22 @@ def invoic(reference, gross="1190.00", net="1000.00", tax="190.00",
                                  net, gross, net, tax)
 
 
-def line(number, amount, reference=None, note=None, currency="EUR"):
+def line(number, amount, reference=None, note=None, currency="EUR",
+         action=None):
     """One statement line: a trailing minus is money out.
 
     `currency` is the line's own `CUXWAERZ`. It is a parameter because a
     number without one is not an amount (#88): a line for 1190.00 pays a
     payable of 1190.00 only if both are in the same money.
+
+    `action` is `LINACTION`, which says which kind of credit a line is (#89):
+    `RET` a payment of ours coming back, `RCV` money arriving. A credit that
+    passes neither is a credit that does not say, which is a case worth
+    writing tests for and so is the default rather than an error here.
     """
     parts = ['<E1IDPF1 SEGMENT="1"><LINLINEIT>%s</LINLINEIT>' % number]
+    if action is not None:
+        parts.append("<LINACTION>%s</LINACTION>" % action)
     if reference is not None:
         parts.append('<E1EDP02 SEGMENT="1"><QUALF>009</QUALF><BELNR>%s</BELNR>'
                      "</E1EDP02>" % reference)

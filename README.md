@@ -675,10 +675,28 @@ nothing for it - `E1IDPF1-LINACTION` (domain `EDIF1229`) has no fixed values,
 `E1IDPU5-MOABETR` (`EDIF5004`) is plain text, and no `EDIF5025` qualifier means
 a direction - so the reader takes it from the amount's sign, written SAP's way
 with the minus after the number: `1190.00-` is a **debit**, money out, the
-payment that clears an invoice; `1190.00` is a **credit**, money in, a returned
-payment among them. **Any writer producing a `FINSTA01` for the mock has to
-follow the same convention.** A line carrying several qualified amounts keeps
-all of them, and has neither an amount nor a side picked for it.
+payment that clears an invoice; `1190.00` is a **credit**, money in. **Any
+writer producing a `FINSTA01` for the mock has to follow the same convention.**
+A line carrying several qualified amounts keeps all of them, and has neither an
+amount nor a side picked for it.
+
+**Which kind of credit is the same kind of convention**, in the field that made
+the one above necessary. Money in has two readings that are opposites - a
+payment of ours coming back, or money arriving - and camt.053 separates them,
+where a received credit transfer carries `PMNT/RCDT/ESCT` and no `RtrInf`. A
+`FINSTA01` line had nowhere to put that, so the mock reads `LINACTION`, whose
+domain pins no fixed values and is free to carry two of the mock's own:
+
+| `LINACTION` | the line is |
+|---|---|
+| `RET` | a payment of ours coming back |
+| `RCV` | money arriving |
+
+They are letters rather than digits so that nothing here is mistaken for the
+EDIFACT 1229 code list SAP declined to pin. The code is read whatever case it
+arrives in. A credit saying **neither** is undeclared, which is not the same as
+one saying `RCV`: it is read as nothing at all rather than as either. On a
+debit `LINACTION` is not consulted, because money out has one reading.
 
 **Lockbox is not supported.** `FINSTA01` also carries message type `LOCKBX`,
 and the `E1IDLB1`/`E1IDLB2` subtree belongs to it. The mock reads bank
@@ -747,14 +765,25 @@ numbers. That is not a gap in the mock: it is the reconciliation gap a treasury
 team works through every morning, and guessing at those lines would invent the
 answer they are paid to find.
 
-**A credit that quotes a cleared item is a returned payment.** The clearing is
-reversed and the item is open again, so a payment run will try it again. Returns
-are posted after the payments, so a statement that pays an invoice and takes the
-money back reads the same whichever order the bank listed those two lines in. The
-clearing document is removed from the item - the way reversing a clearing in SAP
-puts it back among the open items - but `ClearingIsReversed` stays set, so
-*paid and returned* can still be told from *never paid*. Without that they look
-identical, and telling them apart is the whole job.
+**A credit that says it is a returned payment, and quotes a cleared item,
+reopens it.** The clearing is reversed and the item is open again, so a payment
+run will try it again. Returns are posted after the payments, so a statement
+that pays an invoice and takes the money back reads the same whichever order the
+bank listed those two lines in. The clearing document is removed from the item -
+the way reversing a clearing in SAP puts it back among the open items - but
+`ClearingIsReversed` stays set, so *paid and returned* can still be told from
+*never paid*. Without that they look identical, and telling them apart is the
+whole job.
+
+**A credit has to say which kind it is.** A credit was read as a return on the
+strength of nothing but its sign, so money genuinely arriving that happened to
+quote an invoice already paid - a refund, a credit note, a supplier returning an
+overpayment - reopened it, and the next payment run paid it a second time. Now
+`RCV` reverses nothing, and a credit declaring neither reverses nothing either
+and is listed with the reason, because guessing `RET` pays an invoice twice and
+guessing `RCV` hides a payment that genuinely came back. Posting the money a
+`RCV` line brings in is not built yet; that is clearing receivables, and it is
+what `Customer` on the open-item cube is waiting for.
 
 **A supplier can be told what was paid.** Generating a `REMADV` from a payment
 document renders a `PEXR2002` naming every invoice that payment settled, each

@@ -21,17 +21,19 @@ def amount(qualifier, value, currency="EUR"):
             "<CUXWAERZ>%s</CUXWAERZ></E1IDPU5>" % (qualifier, value, currency))
 
 
-def line(number, value="1190.00", reference="SUP-9001", note="", qualifier="001"):
+def line(number, value="1190.00", reference="SUP-9001", note="", qualifier="001",
+         action=None):
     ref = ('<E1EDP02 SEGMENT="1"><QUALF>009</QUALF><BELNR>%s</BELNR></E1EDP02>'
            % reference) if reference else ""
+    act = "<LINACTION>%s</LINACTION>" % action if action is not None else ""
     text = ""
     if note:
         chunks = [note[i:i + 70] for i in range(0, len(note), 70)]
         text = ('<E1IDT01 SEGMENT="1"><TXTVW>ZZ</TXTVW>%s</E1IDT01>' % "".join(
             "<TXT%02d>%s</TXT%02d>" % (n, chunk, n)
             for n, chunk in enumerate(chunks, 1)))
-    return ('<E1IDPF1 SEGMENT="1"><LINLINEIT>%s</LINLINEIT>%s%s%s</E1IDPF1>'
-            % (number, ref, text, amount(qualifier, value)))
+    return ('<E1IDPF1 SEGMENT="1"><LINLINEIT>%s</LINLINEIT>%s%s%s%s</E1IDPF1>'
+            % (number, act, ref, text, amount(qualifier, value)))
 
 
 def balances(opening="1000.00", closing="2190.00", debits="0.00",
@@ -174,6 +176,66 @@ class TestSeveralAmountsOnOneLine(unittest.TestCase):
             '<E1IDPF1 SEGMENT="1"><LINLINEIT>000001</LINLINEIT>%s%s</E1IDPF1>'
             % (amount("001", "1190.00-"), amount("009", "2.50"))))
         self.assertIsNone(statement["lines"][0]["side"])
+
+
+class TestWhichKindOfCreditALineIs(unittest.TestCase):
+    """`LINACTION` as this mock's two values, read off the line (#89).
+
+    Money in has two readings that are opposites, and the sign cannot tell
+    them apart. The reader's job is to say which the file claimed - including
+    that it claimed neither - and not to decide what to do about it.
+    """
+
+    def test_a_credit_saying_RET_is_a_payment_coming_back(self):
+        only = parse(finsta(line("000001", action="RET")))["lines"][0]
+        self.assertEqual(only["side"], "credit")
+        self.assertEqual(only["kind"], "return")
+
+    def test_a_credit_saying_RCV_is_money_arriving(self):
+        only = parse(finsta(line("000001", action="RCV")))["lines"][0]
+        self.assertEqual(only["side"], "credit")
+        self.assertEqual(only["kind"], "receipt")
+
+    def test_a_credit_saying_nothing_has_no_kind(self):
+        """Undeclared, which is not the same as `RCV`."""
+        only = parse(finsta(line("000001")))["lines"][0]
+        self.assertEqual(only["side"], "credit")
+        self.assertEqual(only["action"], "")
+        self.assertIsNone(only["kind"])
+
+    def test_a_code_nobody_defined_has_no_kind_either(self):
+        only = parse(finsta(line("000001", action="ZZ9")))["lines"][0]
+        self.assertEqual(only["action"], "ZZ9",
+                         "kept as it arrived, so a reader can say what it was")
+        self.assertIsNone(only["kind"])
+
+    def test_the_code_is_read_whatever_case_and_padding_it_arrives_in(self):
+        only = parse(finsta(line("000001", action=" rcv ")))["lines"][0]
+        self.assertEqual(only["action"], "RCV")
+        self.assertEqual(only["kind"], "receipt")
+
+    def test_a_debit_has_no_kind_whatever_it_says(self):
+        """Money out has one reading, so no claim about its kind is read.
+
+        A writer that stamps `LINACTION` on every line must not have its
+        payments described as money arriving.
+        """
+        only = parse(finsta(line("000001", value="1190.00-",
+                                 action="RCV")))["lines"][0]
+        self.assertEqual(only["side"], "debit")
+        self.assertEqual(only["action"], "RCV",
+                         "what the line said is still reported")
+        self.assertIsNone(only["kind"], "but it is not read as a kind")
+
+    def test_a_line_with_no_side_has_no_kind(self):
+        """Two amounts and no line amount: nothing to be a credit of."""
+        statement = parse(finsta(
+            '<E1IDPF1 SEGMENT="1"><LINLINEIT>000001</LINLINEIT>'
+            "<LINACTION>RET</LINACTION>%s%s</E1IDPF1>"
+            % (amount("001", "1190.00"), amount("009", "2.50"))))
+        only = statement["lines"][0]
+        self.assertIsNone(only["side"])
+        self.assertIsNone(only["kind"])
 
 
 class TestWhatIsNotAStatement(unittest.TestCase):

@@ -32,9 +32,27 @@ No ``EDIF5025`` qualifier means debit or credit either; an outgoing payment and
 an incoming one are both payments.  So the direction is the amount's sign,
 written the way SAP writes a negative number, with the minus after it:
 negative is a **debit** (money out - the payment that clears an invoice),
-positive a **credit** (money in - a return among them).  ``side`` is derived
-from the signed ``amount``, and is ``None`` when the amount is.  Any writer
-producing a FINSTA01 for this mock has to follow the same convention.
+positive a **credit** (money in).  ``side`` is derived from the signed
+``amount``, and is ``None`` when the amount is.  Any writer producing a
+FINSTA01 for this mock has to follow the same convention.
+
+**Which kind of credit is the same kind of convention** (#89), and it lives in
+the field that made the one above necessary.  Money in has two readings that
+are opposites: a payment of ours coming back, or money arriving.  camt.053
+separates them - a received credit transfer carries ``PMNT/RCDT/ESCT`` and no
+``RtrInf``, a return carries return information - and a FINSTA01 line reaching
+this mock had nowhere to put that, so the mock reads ``LINACTION``, whose
+domain pins no fixed values and is therefore free to carry two of this mock's:
+
+    LINACTION = RET    a payment of ours coming back
+    LINACTION = RCV    money arriving
+
+They are letters rather than digits on purpose, so that nothing here is
+mistaken for the EDIFACT 1229 code list SAP declined to pin.  ``kind`` is
+``return`` or ``receipt`` accordingly, and ``None`` for a credit that says
+neither - which is **not** the same as a credit that says ``RCV``, and is read
+as nothing at all rather than as either one.  ``LINACTION`` on a debit is not
+consulted: money out has one reading.
 
 ``E1IDLB1``/``E1IDLB2`` and everything under them are lockbox - message type
 ``LOCKBX`` on the same basic type - and are skipped.  A ``LOCKBX`` IDoc is
@@ -55,6 +73,10 @@ BALANCE_CODES = (OPENING, OPENING_INTERIM, CLOSING, CLOSING_INTERIM,
                  TOTAL_DEBITS, TOTAL_CREDITS)
 
 LOCKBOX = ("E1IDLB1", "E1IDLB2")
+
+# This mock's two ``LINACTION`` values, for the kind of credit a line is.
+# See the module docstring: SAP pins no fixed values for the field.
+RETURNED, RECEIVED = "RET", "RCV"
 
 
 def _local(tag: str) -> str:
@@ -96,6 +118,20 @@ def _side(amount: Optional[Decimal]) -> Optional[str]:
     if amount is None or amount == 0:
         return None
     return "debit" if amount < 0 else "credit"
+
+
+def _kind(side: Optional[str], action: str) -> Optional[str]:
+    """What a credit says it is, by this mock's convention (#89).
+
+    Only money in has two readings - a payment of ours coming back, or money
+    arriving - so only a credit has a kind.  ``None`` is a credit that says
+    neither, and a reader has to treat that as *undeclared* rather than as
+    either one: reopening an invoice that was never returned is how it gets
+    paid a second time, and refusing to reopen a real return hides it.
+    """
+    if side != "credit":
+        return None
+    return {RETURNED: "return", RECEIVED: "receipt"}.get(action)
 
 
 def _qualified_amounts(line) -> List[dict]:
@@ -173,6 +209,8 @@ def parse(body: bytes) -> dict:
         note_lines = [text.get("TXT%02d" % n, "") for text in texts
                       for n in range(1, 15) if text.get("TXT%02d" % n)]
         single = movements[0] if len(movements) == 1 else None
+        side = _side(single["amount"] if single else None)
+        action = (fields.get("LINACTION") or "").strip().upper()
         lines.append({
             "line": fields.get("LINLINEIT") or "%06d" % position,
             "reference": refs[0].get("BELNR", "") if refs else "",
@@ -183,7 +221,9 @@ def parse(body: bytes) -> dict:
             "currency": (single["currency"] if single else "")
                         or bank.get("FIIKWAER", ""),
             "amounts": movements,
-            "side": _side(single["amount"] if single else None),
+            "side": side,
+            "action": action,
+            "kind": _kind(side, action),
         })
 
     interim = OPENING not in balances and CLOSING not in balances and (

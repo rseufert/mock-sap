@@ -9,9 +9,16 @@ left the account - clears the open item it names, if the reference matches
 amount without a currency is not an amount, two that happen to be equal are
 not a payment, and an invoice number is a supplier's own sequence, so two
 suppliers can both have an `INV-100` and nothing on the line says which was
-paid.  A credit line that carries the reference of an item already cleared is
-a returned payment: the clearing is reversed and the item is open again, which
-is the only thing that makes a returned payment visible in SAP.
+paid.  A credit line that *says it is a returned payment* and carries the
+reference of an item already cleared reverses the clearing and leaves the item
+open again, which is the only thing that makes a returned payment visible in
+SAP.  A credit that says it is money arriving reverses nothing, and one that
+says neither reverses nothing either and is reported: money in has two
+readings that are opposites, and a credit used to be read as a return on the
+strength of nothing but its sign, so a refund or a supplier returning an
+overpayment that happened to quote an invoice already paid reopened it and the
+next payment run paid it twice (#89).  `statement.py` says how a line
+declares which it is.
 
 **Everything else is left alone and reported.**  A line that matches nothing,
 or matches a reference but not the amount, clears nothing and comes back as
@@ -639,7 +646,26 @@ def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
                              "item": matched["item"],
                              "reference": matched["reference"]})
         elif side == "credit":
-            returning.append((seq, line))
+            # Money in has two readings and they are opposites, so the line
+            # has to say which (#89). Undeclared is read as neither: guessing
+            # `return` pays an invoice twice, and guessing `receipt` hides a
+            # payment that genuinely came back.
+            kind = line.get("kind")
+            if kind == "return":
+                returning.append((seq, line))
+            elif kind == "receipt":
+                unprocessed.append((seq, {
+                    "LINE": line["line"],
+                    "REASON": "this line is money arriving rather than a "
+                              "payment of ours coming back, so it reverses "
+                              "nothing; posting money in is not built yet"}))
+            else:
+                unprocessed.append((seq, {
+                    "LINE": line["line"],
+                    "REASON": "this line is money in and does not say which "
+                              "kind: a payment of ours coming back reopens "
+                              "the invoice, money arriving does not, and "
+                              "guessing pays the invoice twice"}))
         else:
             unprocessed.append((seq, {
                 "LINE": line["line"],

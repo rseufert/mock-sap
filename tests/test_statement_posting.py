@@ -272,7 +272,7 @@ class TestWhenTwoSuppliersShareAnInvoiceNumber(StatementCase):
                          statement="00071"))
 
         applied = self.send(finsta(
-            line("000001", "1190.00", reference="SHARED-6"),
+            line("000001", "1190.00", reference="SHARED-6", action="RET"),
             statement="00072"))["APPLIED"][0]
 
         self.assertEqual(applied["REOPENED"], [])
@@ -399,7 +399,7 @@ class TestWhenTheCurrencyDisagrees(StatementCase):
                               currency="USD"), statement="00086"))
 
         applied = self.send(finsta(
-            line("000001", "1190.00", reference="CCY-7"),
+            line("000001", "1190.00", reference="CCY-7", action="RET"),
             statement="00087"))["APPLIED"][0]
 
         self.assertEqual(applied["REOPENED"], [])
@@ -505,8 +505,9 @@ class TestAReturnedPayment(StatementCase):
         self.assertNotIn(invoice["ACCOUNTINGDOCUMENT"],
                          [r["AccountingDocument"] for r in self.open_payables()])
 
-        applied = self.send(finsta(line("000001", "1190.00", reference="SUP-G1"),
-                                   statement="00051"))["APPLIED"][0]
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="SUP-G1", action="RET"),
+            statement="00051"))["APPLIED"][0]
 
         self.assertEqual(len(applied["REOPENED"]), 1)
         self.assertIn(invoice["ACCOUNTINGDOCUMENT"],
@@ -518,7 +519,7 @@ class TestAReturnedPayment(StatementCase):
         never = self.bill("SUP-G3", "1190.00")
         self.send(finsta(line("000001", "1190.00-", reference="SUP-G2"),
                          statement="00060"))
-        self.send(finsta(line("000001", "1190.00", reference="SUP-G2"),
+        self.send(finsta(line("000001", "1190.00", reference="SUP-G2", action="RET"),
                          statement="00061"))
 
         was_returned = self.item_of(returned["ACCOUNTINGDOCUMENT"])
@@ -531,6 +532,161 @@ class TestAReturnedPayment(StatementCase):
         self.assertFalse(was_never_paid["ClearingIsReversed"],
                          "this one nobody ever paid - a treasury team needs "
                          "to tell these apart")
+
+
+class TestWhenMoneyArrivesQuotingAPaidInvoice(StatementCase):
+    """A credit has to say which kind it is, and is read as neither until it
+    does (#89).
+
+    Money in has two readings that are opposites. A payment of ours coming
+    back reopens the invoice; money arriving - a refund, a credit note, a
+    supplier returning an overpayment - does not. The sign cannot tell them
+    apart, so a credit quoting an invoice already paid used to reopen it on
+    the strength of nothing, and the next payment run paid it a second time.
+    """
+
+    def test_money_arriving_that_quotes_a_paid_invoice_reopens_nothing(self):
+        """The fault itself: a refund quoting the invoice it refunds."""
+        invoice = self.bill("ARRIVE-1", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="ARRIVE-1"),
+                         statement="00088"))
+
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="ARRIVE-1", action="RCV"),
+            statement="00089"))["APPLIED"][0]
+
+        self.assertEqual(applied["REOPENED"], [],
+                         "money arriving is not a payment coming back")
+        self.assertNotIn(invoice["ACCOUNTINGDOCUMENT"],
+                         [r["AccountingDocument"] for r in self.open_payables()],
+                         "still settled, so no payment run pays it again")
+
+    def test_an_invoice_refunded_is_not_an_invoice_owed(self):
+        """The data, not just the response: the clearing is untouched.
+
+        `REOPENED` being empty is the report. What decides whether the next
+        payment run pays this again is the item itself.
+        """
+        invoice = self.bill("ARRIVE-2", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="ARRIVE-2"),
+                         statement="00090"))
+        self.send(finsta(
+            line("000001", "1190.00", reference="ARRIVE-2", action="RCV"),
+            statement="00091"))
+
+        item = self.item_of(invoice["ACCOUNTINGDOCUMENT"])
+
+        self.assertNotEqual(item["ClearingAccountingDocument"], "",
+                            "the payment that settled it still did")
+        self.assertFalse(item["ClearingIsReversed"],
+                         "nothing was reversed, so nothing says it was")
+
+    def test_a_credit_that_does_not_say_which_kind_reopens_nothing(self):
+        """Undeclared is read as neither, and reported rather than guessed."""
+        invoice = self.bill("ARRIVE-3", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="ARRIVE-3"),
+                         statement="00092"))
+
+        applied = self.send(finsta(line("000001", "1190.00",
+                                        reference="ARRIVE-3"),
+                                   statement="00093"))["APPLIED"][0]
+
+        self.assertEqual(applied["REOPENED"], [])
+        self.assertEqual(len(applied["UNPROCESSED"]), 1)
+        self.assertIn("does not say which kind",
+                      applied["UNPROCESSED"][0]["REASON"])
+        self.assertNotIn(invoice["ACCOUNTINGDOCUMENT"],
+                         [r["AccountingDocument"] for r in self.open_payables()])
+
+    def test_one_statement_reopens_only_the_payment_that_says_it_came_back(self):
+        """The declaration is what does the work, not the amount or the sign.
+
+        Two credits for the same money against two paid invoices, in one file,
+        differing in nothing but what they say they are.
+        """
+        returned = self.bill("ARRIVE-4", "1190.00")
+        refunded = self.bill("ARRIVE-5", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="ARRIVE-4")
+                         + line("000002", "1190.00-", reference="ARRIVE-5"),
+                         statement="00094"))
+
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="ARRIVE-4", action="RET")
+            + line("000002", "1190.00", reference="ARRIVE-5", action="RCV"),
+            statement="00095"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["REOPENED"]), 1, applied["UNPROCESSED"])
+        self.assertEqual(applied["REOPENED"][0]["ACCOUNTINGDOCUMENT"],
+                         returned["ACCOUNTINGDOCUMENT"])
+        open_now = {r["AccountingDocument"] for r in self.open_payables()}
+        self.assertIn(returned["ACCOUNTINGDOCUMENT"], open_now)
+        self.assertNotIn(refunded["ACCOUNTINGDOCUMENT"], open_now)
+
+    def test_an_action_is_read_whatever_case_it_arrives_in(self):
+        """`ret` is `RET`: the code is a code, not a byte sequence."""
+        invoice = self.bill("ARRIVE-6", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="ARRIVE-6"),
+                         statement="00096"))
+
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="ARRIVE-6", action=" ret "),
+            statement="00097"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["REOPENED"]), 1, applied["UNPROCESSED"])
+        self.assertIn(invoice["ACCOUNTINGDOCUMENT"],
+                      [r["AccountingDocument"] for r in self.open_payables()])
+
+    def test_an_action_nobody_defined_is_not_read_as_a_return(self):
+        """Only the two values mean anything; a third is still undeclared.
+
+        Reading "it said *something*" as a return would put every writer's
+        private code back on the path this closed.
+        """
+        invoice = self.bill("ARRIVE-7", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="ARRIVE-7"),
+                         statement="00098"))
+
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="ARRIVE-7", action="900"),
+            statement="00100"))["APPLIED"][0]
+
+        self.assertEqual(applied["REOPENED"], [])
+        self.assertIn("does not say which kind",
+                      applied["UNPROCESSED"][0]["REASON"])
+        self.assertNotIn(invoice["ACCOUNTINGDOCUMENT"],
+                         [r["AccountingDocument"] for r in self.open_payables()])
+
+    def test_money_arriving_against_no_invoice_of_ours_is_still_money_in(self):
+        """A receipt is reported as what it is, matched or not.
+
+        It does not reach the matching at all - there is nothing for it to
+        clear and nothing for it to reverse - so the reason is about the line
+        rather than about the open items.
+        """
+        applied = self.send(finsta(
+            line("000001", "500.00", reference="NOBODY-OWES-THIS",
+                 action="RCV"),
+            statement="00101"))["APPLIED"][0]
+
+        self.assertEqual((applied["CLEARED"], applied["REOPENED"]), ([], []))
+        self.assertIn("money arriving",
+                      applied["UNPROCESSED"][0]["REASON"])
+
+    def test_a_debits_action_is_not_consulted(self):
+        """Money out has one reading, so nothing on it has to say so.
+
+        A writer that puts `LINACTION` on every line, debits included, still
+        gets its payments cleared.
+        """
+        invoice = self.bill("ARRIVE-8", "1190.00")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="ARRIVE-8", action="RCV"),
+            statement="00102"))["APPLIED"][0]
+
+        self.assertEqual(len(applied["CLEARED"]), 1, applied["UNPROCESSED"])
+        self.assertNotIn(invoice["ACCOUNTINGDOCUMENT"],
+                         [r["AccountingDocument"] for r in self.open_payables()])
 
 
 class TestWhatTheStatementSaysAboutItself(StatementCase):
@@ -610,8 +766,9 @@ class TestTheOutcomeOutlivesTheResponse(StatementCase):
         self.bill("OUT-C1", "1190.00")
         self.send(finsta(line("000001", "1190.00-", reference="OUT-C1"),
                          statement="00050"))
-        receipt = self.send(finsta(line("000001", "1190.00", reference="OUT-C1"),
-                                   statement="00051"))
+        receipt = self.send(finsta(
+            line("000001", "1190.00", reference="OUT-C1", action="RET"),
+            statement="00051"))
         posted = receipt["APPLIED"][0]["REOPENED"]
         self.assertEqual(len(posted), 1, "the credit reopened the invoice")
 
@@ -854,7 +1011,7 @@ class TestWhenAStatementPaysAndTakesItBack(StatementCase):
         invoice = self.bill("BACK-A1", "1190.00")
 
         applied = self.send(finsta(
-            line("000001", "1190.00", reference="BACK-A1")      # money in
+            line("000001", "1190.00", reference="BACK-A1", action="RET")      # money in
             + line("000002", "1190.00-", reference="BACK-A1"),  # money out
             statement="00078"))["APPLIED"][0]
 
