@@ -13,6 +13,99 @@ Entries waiting for a release are one file each in
 cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
 into a dated section here.
 
+## [0.19.0] - 2026-10-05
+
+An invoice could still be paid twice, and these were the last two ways it
+happened. 0.18.0 stopped this mock clearing invoices it had never paid; this
+release stops it losing track of the ones it had. A credit on a statement was
+read as a payment of ours coming back on the strength of nothing but its sign,
+so a refund, a credit note settlement or a supplier returning an overpayment
+that happened to quote an invoice already settled reopened it, and the next
+payment run paid it again ([#89]). And nothing recorded that a run had paid an
+item until the bank statement came back days later, so a second run started in
+that gap selected the same invoice and paid it too ([#90]).
+
+**Read this part before upgrading, because the first change is partly yours to
+make.** 0.18.0's narrowings were all on this mock's side of the wire. This one
+changes what a `FINSTA01` has to say, and a writer that does not say it loses
+behaviour it has today.
+
+- **A credit line has to declare which kind it is**, in `E1IDPF1-LINACTION`:
+  `RET` for a payment of ours coming back, `RCV` for money arriving. Read in
+  any case. A credit that declares **neither** reverses nothing and is listed
+  under `UNPROCESSED` with the reason, because guessing `RET` pays an invoice
+  twice and guessing `RCV` hides a payment that genuinely came back. So **a
+  return that does not say `RET` stops reopening its invoice.** If you write
+  statements for this mock and your returns are silent, they stop working on
+  upgrade - visibly, with a reason, rather than by clearing the wrong thing.
+  `LINACTION` on a debit is not consulted; money out has one reading.
+- **A selection query of your own needs one more clause.** Open items now carry
+  `PaymentRunID` and `PaymentRunDate`, and the fix depends on the selection
+  excluding what another run already holds: `PaymentRunID eq ''` alongside the
+  payment-block filter. Without it you keep the behaviour [#90] describes, and
+  the bank will not catch it.
+- **`RCV` is accepted, not acted on.** Money arriving reverses nothing, and
+  posting it against a receivable is clearing receivables ([#65]), which is not
+  built. A `RCV` line is reported as unprocessed saying exactly that. It is an
+  honest refusal rather than a silent drop, and declaring the line is still
+  worth doing today: it is what stops it being read as a return.
+
+**If you drive this mock from mock-acme's packaged integrations, most of this
+is already done.** mock-acme 0.2.0 on PyPI writes `LINACTION` on every credit
+line - checked in the published wheel, not read off its changelog - so its
+returns keep reopening and its receipts do not. It also still withholds the
+structured reference on money arriving, which was its guard against the very
+bug [#89] fixes. That guard is now unnecessary and harmless: a receipt
+reverses nothing whether or not it quotes an invoice. Putting the reference
+back, and raising its floor to this release, is
+[rseufert/mock-acme#18](https://github.com/rseufert/mock-acme/issues/18).
+
+### Added
+
+- **An open item can say which payment run has it in flight** ([#90]). A
+  payment run selected open items, paid them, and the fact that it had paid
+  them lived only in its own memory until the bank statement came back days
+  later: there was no state between *open* and *cleared*, so a second run
+  started in between selected the same invoice and paid it again. One 1190.00
+  invoice was paid 2380.00, and the bank cannot catch it, because its duplicate
+  check is keyed on a `MsgId` the second run makes fresh. `A_SupplierInvoice`
+  now takes F110's own key for a run - `PaymentRunID`, the six-character
+  identification feature, and `PaymentRunDate` - and it reaches the open item
+  the same way a payment block does, because what the next run reads is the
+  item. The selection gains one clause: `PaymentRunID eq ''`. A claim is not a
+  block, which is the point of it being the run's identification rather than
+  one more blocking reason: a block says nobody should pay this at all, a claim
+  says which run is paying it right now, and one character cannot say which.
+  An identification longer than six characters is refused rather than
+  truncated, since truncating would make two runs look like one. A claim does
+  not outlive the item it was made about: clearing releases it, and so does a
+  return, because an invoice that was paid and came back has to be selectable
+  again - and both rows are released together, so the invoice and its item
+  never disagree. Clearing itself does not consult the claim, since the
+  statement arriving is what the payment was for.
+
+### Fixed
+
+- **Money arriving that quotes an invoice already paid no longer reopens it**
+  ([#89]). A credit on a statement was read as a returned payment on the
+  strength of nothing but its sign, so a refund, a credit note settlement or a
+  supplier returning an overpayment that happened to quote an invoice the mock
+  had paid reversed that clearing and left the invoice owed again - and the next
+  payment run paid it a second time. camt.053 separates the two, where a
+  received credit transfer carries `PMNT/RCDT/ESCT` and no `RtrInf`, and a
+  `FINSTA01` line had nowhere to put it. A line now says which it is in
+  `LINACTION`, whose domain pins no fixed values and so is free to carry two of
+  this mock's own: `RET` a payment of ours coming back, `RCV` money arriving.
+  `RCV` reverses nothing, and a credit that says **neither** reverses nothing
+  either and is listed with the reason, because guessing `RET` pays an invoice
+  twice and guessing `RCV` hides a payment that genuinely came back. The code is
+  read whatever case it arrives in, a code nobody defined is undeclared rather
+  than a return, and `LINACTION` on a debit is not consulted. **Any writer
+  producing a `FINSTA01` for this mock has to declare its credits**, the same
+  way it already has to write the direction as the amount's sign; a return that
+  does not say so stops reopening. Posting the money a `RCV` line brings in is
+  not built - that is clearing receivables ([#65]).
+
 ## [0.18.0] - 2026-10-05
 
 Reconciliation stopped guessing. Three separate ways a statement line could
@@ -998,7 +1091,10 @@ First release.
 [#129]: https://github.com/rseufert/mock-sap/issues/129
 [#132]: https://github.com/rseufert/mock-sap/issues/132
 [#137]: https://github.com/rseufert/mock-sap/issues/137
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.18.0...HEAD
+[#89]: https://github.com/rseufert/mock-sap/issues/89
+[#90]: https://github.com/rseufert/mock-sap/issues/90
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/rseufert/mock-sap/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rseufert/mock-sap/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/rseufert/mock-sap/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/rseufert/mock-sap/compare/v0.16.0...v0.17.0
