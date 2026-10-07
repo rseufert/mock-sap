@@ -13,6 +13,317 @@ Entries waiting for a release are one file each in
 cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
 into a dated section here.
 
+## [0.20.0] - 2026-10-07
+
+This release is mostly this mock stopping saying yes. A dozen of these entries
+are one shape: a request that was accepted, answered plausibly, and did
+something other than what the client was told. `$search` matched nothing and
+listed every row. A POST to `A_SupplierInvoice` returned a 201 for an invoice
+that could never be paid. `BAPI_TRANSACTION_ROLLBACK` reported changes rolled
+back when nothing had been. A property `$metadata` declared read-only took any
+value a client sent. Each of those is worse than a 400, because a test built on
+it passes here and fails against S/4 - which is the one thing a test double must
+not do.
+
+The other half is arithmetic. Every figure this mock produces is now computed in
+`decimal.Decimal` and rounded the way a tax authority specifies, so the numbers
+are the numbers SAP would have given.
+
+And for the first time, something outside this project checks its output: the
+`$metadata` every service serves is validated against the CSDL schemas OASIS and
+Microsoft published ([#78]). Everything else here compares what the mock wrote to
+what `mocksap/schema.py` says it should have written, and `schema.py` wrote it -
+so both could be wrong together and nothing would notice.
+
+**Read this before upgrading. Six things answer differently than they did in
+0.19.0,** and each is a case where 0.19.0 was wrong rather than merely different:
+
+- **A figure can move by a cent** ([#98]). Tax at 19% on 2.50 is 0.48, not the
+  0.47 a binary float and banker's rounding gave. Taxes, gross amounts, order
+  totals, unit prices on an IDoc and document balances all move, and so does the
+  seeded demo data. A test asserting an exact amount against 0.19.0 will fail,
+  and should.
+- **A property `$metadata` calls read-only is refused** ([#97]). A POST that set
+  `CreatedByUser`, or a PATCH that set `TotalNetAmount`, was accepted and is now
+  a 400. Keys are not affected: a non-creatable key still means the server
+  assigns a blank one, not that a client may not number its own item.
+- **A POST to `A_SupplierInvoice` has side effects** ([#97]). It posts a real
+  document now - an accounting document, an open item, a number from the range -
+  so it is the same thing as an inbound `INVOIC`. It also refuses, by name,
+  fields it used to accept and drop.
+- **A V4 service refuses V2 `$filter` literals, and a V2 service refuses V4
+  ones** ([#165]). `datetime'...'` and `100m` no longer work against a V4
+  service; `2026-01-01T00:00:00Z` does. `$search` is a 501, `$skiptoken` a 400
+  and `$format=xml` on entity data a 400, where all three were ignored.
+- **A `DELETE` cascades all the way down** ([#163]). Deleting a sales order
+  removes its items' pricing elements and its partners' addresses too, which
+  were left behind, parentless and still addressable, before.
+- **`BAPI_TRANSACTION_ROLLBACK` answers `E` after a call that wrote something**
+  ([#167]). It answered `S` regardless, so a test relying on the rollback passed
+  on a document that was never removed.
+
+### Added
+
+- **The served `$metadata` is held to schemas this project did not write**
+  ([#78]). Every other check on this mock's output is a check against
+  `mocksap/schema.py`, which is also what wrote it — so a reader and a writer
+  built from one declaration agree with each other even when both are wrong
+  about the format. `tools/check_csdl.py` validates all fourteen `$metadata`
+  documents and the V2 annotation document against OASIS's CSDL XML 4.01
+  schemas and Microsoft's CSDL 2.0 schema, vendored unmodified and checked
+  against their published SHA-256 before use. It also holds every `Type=` to
+  the primitive names those schemas enumerate, which an XSD cannot do because
+  CSDL spells a type reference as a loose pattern, and refuses twelve
+  deliberately broken documents on every run so that the check cannot quietly
+  become a no-op. CI runs it as a job of its own.
+
+- **`--rollback-type` and `--unsupported-option-status`** ([#170]). Two answers
+  that depend on the client's conventions can be chosen when the mock starts.
+  `--rollback-type W` makes `BAPI_TRANSACTION_ROLLBACK` answer a warning
+  rather than an error when it follows a call it could not undo.
+  `--unsupported-option-status 400` (or `501`) gives a refused `$search`,
+  `$skiptoken` and non-JSON `$format` the same status, where by default
+  `$search` is a 501 and the other two are 400s. Both are `Config` fields too,
+  `GET /_mock/health` reports them as `rollbackType` and
+  `unsupportedOptionStatus`, and neither has a value that restores the
+  behaviour the fix replaced.
+
+### Changed
+
+- **A POST to `A_SupplierInvoice` posts the invoice** ([#97]). It used to store a
+  row and nothing else: no accounting document, no open item, nothing saying it was
+  not posted, and a 201 — an invoice that existed and could never be paid, because
+  nothing downstream would ever select it. The POST now goes through
+  `documents.post_supplier_invoice`, the one place a supplier invoice is made, so an
+  invoice created this way is the same thing as one posted from an inbound `INVOIC`:
+  the same accounting document, the same payable, the same number range. The entity
+  publishes a gross and no split, so an invoice posted this way carries no input
+  tax and its net is its gross; items are optional, and if they all state an amount
+  they have to come to that net.
+- **The POST no longer takes the number range's next value** ([#154]). It numbered
+  from `MAX(existing) + 1`, which handed out the number the range was going to give,
+  and the next inbound `INVOIC` then could not post at all. Fixed by the same
+  routing, since that path draws from the range.
+- **A field the POST does not act on is refused by name**, and the message says
+  what the route does take. It used to accept and silently drop them, so a client
+  could appear to set `AccountingDocument` on a document that had not been posted.
+  The document number and fiscal year are refused outright: they are assigned when
+  the invoice posts.
+
+### Fixed
+
+- **Concurrent requests no longer corrupt each other** ([#91]). The server takes
+  each request on its own thread and has one SQLite connection, and nothing
+  kept two requests off it at once: eight clients posting orders together had
+  most of them answered 409 or 500, and rows were left behind from requests
+  that failed. The mock now holds one lock for the part of a request that
+  touches the database, so **requests are answered one at a time** and each
+  gets the answer it would have got alone. The delay scenarios (`slow`,
+  `timeout`, a fault rule's `delay_ms`, `--latency`) wait outside the lock and
+  do not hold other requests up.
+- **The listen queue is 128, not 5.** With the default, a pool of eight clients
+  connecting at once had a connection refused in most runs on macOS.
+
+- **A deep insert that fails partway leaves nothing behind** ([#92]). The
+  header and each child were committed as they were written, so a refused
+  third item left a header and two items for an order the client had been
+  told did not exist. A deep insert is now one unit: any child failing takes
+  the header and its siblings with it.
+- **A changeset member that raises rolls the changeset back.** The rollback
+  ran when a member answered with an error and not when one raised - a
+  `sqlite3.Error`, or anything a handler did not turn into an answer - so the
+  members before it stayed committed behind a 500. The same holds for a V4
+  `atomicityGroup`.
+
+- **An `INVOIC` whose totals disagree is status `51`, not a posted document**
+  ([#93]). The balance check ran for `BAPI_ACC_DOCUMENT_POST` and nowhere else,
+  so an inbound invoice whose total was not its net plus its tax was filed as
+  `53` with an accounting document whose debits and credits differed. It is
+  now declined before anything is written, with the figures and what is left
+  over in the status text. The same goes for an invoice whose items all state
+  a `NETWR` and do not come to its net.
+- **A total and a tax with no net now balance.** With no `E1EDS01` `SUMID`
+  `011` the net was taken for the gross, so 1190.00 with 190.00 of tax debited
+  1380.00. The net is now what the tax leaves of the total. **An INVOIC that
+  posted before can be refused now** if its own sums disagree; one that states
+  only its total, as mock-acme's do, is unaffected.
+
+- **A date `BAPI_ACC_DOCUMENT_POST` cannot read is a `RETURN` row, not a 500**
+  ([#94]). An unparseable `BLINE_DATE` raised on the line it belonged to, with
+  the header and the lines before it already written. `PSTNG_DATE`, `DOC_DATE`
+  and every `BLINE_DATE` are now read before anything is posted, and each one
+  that is not a date gets a row of type `E` naming its parameter, row and
+  field. Nothing is written.
+- **`YYYYMMDD` is a date on every Python.** SAP's own format was read by
+  `date.fromisoformat`, which accepts it from Python 3.11 on, so `20260930` as
+  a baseline date posted on 3.11 and was a 500 on 3.10 and earlier. As a
+  posting or document date it was refused everywhere. All three fields now
+  take `YYYYMMDD` or `YYYY-MM-DD` on every supported Python, and `00000000` is
+  a date left blank.
+- **An `INVOIC` dated on no day is status `51`.** `20261345` in `E1EDK03`
+  `IDDAT` `026` was a 500 with the accounting document half written.
+
+- **An order's delivery status is what its deliveries add up to** ([#95]). An order
+  for 10 delivered as 5 and then 5 is now fully delivered, `C`. It used to end at
+  `B` and stay there however many shipments arrived, because each delivery was
+  asked on its own whether it covered the order and neither 5 did — so the split
+  shipment, which is the common case this was wanted for, could not be
+  represented. The status is now `A`, `B` or `C` from everything delivered against
+  the order, and one function decides it wherever it is written.
+- **Delivering more than was ordered is refused**, as SAP refuses past an item's
+  over-delivery tolerance. `A_SalesOrderItem` grows
+  `OverdelivTolrtdLmtRatioInPct` and `UnlimitedOverdeliveryIsAllowed` — SAP's
+  UEBTO and UEBTK — both initial, so by default an order receives exactly what it
+  asked for. Delivering 10 twice against an order for 10 was accepted and the
+  order silently received double, because each call measured what was open against
+  the order quantity rather than against what had already gone out. The refusal
+  keeps the wording it had: an OData write gets a 400, a BAPI a BAPIRET2 error, an
+  inbound `DELVRY` status 51 and nothing posted.
+- **A generated `DELVRY07` ships what the order still has open**, so generating one
+  twice sends the rest and then refuses, where it used to send the whole order
+  quantity again. A line with no `DLV_QTY` likewise takes what is open rather than
+  what was ordered.
+- **The seeded orders no longer claim a delivery status their own deliveries
+  contradict.** It was rolled at random, so an order could say `C` with nothing
+  shipped against it. Every third seeded delivery now goes out half short, so all
+  three statuses are in the data and are true of it.
+
+- **A `DELVRY` that moved no sales order is status `51`, not `53`** ([#96]). An
+  unknown `VGBEL`, or a `VGPOS` the order does not have, posts nothing and changes
+  nothing; filing it as *Application document posted* told a client the opposite of
+  what happened, which is the mistake the README's own rule exists to help catch.
+  The status text names the order or the position. A position the order lacks was
+  previously dropped from the line and the order reported on whatever was left -
+  which, when nothing was, was a delivery of nothing reported as a delivery.
+- **The refusal is still remembered.** `APPLIED` on a `51` says which order it was
+  about, and reads back the same way afterwards, because the status being `51` is
+  no reason to lose what was attempted. An unknown position is read back as that
+  position rather than as "the order does not exist", which it is not - the
+  position is stored and the sentence rebuilt from it, so a read cannot tell a
+  different story from the receipt. One order moving is still enough for `53`, and
+  the orders that did not move keep their own answer.
+
+- **A property `$metadata` declares read-only can no longer be written** ([#97]).
+  `sap:creatable="false"` and `sap:updatable="false"` were advertised and not
+  enforced, so a POST could set `CreatedByUser` to anything and a PATCH could set
+  `TotalNetAmount` to anything. A client generating its model from `$metadata` —
+  which is why the mock ships it — was told a constraint it would have found out
+  was fiction only against the real system. The check reads the same declaration
+  the metadata is rendered from, so the two cannot drift, and it runs before
+  anything is written, children of a deep insert included.
+- **A key declared non-creatable is still a key a client may send.** That facet
+  means the server will assign one that arrives empty, not that a caller may not
+  number its own sales order item — which SAP allows and the BAPI layer passes
+  straight through. Keys are left to `store`, which assigns the blank ones and
+  refuses a change to one that is not.
+
+- **An amount is a decimal, not a binary float** ([#98]). Tax at 19% on 2.50 is
+  0.48 - what a tax authority specifies and what SAP does. It was 0.47, twice
+  over: the float product lands just below 0.475, and `round()` takes a half to
+  the nearer even digit anyway. Every figure this mock makes is now computed in
+  `decimal.Decimal` and rounded with `ROUND_HALF_UP` - a tax, a gross, an order
+  total, a unit price on an IDoc, a document's balance - so **a figure can
+  differ from 0.19.0 by a cent**, in the direction a real system would have
+  given. The seeded demo data moves with it.
+- **`Edm.Decimal` is stored at the scale it declares.** The column is `TEXT`,
+  because a `REAL` one has no scale to keep, so `Decimal(16,3)` gives back
+  `2.500` whatever was written to it. Filtering, sorting and aggregating are
+  unaffected: a decimal is cast before it is compared. A database file written
+  by an earlier version keeps its `REAL` columns, since nothing migrates them -
+  the rounding above still applies, but the declared type matches the storage
+  only in a database this version created.
+- **A value no decimal could hold is refused** instead of stored. `nan` and
+  `inf` went into an amount and came back out on the wire, and `1e40` does not
+  fit the `Decimal(16,3)` the property declares. All three now answer 400,
+  naming the property, as any other invalid value does.
+
+- **A field too long for SAP's dictionary is IDoc status `51`, not an OData 400**
+  ([#101]). A 17-character reference on an inbound `INVOIC` came back as HTTP 400
+  with a Gateway error envelope, from the surface whose whole contract is that a
+  posting failure arrives as a status record on a `201`. So the one failure most
+  likely to hit a client in production was the one case that never exercised its
+  status-record handling. The IDoc is now filed, a docnum issued, and the status
+  text names the field and its limit. Length and type checks still belong to the
+  OData surface and still answer 400 there; only `_apply` is inside the catch, so a
+  malformed IDoc is still a transport error.
+
+- **A deep-insert child that is not a JSON object is a 400** ([#151]).
+  `"to_Item": [5]` answered 500 with `'int' object has no attribute 'items'`
+  as its message. It is now refused like any other malformed payload, naming
+  the navigation property and which entry was wrong, at any depth.
+
+- **`POST /_mock/reset` forgets the request log** ([#158]). The log survived a
+  reset, and so did the counter behind every id, so a suite that reset between
+  tests read the previous test's requests and got ids that depended on what
+  had run before. `/_mock/requests` is empty after a reset now, and its ids,
+  and those of `/_mock/rfc-log`, start again at 1. A reset refused for its
+  arguments resets nothing.
+- **Input the control plane cannot use is a 400 that says so**, where it was a
+  500 with a Python message: a `limit`, a `seed` or a rule's `count` that is
+  not a whole number, and a body that is JSON but not an object, on every
+  `/_mock` endpoint.
+- **A fault rule that could not be applied is refused when it is posted.**
+  `{"status": "abc"}` was stored with a 201 and then failed every request it
+  matched with `Unexpected mock failure`. A status that is not an HTTP status,
+  a `match` that is not a regular expression and a `count` or `delay_ms` that
+  is not a whole number are now a 400 naming the field. A status sent as text,
+  `"503"`, works as it did.
+- **A `Content-Length` that is not a count of bytes is a 400.** `-1` made the
+  mock wait for a body that never ended, and `abc` closed the connection with
+  no answer. Both are refused now, and the connection is closed, since the
+  body cannot be told from the next request.
+
+- **A payment document's own line carries the day it was cleared** ([#160]).
+  It named itself as its clearing document and had a `ClearingDate` of `null`,
+  so it was cleared by one field and open by the other, and a read of what was
+  cleared by a key date left it out. Its `ClearingDate` and
+  `ClearingCreationDate` are the document's posting date now, as they are on
+  the invoice it paid. The same goes for the line a returned payment posts.
+- **An item a returned payment reopened no longer says when it was cleared.**
+  `ClearingCreationDate` stayed set after the clearing document and the
+  clearing date had gone. It goes with them; `ClearingIsReversed` is still
+  what tells a returned item from one nobody paid.
+
+- **A GWSAMPLE_BASIC ETag changes when the entity does** ([#163]). Its
+  `BusinessPartner` and `SalesOrder` render their ETag from `ChangedAt`, which
+  no write ever moved, so an `If-Match` taken before a change still matched
+  after it and a delta read never reported the entity as changed. A write
+  moves `ChangedAt` now, as it always moved `LastChangeDate` elsewhere, and an
+  entity created over HTTP gets `CreatedAt` and `ChangedAt` where it had
+  `null` for both.
+- **A `DELETE` removes everything beneath the entity, not one level of it.**
+  Deleting a sales order took its items and partners and left the items'
+  pricing elements and the partners' addresses, still served by their own
+  entity sets with no parent. Deleting a GWSAMPLE business partner left the
+  line items of the orders that went with it. Every level goes now, and each
+  removed row is recorded for a delta read.
+
+- **A V4 service reads V4 filter literals, and a V2 service V2 ones**
+  ([#165]). Every `$filter` was read as V2, so a V4 service accepted
+  `datetime'2026-01-01T00:00:00'` and `100m` and refused
+  `2026-01-01T00:00:00Z`, which is how V4 writes it. A V4 service now takes a
+  bare date, a date-time with `Z` or an offset, and an unsuffixed number, in
+  `$filter`, in `$apply=filter(...)` and in a nested `$expand`. **It refuses
+  the V2 spellings it used to accept**, and a V2 service refuses a V4 one;
+  either way the 400 names the version the literal belongs to and how this
+  service writes it.
+- **`$search`, `$skiptoken` and `$format=xml` are refused instead of ignored.**
+  Each was accepted and answered with what the request would have returned
+  without it, so a `$search` that matched nothing listed every row. `$search`
+  is a 501 pointing at `$filter`; a `$skiptoken` is a 400, since the mock
+  never pages and so never issued one; and a `$format` other than JSON on
+  entity data is a 400. The service document and `$metadata` still serve XML,
+  and an `Accept` header asking for XML is still answered in JSON.
+
+- **`BAPI_TRANSACTION_ROLLBACK` no longer claims a rollback it did not do**
+  ([#167]). Every function call is committed as it runs, so a rollback has
+  nothing it can undo - and it answered `S`, "Changes were rolled back",
+  regardless. After a call that wrote something it now answers **`TYPE: "E"`**,
+  naming the function modules whose work is still in place, so a test that
+  relies on the rollback fails where it used to pass on a document that was
+  never removed. A rollback that follows only reads, test runs, refused calls
+  or a `BAPI_TRANSACTION_COMMIT` answers `S` as before.
+
 ## [0.19.0] - 2026-10-05
 
 An invoice could still be paid twice, and these were the last two ways it
@@ -1093,7 +1404,25 @@ First release.
 [#137]: https://github.com/rseufert/mock-sap/issues/137
 [#89]: https://github.com/rseufert/mock-sap/issues/89
 [#90]: https://github.com/rseufert/mock-sap/issues/90
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.19.0...HEAD
+[#78]: https://github.com/rseufert/mock-sap/issues/78
+[#92]: https://github.com/rseufert/mock-sap/issues/92
+[#93]: https://github.com/rseufert/mock-sap/issues/93
+[#94]: https://github.com/rseufert/mock-sap/issues/94
+[#95]: https://github.com/rseufert/mock-sap/issues/95
+[#96]: https://github.com/rseufert/mock-sap/issues/96
+[#97]: https://github.com/rseufert/mock-sap/issues/97
+[#98]: https://github.com/rseufert/mock-sap/issues/98
+[#101]: https://github.com/rseufert/mock-sap/issues/101
+[#151]: https://github.com/rseufert/mock-sap/issues/151
+[#154]: https://github.com/rseufert/mock-sap/issues/154
+[#158]: https://github.com/rseufert/mock-sap/issues/158
+[#160]: https://github.com/rseufert/mock-sap/issues/160
+[#163]: https://github.com/rseufert/mock-sap/issues/163
+[#165]: https://github.com/rseufert/mock-sap/issues/165
+[#167]: https://github.com/rseufert/mock-sap/issues/167
+[#170]: https://github.com/rseufert/mock-sap/issues/170
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/rseufert/mock-sap/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rseufert/mock-sap/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rseufert/mock-sap/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/rseufert/mock-sap/compare/v0.17.0...v0.17.1
