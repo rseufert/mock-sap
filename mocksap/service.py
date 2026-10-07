@@ -16,10 +16,10 @@ from . import annotations as sap_annotations
 from . import apply as odata_apply
 from . import delta as odata_delta
 from . import messages as sap_messages, metadata, metadata4, odata4, store
-from .odata import (SapError, build_orderby, build_where, collection_envelope,
-                    entity_envelope, entity_uri, error_payload, etag_for,
-                    etag_matches, key_predicate, parse_key_predicate,
-                    serialize_entity, to_json_value)
+from .odata import (SapError, build_orderby, build_where, check_writable,
+                    collection_envelope, entity_envelope, entity_uri,
+                    error_payload, etag_for, etag_matches, key_predicate,
+                    parse_key_predicate, serialize_entity, to_json_value)
 from .schema import ENTITY_TYPES, SERVICES, EntityType, Service, service_for_path
 
 JSON_CT = "application/json;charset=utf-8"
@@ -398,6 +398,7 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
         if method in ("PATCH", "MERGE", "PUT"):
             _check_if_match(ctx, et, keys, headers)
             payload = _json_body(body)
+            check_writable(et, payload, creating=False)
             store.update(ctx.conn, et, keys, payload, merge=(method != "PUT"), user=ctx.user)
             warnings = sap_messages.after_write(ctx.conn, et, keys)
             etag = etag_for(et, store.get(ctx.conn, et, keys))
@@ -903,6 +904,9 @@ def _with_messages(response: Response, warnings: List[dict]) -> Response:
 
 def _create(ctx, svc, et, set_name, opts, body, parent_keys=None) -> Response:
     payload = _json_body(body)
+    # Before anything is written, and including the children of a deep
+    # insert: a payload refused halfway is a payload that half happened.
+    check_writable(et, payload, creating=True)
     keys = store.insert(ctx.conn, et, payload, user=ctx.user, parent_keys=parent_keys)
     warnings = list(sap_messages.after_write(ctx.conn, et, keys))
     for nav in et.navs:
