@@ -320,7 +320,7 @@ def _set_clearing(ctx, item: dict, values: dict) -> None:
     store.release_payment_run(ctx.conn, item)
 
 
-def _self_clear(ctx, document: str, company: str, year: str,
+def _self_clear(ctx, document: str, company: str, year: str, posting: str,
                 item_type: str = SUPPLIER_LINE) -> None:
     """A payment document's own subledger line is cleared by that document.
 
@@ -331,6 +331,11 @@ def _self_clear(ctx, document: str, company: str, year: str,
     `item_type` is the side the payment document itself posted to, which is
     the same side as the item being settled: paying a supplier posts another
     supplier line, and collecting from a customer posts another customer one.
+
+    It is cleared on `posting`, the day the document itself posted. A line
+    that names its clearing document and carries no clearing date is cleared
+    according to one field and open according to the other, and a report
+    that asks "cleared on or before the key date" drops it (#160).
     """
     rows = ctx.conn.execute(
         'SELECT * FROM "%s" WHERE "AccountingDocument" = ? AND "CompanyCode" = ? '
@@ -340,6 +345,8 @@ def _self_clear(ctx, document: str, company: str, year: str,
     for row in rows:
         _set_clearing(ctx, dict(row), {
             "ClearingAccountingDocument": document,
+            "ClearingDate": posting,
+            "ClearingCreationDate": posting,
             "ClearingDocFiscalYear": year,
             "ClearingItem": dict(row)["AccountingDocumentItem"],
             "ClearingIsReversed": False,
@@ -429,7 +436,7 @@ def _pay(ctx, settling: List[dict], posting: str, statement: str) -> List[dict]:
             "ClearingIsReversed": False,
         })
         paid.append({"settling": s, "document": document, "amount": amount})
-    _self_clear(ctx, document, company, year)
+    _self_clear(ctx, document, company, year, posting)
     return paid
 
 
@@ -459,12 +466,15 @@ def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
     _set_clearing(ctx, item, {
         "ClearingAccountingDocument": "",
         "ClearingDate": None,
+        # The day the clearing was entered goes with the clearing. Left
+        # behind, an item that is open again still said when it was cleared.
+        "ClearingCreationDate": None,
         "ClearingItem": "",
         "ClearingDocFiscalYear": "",
         "ClearingIsReversed": True,
     })
     # The reversal's own supplier line is not a new debt either.
-    _self_clear(ctx, document, company, year)
+    _self_clear(ctx, document, company, year, posting)
     return {"document": document, "amount": amount}
 
 
