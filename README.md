@@ -1228,6 +1228,7 @@ and that every file in the repository is accounted for in
 ```bash
 python3 tools/check_docs.py        # every file is documented
 python3 tools/check_changelog.py   # the changelog is intact and says what changed
+python3 tools/check_csdl.py        # every $metadata is valid CSDL, by OASIS's own schemas
 ```
 
 ## Releasing

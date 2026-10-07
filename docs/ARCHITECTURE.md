@@ -113,6 +113,45 @@ entity type into `CREATE TABLE`, `metadata.metadata_document()` turns it into ED
 `store` uses the key declarations to build predicates. Adding an entity set means
 adding a declaration; nothing else has to be taught about it.
 
+### Something outside this project has to check it
+
+The section above is a good decision with one consequence worth naming: the
+writers and the readers come from the same declaration, so they agree with each
+other even when both are wrong about the format, and no assertion derived from
+`schema.py` can notice. That shape has already cost three issues - #67, #68 and
+#74, each one a system reporting what the next system *received* rather than what
+it could do with it - and every one of them was found by the cross-mock example in
+another repository, not by anything here (#78).
+
+SAP's OData payloads and its IDocs have no published corpus, so the obvious
+remedy - validate files somebody else wrote - is not available. The CSDL
+specification is the one genuine third party within reach, and `$metadata` is the
+one document this mock serves that CSDL describes. So `tools/check_csdl.py`
+validates every one of them against OASIS's CSDL XML 4.01 schemas and Microsoft's
+CSDL 2.0 schema, kept unmodified under `tests/samples/external/csdl/` and checked
+against their published SHA-256 before use - because a schema edited until a
+document passes would be the same blind spot wearing a disguise.
+
+Three limits, named rather than left to be discovered:
+
+- **The `sap:` attributes are admitted, not checked.** Both schemas end their
+  attribute lists with `xs:anyAttribute namespace="##other"`, and CSDL 2.0's
+  `TSchema` ends its content model with the matching `xs:any` - which is where the
+  `atom:link` after the entity container goes. So nothing is stripped and nothing
+  is validated: no published schema describes
+  `http://www.sap.com/Protocols/SAPData`.
+- **The V2 EDMX envelope is still this project's word.** No published schema pairs
+  EDMX 1.0's namespace with CSDL 2.0 - Microsoft's own binds `edmx:DataServices` to
+  CSDL 1.0, which is Entity Framework's pairing, not OData's. Only the `<Schema>`
+  subtree is validated; the three elements above it are asserted in Python, where
+  that is visible, instead of in an XSD of ours that would look third-party.
+- **Everything else remains held to `schema.py` alone.** The entity payloads, the
+  IDocs, the BAPI responses and the CSDL JSON have no schema to be held to here.
+
+And because a check that cannot fail is worse than no check, the tool breaks one
+document of each kind in twelve ways the spec forbids on every run, and fails if
+the validator accepts any of them.
+
 ### `$filter` compiles to parameterised SQL
 
 The filter parser is a small recursive-descent parser over a regex tokenizer,

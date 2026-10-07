@@ -60,6 +60,7 @@ Useful while working:
 python3 tests/test_batch.py           # one surface
 python3 tools/check_docs.py           # the docs coverage check CI runs
 python3 tools/check_changelog.py      # and the changelog check
+python3 tools/check_csdl.py           # the served $metadata against published CSDL
 bash examples/demo.sh                 # the curl tour, against a running mock
 ```
 
@@ -89,6 +90,14 @@ file. Read the first before a change of any size.
   delta read that dropped deletions, a `$count` that counted the page instead of
   the groups - returned plausible answers and were caught only by comparing
   against something independently derived.
+- **Something outside this project, if you touched `$metadata`.** The suite
+  compares what the mock wrote to what `mocksap/schema.py` says it should have
+  written, and `schema.py` wrote it — so both can be wrong together and nothing
+  here notices. `tools/check_csdl.py` is the one check that cannot share that
+  blind spot: it validates every `$metadata` against schemas OASIS and
+  Microsoft published, vendored under `tests/samples/external/csdl/`. Run it
+  before you push a change to `metadata.py`, `metadata4.py`, `annotations.py`
+  or a property declaration. It needs `xmllint`; it says so if you lack it.
 - **Documentation that keeps up.** `tools/check_docs.py` fails the build if a
   tracked file has no row in `docs/FILES.md`, if a row names a file that is gone,
   or if a module is missing from the README's layout block. It checks coverage,

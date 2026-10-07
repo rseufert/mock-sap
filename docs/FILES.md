@@ -14,9 +14,10 @@ first.
 | `CHANGELOG.md` | Every release, what it added and what it fixed, in Keep a Changelog form with links to the compare views. |
 | `CONTRIBUTING.md` | What the project values and how to work on it: the principles that decide what gets merged, where to add each kind of thing, what a good pull request carries, and the release process. |
 | `SECURITY.md` | What counts as a vulnerability in a test double and what does not, and how to report one privately. The distinction is the point: no authentication by default, no TLS and a reachable `POST /_mock/reset` are deliberate, while anything that escapes the mock's own state - reading files outside its database, running what a request supplies, or a published artifact that does not match the tagged source - is in scope. |
-| `MANIFEST.in` | Adds the Dockerfile, examples and tests to the sdist; without it an sdist carries only the package itself. |
+| `MANIFEST.in` | Adds the Dockerfile, examples and the test modules to the sdist; without it an sdist carries only the package itself. `tests` by `*.py`, so the vendored CSDL schemas under `tests/samples/` are deliberately not shipped: nothing in `tests/` reads them, only `tools/`, which is not packaged either. |
 | `Dockerfile` | `python:3.12-slim`, `pip install .`, entrypoint bound to `0.0.0.0:8000`. Built and exercised by CI on every push. |
 | `.gitignore` | Build output, virtualenvs, `*.db` files left behind by `--db`. |
+| `.gitattributes` | `tests/samples/external/** -text`: the vendored CSDL schemas keep the bytes OASIS and Microsoft published. `tools/check_csdl.py` checks each one's SHA-256 before it uses it, and without this a Windows checkout rewrites every LF to CRLF and every one of those hashes stops matching. mock-bank learnt this the same way, on `windows-latest` alone. |
 | `changelog.d/` | One file per changelog entry waiting for a release, named `<issue>.<kind>.md`, holding the bullet exactly as it will appear. A directory of small files instead of one shared section, because two pull requests editing the same lines of `CHANGELOG.md` conflicted every time, a conflicting pull request gets no CI run at all, and a resolution by hand is one keystroke from dropping an entry — which is how the V2 annotation document's entry went missing between 0.8.0 and 0.9.0. Documented as a directory: a row per fragment would put every pull request back to editing one shared file. `README.md` there has the format. |
 | `.github/dependabot.yml` | Weekly `github-actions` updates, grouped into one pull request and labelled `no changelog`. The package has no dependencies, so Actions are the whole surface; this is also what keeps the commit SHA that `publish.yml` pins from going stale, which is the thing that makes pinning stick. |
 
@@ -98,6 +99,22 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_startup.py` | Starting up: the bind never reverse-resolves its own address, so a slow resolver cannot delay the port opening, and `server_name`/`server_port` are still set. |
 | `test_banner.py` | The startup banner: every URL it prints carries the port the socket actually bound rather than the one asked for, so `--port 0` advertises a reachable server and not eighteen URLs ending `:0`, each line answers when a client follows it, and the host stays the one that was typed. |
 
+### `tests/samples/external/csdl/` - schemas this project did not write
+
+Five files from outside the project, byte-for-byte as published, and the
+paperwork that comes with them. They are what `tools/check_csdl.py` holds the
+served `$metadata` to, and the reason they exist is #78: everything else that
+checks this mock's output checks it against `mocksap/schema.py`, which is also
+what wrote it. `SOURCES.md` beside them has the full provenance.
+
+| File | What it is |
+| --- | --- |
+| `tests/samples/external/csdl/edmx.xsd`, `tests/samples/external/csdl/edm.xsd` | OASIS's two schemas for CSDL XML 4.01, from the OASIS Standard of 11 May 2020. They validate the four V4 services' `$metadata` and the V2 annotation document, which is a CSDL 4.01 envelope too. |
+| `tests/samples/external/csdl/System.Data.Resources.CSDLSchema_2.xsd` | Microsoft's schema for `http://schemas.microsoft.com/ado/2008/09/edm`, the namespace an OData V2 `<Schema>` is in, from Entity Framework 6 at `v6.5.2`. It validates the `<Schema>` subtree of each V2 service; the EDMX envelope above it has no published schema, so `check_csdl.py` asserts that part itself and says so. |
+| `tests/samples/external/csdl/System.Data.Resources.CodeGenerationSchema.xsd`, `tests/samples/external/csdl/System.Data.Resources.AnnotationSchema.xsd` | The two schemas `CSDLSchema_2.xsd` imports by name from its own directory. Without them it does not compile, and a schema that does not compile is how a check quietly becomes a no-op - which is why the filenames are the published ones. |
+| `tests/samples/external/csdl/SOURCES.md` | Where each schema came from, the release or commit, its licence, its SHA-256, what it covers - and what it does not: the `sap:` annotations, which both schemas admit as foreign attributes and read past unexamined, and the V2 EDMX envelope. |
+| `tests/samples/external/csdl/NOTICE-oasis-odata.txt`, `tests/samples/external/csdl/LICENSE-MIT-ef6.txt` | The notice OASIS asks for, and Entity Framework 6's MIT licence, kept beside the files as that licence asks. |
+
 ## `examples/`
 
 | File | What it is |
@@ -111,13 +128,14 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | File | What it is |
 | --- | --- |
 | `check_changelog.py` | Guards `CHANGELOG.md` and `changelog.d/`. Structure and agreement with `pyproject.toml` always; that `## [Unreleased]` holds the pointer and no entries; that every fragment is named `<issue>.<kind>.md` for a kind Keep a Changelog defines and holds a real bullet; that every `[#nn]` the file references is defined; and, against a base revision, that released sections are untouched, that nothing waiting for a release has gone, and that a change to `mocksap/` brought an entry with it — which is what a merge resolution that drops one side trips over. A pull request labelled `no changelog` lifts that last rule. `--release X.Y.Z` assembles the fragments into a dated section, writes the link definitions and deletes them. Came back from mock-edi, which grew the fragment directory after this check was first written here. |
+| `check_csdl.py` | The one check on this mock's output that is not a check against its own declaration (#78). It validates every `$metadata` the mock serves, and the V2 annotation document, against schemas OASIS and Microsoft published and this project vendored unmodified under `tests/samples/external/csdl/`: whole-document for the V4 ones, the `<Schema>` subtree for the V2 ones, because no published schema covers OData V2's EDMX envelope and that part is asserted here in Python instead of dressed up as a schema. Two things an XSD cannot do, it does itself: it reads the primitive type names out of those same schemas and holds every `Type=` to them, since CSDL spells a type reference as a loose pattern and `Edm.Str` validates happily; and it breaks one document of each kind in twelve ways the spec forbids and fails if any is accepted, so the check cannot become a no-op. Needs `xmllint`; without it the validation is skipped and says so, and `--require` turns that skip into a failure, which is how CI runs it. |
 | `check_docs.py` | Guards this index against drift: fails if a tracked file is not documented here, if a row names a file that no longer exists, or if a module is missing from the README's layout block. It checks coverage, not prose. It also holds every module to running whole as a script, since `python3 tests/test_batch.py` is the documented way to run one surface: nothing may follow an `if __name__` block (a class below `unittest.main()` never runs, and the run still says OK), and a test module imports `support` before `mocksap`. Run it with `python3 tools/check_docs.py`; CI runs it on every push. |
 
 ## `.github/workflows/`
 
 | File | What it is |
 | --- | --- |
-| `ci.yml` | Six jobs: the suite on Python 3.8-3.13 (Linux) plus 3.12 on macOS and Windows; a docs job running `tools/check_docs.py` and `tools/check_changelog.py`; a smoke job running `demo.sh` and `client.py` against a live mock; a package job that builds, `twine check`s, installs the wheel and asserts the version agrees with `pyproject.toml`; a job that builds and runs the Docker image; and an `all green` job that fails unless every one of the others succeeded. That last one exists to be the single required check on `main` - the matrix job names carry the Python version and the runner, so they change whenever the matrix does, and a required check whose name has gone blocks every merge rather than failing. |
+| `ci.yml` | Seven jobs: the suite on Python 3.8-3.13 (Linux) plus 3.12 on macOS and Windows; a docs job running `tools/check_docs.py` and `tools/check_changelog.py`; a `csdl` job running `tools/check_csdl.py --require`, which is its own job so that a schema failure names itself rather than arriving as a confusing test error; a smoke job running `demo.sh` and `client.py` against a live mock; a package job that builds, `twine check`s, installs the wheel and asserts the version agrees with `pyproject.toml`; a job that builds and runs the Docker image; and an `all green` job that fails unless every one of the others succeeded. That last one exists to be the single required check on `main` - the matrix job names carry the Python version and the runner, so they change whenever the matrix does, and a required check whose name has gone blocks every merge rather than failing. |
 | `publish.yml` | Releases to PyPI via Trusted Publishing (OIDC, no stored token). A published GitHub Release goes to PyPI; a manual run goes to TestPyPI. Both build from a green test run and refuse a tag that disagrees with the built package. |
 
 ## `docs/`
