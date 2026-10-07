@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 import unittest
 
-from support import MockServerCase
+from support import MockServerCase, SRV
 
 CUBE = ("/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV"
         "/A_OperationalAcctgDocItemCube")
@@ -18,6 +18,18 @@ JOURNAL = "/sap/opu/odata/sap/API_JOURNALENTRY_SRV"
 
 def day(offset: int) -> str:
     return (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
+
+
+def on_the_wire(value):
+    """/Date(ms)/ back to an ISO date, without asking the mock how.
+
+    `None` stays `None`: a date nobody is owed is absent rather than epoch.
+    """
+    if value is None:
+        return None
+    milliseconds = int(value.strip("/").replace("Date(", "").replace(")", ""))
+    return (datetime.datetime(1970, 1, 1)
+            + datetime.timedelta(milliseconds=milliseconds)).date().isoformat()
 
 
 class OpenItemCase(MockServerCase):
@@ -256,6 +268,126 @@ class TestTheCubeIsReadOnly(OpenItemCase):
         document, _, _ = self.post(terms="NT30")
         line = self.supplier_line(document)
         self.assertEqual(line["Supplier"], "1000001")
+
+
+class TestWhatADueDateWasCountedFrom(OpenItemCase):
+    """An open item serves its baseline date, not only the date it falls due.
+
+    Subtracting the terms' days back off `NetDueDate` is not the same fact: a
+    document that carried its own `NetPaymentDays` - a supplier invoice does -
+    has a due date the terms cannot explain, and anything judging what the
+    terms say beyond the net date needs the date they were counted from (#182).
+    """
+
+    def test_a_payable_serves_the_baseline_it_was_given(self):
+        document, _, _ = self.post(terms="NT30", baseline=day(10))
+        line = self.supplier_line(document)
+        self.assertEqual(on_the_wire(line["DueCalculationBaseDate"]), day(10))
+        self.assertEqual(on_the_wire(line["NetDueDate"]), day(40))
+
+    def test_an_item_with_no_baseline_was_counted_from_the_posting(self):
+        document, _, _ = self.post(terms="NT30")
+        line = self.supplier_line(document)
+        self.assertEqual(on_the_wire(line["DueCalculationBaseDate"]), day(0))
+
+    def test_a_gl_line_was_counted_from_nothing(self):
+        document, _, _ = self.post(terms="NT30")
+        _, _, body = self.get(
+            CUBE + "?$filter=AccountingDocument eq '%s'&$format=json" % document)
+        gl = [r for r in body["d"]["results"] if r["AccountingDocumentItemType"] == "S"]
+        self.assertEqual(len(gl), 1)
+        self.assertIsNone(gl[0]["DueCalculationBaseDate"],
+                          "nobody is owed a G/L line, so nothing was counted")
+
+    def test_the_metadata_names_it(self):
+        _, _, raw = self.request(
+            "GET", "/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV/$metadata",
+            raw=True)
+        self.assertIn('Name="DueCalculationBaseDate"', raw.decode())
+
+    def test_the_control_plane_can_arrange_one(self):
+        document, _, _ = self.post(terms="NT30")
+        line = self.supplier_line(document)
+        status, _, _ = self.request("PATCH", "/_mock/open-items", body={
+            "AccountingDocument": document,
+            "CompanyCode": line["CompanyCode"],
+            "FiscalYear": line["FiscalYear"],
+            "AccountingDocumentItem": line["AccountingDocumentItem"],
+            "DueCalculationBaseDate": "2026-09-01",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            on_the_wire(self.supplier_line(document)["DueCalculationBaseDate"]),
+            "2026-09-01", "a test can arrange a baseline without posting one")
+
+    def test_the_seeded_receivables_agree_with_their_own_terms(self):
+        rows = self.select("AccountingDocumentItemType eq 'D'")
+        self.assertTrue(rows, "the seed should contain receivables")
+        for row in rows:
+            baseline = on_the_wire(row["DueCalculationBaseDate"])
+            due = on_the_wire(row["NetDueDate"])
+            self.assertEqual(row["PaymentTerms"], "NT30", row["AccountingDocument"])
+            self.assertEqual(
+                (datetime.date.fromisoformat(due)
+                 - datetime.date.fromisoformat(baseline)).days, 30,
+                "NT30 means thirty days from the baseline, in the seed too")
+
+
+class TestAReceivableCarriesTheTermsWeQuoted(OpenItemCase):
+    """The invoice we send and the open item we keep say the same thing.
+
+    The outbound INVOIC quotes the order's `CustomerPaymentTerms` as ZTERM.
+    Until #182 the receivable behind it carried no terms at all and fell due
+    on the day it posted, so a customer promised 45 days was already overdue
+    in our own books the moment we invoiced them.
+    """
+
+    def an_order_due_in(self, terms):
+        _, _, created = self.request(
+            "POST", SRV + "/A_SalesOrder?$expand=to_Item",
+            headers=self.csrf_token(), body={
+                "SalesOrderType": "OR", "SalesOrganization": "1710",
+                "SoldToParty": "1000001", "DistributionChannel": "10",
+                "OrganizationDivision": "00", "TransactionCurrency": "EUR",
+                "CustomerPaymentTerms": terms,
+                "to_Item": [{"Material": "TG11", "RequestedQuantity": "4",
+                             "RequestedQuantityUnit": "PC",
+                             "NetAmount": "400.00"}]})
+        return created["d"]
+
+    def customer_line(self, document):
+        rows = self.select("AccountingDocument eq '%s' and "
+                           "AccountingDocumentItemType eq 'D'" % document)
+        self.assertEqual(len(rows), 1, "one receivable per billing document")
+        return rows[0]
+
+    def test_the_receivable_falls_due_when_the_invoice_says_it_does(self):
+        order = self.an_order_due_in("NT45")
+        status, _, generated = self.request(
+            "POST", "/sap/bc/idoc/generate",
+            body={"mestyp": "INVOIC", "SalesOrder": order["SalesOrder"]},
+            headers=self.csrf_token())
+        self.assertEqual(status, 201)
+        self.assertIn("<ZTERM>NT45</ZTERM>", generated["xml"],
+                      "the customer is told 45 days")
+
+        line = self.customer_line(generated["accounting_document"])
+        self.assertEqual(line["PaymentTerms"], "NT45",
+                         "and our own books say the same")
+        self.assertEqual(on_the_wire(line["DueCalculationBaseDate"]), day(0))
+        self.assertEqual(on_the_wire(line["NetDueDate"]), day(45),
+                         "not the posting date, which is what it used to be")
+
+    def test_an_order_with_no_terms_is_still_due_at_once(self):
+        order = self.an_order_due_in("")
+        _, _, generated = self.request(
+            "POST", "/sap/bc/idoc/generate",
+            body={"mestyp": "INVOIC", "SalesOrder": order["SalesOrder"]},
+            headers=self.csrf_token())
+        line = self.customer_line(generated["accounting_document"])
+        self.assertEqual(line["PaymentTerms"], "")
+        self.assertEqual(on_the_wire(line["NetDueDate"]), day(0),
+                         "a blank ZTERM is payable at once, as it was")
 
 
 if __name__ == "__main__":

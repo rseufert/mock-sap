@@ -320,6 +320,7 @@ def _open_item(line: Dict[str, Any], posting: str) -> Dict[str, Any]:
         "PaymentBlockingReason": "",
         "PaymentRunID": "",
         "PaymentRunDate": None,
+        "DueCalculationBaseDate": None,
         "NetDueDate": None,
         "ClearingAccountingDocument": "",
         "ClearingDate": None,
@@ -337,9 +338,13 @@ def _open_item(line: Dict[str, Any], posting: str) -> Dict[str, Any]:
     # post items a test needs in that state; nothing else sets it on a post.
     state["PaymentRunID"] = str(line.get("PaymentRunID") or "")
     state["PaymentRunDate"] = line.get("PaymentRunDate")
-    state["NetDueDate"] = net_due_date(
-        str(line.get("DueCalculationBaseDate") or posting), terms,
-        line.get("NetPaymentDays"))
+    # Kept, not only used: the due date alone cannot say what it was counted
+    # from once a document carries its own net payment days, and the terms say
+    # more than the net date (#182).
+    baseline = str(line.get("DueCalculationBaseDate") or posting)
+    state["DueCalculationBaseDate"] = as_date(baseline).isoformat()
+    state["NetDueDate"] = net_due_date(baseline, terms,
+                                       line.get("NetPaymentDays"))
     return state
 
 
@@ -539,8 +544,15 @@ def create_billing_document(ctx, order, items=None, tax_rate=TAX_RATE
         "TransactionCurrency": currency, "ReferenceDocument": billing,
         "HeaderText": "Invoice %s" % billing,
     }, [
+        # The terms come off the order because that is what the INVOIC we send
+        # quotes as ZTERM: an invoice promising 2% 10 net 30 beside an open
+        # item due the day it posted is a disagreement the client is right
+        # about and this mock is wrong about (#182). No baseline date goes
+        # with them - a billing document is due from the day it posts, which
+        # is what `_open_item` counts from when a line names none.
         {"GLAccount": "0012100000", "Amount": net + tax,
-         "Text": "Receivable", "Customer": order["SoldToParty"]},
+         "Text": "Receivable", "Customer": order["SoldToParty"],
+         "PaymentTerms": order["CustomerPaymentTerms"]},
         {"GLAccount": "0041000000", "Amount": -net, "Text": "Revenue",
          "ProfitCenter": "YB110"},
         {"GLAccount": "0022000000", "Amount": -tax, "Text": "Output tax"},

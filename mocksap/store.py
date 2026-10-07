@@ -313,7 +313,7 @@ def _flatten_complex(et: EntityType, prop, value) -> Dict[str, Any]:
 
 OPEN_ITEM_FIELDS = (
     "PaymentBlockingReason", "PaymentRunID", "PaymentRunDate",
-    "PaymentTerms", "NetDueDate",
+    "PaymentTerms", "NetDueDate", "DueCalculationBaseDate",
     "ClearingAccountingDocument", "ClearingDate", "ClearingCreationDate",
     "ClearingItem", "ClearingDocFiscalYear", "ClearingIsReversed",
 )

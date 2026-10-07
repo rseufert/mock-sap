@@ -981,6 +981,13 @@ _register(
             DT("PostingDate", label="Posting Date"),
             # what makes an item open, and what closes it
             DT("NetDueDate", label="Net Due Date"),
+            # What that due date was counted from. A reader needs it to judge
+            # anything the terms say beyond the net date - whether a discount
+            # was still available on the day a customer paid - and subtracting
+            # the terms' days back off NetDueDate is wrong for any document
+            # that carried its own NetPaymentDays, which a supplier invoice
+            # does (#182).
+            DT("DueCalculationBaseDate", label="Baseline Date"),
             S("PaymentTerms", max_length=4, label="Payment Terms"),
             S("PaymentBlockingReason", max_length=1, label="Payment Block"),
             # Selected for payment but not yet paid: the state between open and
