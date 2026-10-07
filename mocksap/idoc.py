@@ -273,14 +273,16 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
                         "supplier who billed us, so there is nobody to owe")
 
     def amount(sumid):
+        # None for a sum the IDoc does not state, which is not a sum of zero:
+        # an invoice that gives only its total has not claimed to be tax free.
         raw = (sums.get(sumid) or {}).get("SUMME", "")
         try:
-            return money.of(raw)
+            return money.of(raw) if raw else None
         except ValueError:
-            return Decimal(0)
+            return None
 
     gross = amount("010")
-    net = amount("011") or gross
+    net = amount("011")
     tax = amount("205")
     if not gross:
         # An invoice with no total is not an invoice: posting one would owe the
@@ -300,13 +302,19 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
         "items": [{
             "purchase_order": item.get("VGBEL", ""),
             "purchase_order_item": item.get("VGPOS", ""),
-            "amount": item.get("NETWR") or 0,
+            "amount": item.get("NETWR") or None,
             "quantity": item.get("MENGE") or 0,
             "unit": item.get("MENEE", ""),
             "text": item.get("KTEXT", ""),
         } for item in items],
     }
-    posted = documents.post_supplier_invoice(ctx, invoice)
+    try:
+        posted = documents.post_supplier_invoice(ctx, invoice)
+    except documents.Unbalanced as unbalanced:
+        # FI writes no document that does not balance, and the IDoc is where
+        # the supplier's arithmetic arrives to be found out.
+        raise NotPosted("%s, so this INVOIC posts nothing (E1EDS01 SUMID 010, "
+                        "011 and 205; E1EDP01 NETWR)" % unbalanced.message)
     gross_text = money.text(posted["gross"], money.CURRENCY_SCALE)
     applied = [{
         "SUPPLIERINVOICE": posted["supplier_invoice"],
