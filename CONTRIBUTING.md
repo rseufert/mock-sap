@@ -144,6 +144,35 @@ plenty to work with.
 `pyproject.toml` is the only place the version is written; `mocksap.__version__`
 reads it back from the installed package metadata.
 
+### Before you tag
+
+Two projects install this one, and neither of them learns from here that a
+release happened.
+
+- **mock-acme** drives this mock in its own tests. Its `test` extra floors on a
+  minor version, so it takes a new minor the day it is published, and its
+  nightly job installs from `main` before that. What it was last green against
+  is on its Actions page, not here.
+- **mock-films** pins an exact version and captures wire output to compare byte
+  for byte. A new served property, or a figure a cent different, is a
+  re-capture for it even when no behaviour changed.
+
+**When the assembled section carries a list of things that answer differently,
+tell both of them before you tag.** 0.20.0 is why this step exists. Its own
+release notes worked out that mock-acme's floor would take the release
+immediately, that its last green nightly ran eight hours before the cent-level
+change merged, and that several of its tests assert exact `Decimal` amounts -
+and then it shipped, with all of that in the second-to-last section of an
+85-line document mock-acme's maintainer had no reason to read. The finding was
+right and reached nobody who could act on it. **A release body is not a
+notification**, and writing a risk down is not the same as telling the person
+it lands on.
+
+**One release a day, at most.** 0.20.0 and 0.21.0 both went out on 2026-10-07,
+each with a list like that, which is more than a project downstream can read -
+let alone re-capture against - however correct each one is. Batch what is ready
+and cut it once.
+
 ```bash
 # bump `version` in pyproject.toml, commit, then:
 git tag v0.8.0 && git push origin v0.8.0
