@@ -12,13 +12,25 @@ suppliers can both have an `INV-100` and nothing on the line says which was
 paid.  A credit line that *says it is a returned payment* and carries the
 reference of an item already cleared reverses the clearing and leaves the item
 open again, which is the only thing that makes a returned payment visible in
-SAP.  A credit that says it is money arriving reverses nothing, and one that
-says neither reverses nothing either and is reported: money in has two
+SAP.  A credit that says it is money arriving reverses nothing: it is a
+customer paying, and it clears the open receivable it quotes on the terms a
+debit clears a payable (#175).  One that says neither does neither and is
+reported: money in has two
 readings that are opposites, and a credit used to be read as a return on the
 strength of nothing but its sign, so a refund or a supplier returning an
 overpayment that happened to quote an invoice already paid reopened it and the
 next payment run paid it twice (#89).  `statement.py` says how a line
 declares which it is.
+
+**A part payment is refused, not posted.**  A customer chooses what they pay
+and rarely pays the invoice exactly, and SAP has two answers - clear the item
+and leave a residual one for the difference, or post the payment against an
+item that stays open - which behave differently on the next statement.  This
+mock does neither.  A credit for anything other than the receivable's exact
+amount clears nothing and the reason names both figures, so the difference is
+visible and whoever reads it decides what it was: a mock that built a residual
+item would be deciding a short payment was a deduction, and one that posted a
+part payment would be deciding it was an instalment.
 
 **Everything else is left alone and reported.**  A line that matches nothing,
 or matches a reference but not the amount, clears nothing and comes back as
@@ -272,7 +284,8 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
         if _quotes(reference, line):
             quoted.append((item, reference))
     if not quoted:
-        return {"item": None, "reason": "no open item quotes this reference"}
+        return {"item": None, "unquoted": True,
+                "reason": "no open item quotes this reference"}
 
     wanted = abs(money.of(amount))
     paid_in = (line.get("currency") or "").strip().upper()
@@ -400,14 +413,18 @@ def _payee_of(item: dict) -> tuple:
     its header, so items that disagree on either cannot share a payment
     however much they share a payee.
 
-    The last element is empty for a real payable and the item's own document
-    for one with no supplier, so rows that are not payables are not merged
-    into one payment on the strength of both being blank.
+    A customer pays us the same way, one credit for what they owe, so the
+    party is whichever one the item's side names - labelled, so a supplier and
+    a customer who share a number are two payees.
+
+    The last element is empty for a real payable or receivable and the item's
+    own document for one naming no party, so rows that are neither are not
+    merged into one payment on the strength of both being blank.
     """
-    supplier = item.get("Supplier") or ""
-    return (supplier, item["CompanyCode"],
+    party = _party_of(item)
+    return (party, item["CompanyCode"],
             item["TransactionCurrency"] or "EUR",
-            "" if supplier else item["AccountingDocument"])
+            "" if party else item["AccountingDocument"])
 
 
 def _payment_text(settling: List[dict]) -> str:
@@ -469,6 +486,58 @@ def _pay(ctx, settling: List[dict], posting: str, statement: str) -> List[dict]:
         paid.append({"settling": s, "document": document, "amount": amount})
     _self_clear(ctx, document, company, year, posting)
     return paid
+
+
+def _receipt_text(settling: List[dict]) -> str:
+    """A receipt document's header text, inside `BKTXT`'s 25 characters."""
+    if len(settling) == 1:
+        return "Receipt for %s" % settling[0]["item"]["AccountingDocument"]
+    return "Receipt for %d invoices" % len(settling)
+
+
+def _collect(ctx, settling: List[dict], posting: str, statement: str) -> List[dict]:
+    """Post one receipt document for everything one customer's money settles.
+
+    `_pay` the other way round. The bank account gains the total and the
+    customer's account loses one line per invoice, so the receivable - a
+    debit the customer owed - is met by a credit of the same size. The signs
+    are the whole difference: a receipt posted with a payment's signs would
+    double what the customer owes and take the money out of the bank.
+
+    `DZ` is SAP's customer payment, as `ZP` is the payment run's. The
+    document's own customer lines are cleared by the document, for the reason
+    `_self_clear` gives: left open, they are credits on the customer's account
+    that nothing is against, and the customer appears to be owed money.
+    """
+    first = settling[0]["item"]
+    amounts = [abs(money.of(s["line"].get("amount"))) for s in settling]
+    total = sum(amounts, Decimal("0"))
+    lines = [{"Customer": s["item"].get("Customer") or "",
+              "Amount": -amount,
+              "Text": "Clearing %s" % s["item"]["AccountingDocument"]}
+             for s, amount in zip(settling, amounts)]
+    lines.append({"GLAccount": "0000113100", "Amount": total, "Text": "Bank"})
+    document, company, year = documents.post_journal_entry(ctx, {
+        "CompanyCode": first["CompanyCode"],
+        "AccountingDocumentType": "DZ",          # a customer payment
+        "PostingDate": posting,
+        "TransactionCurrency": first["TransactionCurrency"] or "EUR",
+        "HeaderText": _receipt_text(settling),
+        "ReferenceDocument": statement,
+    }, lines)
+    received = []
+    for index, (s, amount) in enumerate(zip(settling, amounts), start=1):
+        _set_clearing(ctx, s["item"], {
+            "ClearingAccountingDocument": document,
+            "ClearingDate": posting,
+            "ClearingCreationDate": posting,
+            "ClearingItem": str(index).zfill(6),
+            "ClearingDocFiscalYear": year,
+            "ClearingIsReversed": False,
+        })
+        received.append({"settling": s, "document": document, "amount": amount})
+    _self_clear(ctx, document, company, year, posting, CUSTOMER_LINE)
+    return received
 
 
 def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
@@ -667,6 +736,7 @@ def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
 
     cleared, reopened, unprocessed = [], [], []
     settling: List[dict] = []
+    receiving: List[dict] = []
     returning: List[tuple] = []
     claimed = set()
     for seq, line in enumerate(parsed["lines"]):
@@ -697,11 +767,28 @@ def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
             if kind == "return":
                 returning.append((seq, line))
             elif kind == "receipt":
-                unprocessed.append((seq, {
-                    "LINE": line["line"],
-                    "REASON": "this line is money arriving rather than a "
-                              "payment of ours coming back, so it reverses "
-                              "nothing; posting money in is not built yet"}))
+                # A customer paying. The candidates are the receivables and
+                # never the payables: money arriving that quotes an invoice of
+                # a supplier's is a refund, and clears nothing of ours (#89).
+                candidates = [item for item in _open_items(ctx.conn, CUSTOMER_LINE)
+                              if _item_key(item) not in claimed]
+                matched = _match(ctx.conn, line, candidates)
+                if matched["item"] is None:
+                    reason = matched["reason"]
+                    if matched.get("unquoted"):
+                        # Said as what it is. Money that arrived and settled
+                        # nothing is the line most worth finding, and "no
+                        # open item" reads as though nothing happened.
+                        reason = ("this line is money arriving and no open "
+                                  "receivable quotes its reference, so it is "
+                                  "applied to nothing")
+                    unprocessed.append((seq, {"LINE": line["line"],
+                                              "REASON": reason}))
+                    continue
+                claimed.add(_item_key(matched["item"]))
+                receiving.append({"seq": seq, "line": line,
+                                  "item": matched["item"],
+                                  "reference": matched["reference"]})
             else:
                 unprocessed.append((seq, {
                     "LINE": line["line"],
@@ -714,19 +801,23 @@ def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
                 "LINE": line["line"],
                 "REASON": "the line does not say whether it is money in or out"}))
 
-    by_payee: Dict[tuple, List[dict]] = {}
-    for item in settling:
-        by_payee.setdefault(_payee_of(item["item"]), []).append(item)
-    for group in by_payee.values():
-        for paid in _pay(ctx, group, posting, statement):
-            settled = paid["settling"]
-            cleared.append((settled["seq"], {
-                "LINE": settled["line"]["line"],
-                "REFERENCE": settled["reference"],
-                "ACCOUNTINGDOCUMENT": settled["item"]["AccountingDocument"],
-                "CLEARINGDOCUMENT": paid["document"],
-                "AMOUNT": str(paid["amount"]),
-            }))
+    # What we paid and what we were paid are posted separately however the
+    # parties are numbered: one document cannot be both a payment and a
+    # receipt, and `_payee_of` labels the party so the two never share a key.
+    for post, lines in ((_pay, settling), (_collect, receiving)):
+        by_payee: Dict[tuple, List[dict]] = {}
+        for item in lines:
+            by_payee.setdefault(_payee_of(item["item"]), []).append(item)
+        for group in by_payee.values():
+            for paid in post(ctx, group, posting, statement):
+                settled = paid["settling"]
+                cleared.append((settled["seq"], {
+                    "LINE": settled["line"]["line"],
+                    "REFERENCE": settled["reference"],
+                    "ACCOUNTINGDOCUMENT": settled["item"]["AccountingDocument"],
+                    "CLEARINGDOCUMENT": paid["document"],
+                    "AMOUNT": str(paid["amount"]),
+                }))
 
     # The returns are posted after the payments. A statement that pays an
     # invoice and takes the money back now names the clearing it reverses

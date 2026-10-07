@@ -908,9 +908,30 @@ quote an invoice already paid - a refund, a credit note, a supplier returning an
 overpayment - reopened it, and the next payment run paid it a second time. Now
 `RCV` reverses nothing, and a credit declaring neither reverses nothing either
 and is listed with the reason, because guessing `RET` pays an invoice twice and
-guessing `RCV` hides a payment that genuinely came back. Posting the money a
-`RCV` line brings in is not built yet; that is clearing receivables, and it is
-what `Customer` on the open-item cube is waiting for.
+guessing `RCV` hides a payment that genuinely came back.
+
+**A credit that says it is money arriving clears the receivable it quotes.** A
+customer pays quoting the billing document they were sent, so an `RCV` line is
+matched against the open customer items (`AccountingDocumentItemType` `D`) by
+`A_BillingDocument.BillingDocument` - structured reference first, then the note
+to payee - and on the same terms as a payable: the amount and its currency both
+have to agree. What it clears is posted the other way round from a payment: one
+`DZ` document per customer, the bank debited for the total and the customer's
+account credited one line per invoice, and that document's own customer lines
+cleared so the customer is not left looking as though they are owed money. It is
+listed under `CLEARED` like any other. The side and the kind decide which ledger
+a line can touch and the reference never does: money out never clears a
+receivable, and money arriving never clears a payable.
+
+**A part payment is refused, not posted.** SAP has two answers to a customer
+who pays less than the invoice - clear it and leave a residual item for the
+difference, or post the payment against an item that stays open - and they
+behave differently on the next statement. The mock does neither. A credit for
+anything but the receivable's exact amount clears nothing, makes no residual
+item, posts no partial payment, and is listed with both figures; an overpayment
+is treated the same. Deciding whether a short payment was a deduction or an
+instalment is the reader's job. Money arriving that quotes no open receivable at
+all is listed as applied to nothing, never dropped.
 
 **A supplier can be told what was paid.** Generating a `REMADV` from a payment
 document renders a `PEXR2002` naming every invoice that payment settled, each

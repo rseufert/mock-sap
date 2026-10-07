@@ -720,9 +720,10 @@ class TestWhenMoneyArrivesQuotingAPaidInvoice(StatementCase):
     def test_money_arriving_against_no_invoice_of_ours_is_still_money_in(self):
         """A receipt is reported as what it is, matched or not.
 
-        It does not reach the matching at all - there is nothing for it to
-        clear and nothing for it to reverse - so the reason is about the line
-        rather than about the open items.
+        It is matched against the receivables now (#175) and quotes none of
+        them, so it clears nothing and reverses nothing - and the reason still
+        says it is money arriving, because money that came in and settled
+        nothing is the line most worth finding.
         """
         applied = self.send(finsta(
             line("000001", "500.00", reference="NOBODY-OWES-THIS",
