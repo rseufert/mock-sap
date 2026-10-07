@@ -145,6 +145,14 @@ honestly apart - a V2 option on a V4 service is an error, and the other way roun
 curl "http://127.0.0.1:8000/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001/SalesOrder?\$top=1&\$count=true"
 ```
 
+**An amount is a decimal all the way down.** `Edm.Decimal` is declared with a
+scale, stored at that scale and computed in `decimal.Decimal`, and a figure the
+mock makes is rounded with `ROUND_HALF_UP` - what a tax authority specifies and
+what SAP does. So 19% of 2.50 is 0.48, where a binary float and `round()` make
+it 0.47 ([#98](https://github.com/rseufert/mock-sap/issues/98)). The V4 number
+above is the one place an amount meets a float, because that is V4's own shape
+for a decimal; nothing is computed from it.
+
 ### Annotations for Fiori elements
 
 `$metadata` describes structure; a Fiori elements app needs to be told what to
@@ -1186,6 +1194,7 @@ mocksap/service.py    OData request dispatcher
 mocksap/batch.py      $batch multipart and atomic changesets
 mocksap/bapi.py       BAPI/RFC functions, JSON and SOAP transports
 mocksap/documents.py  creating deliveries, invoices and journal entries
+mocksap/money.py      amounts as decimals: the scale, and rounding a half up
 mocksap/bank.py       IBAN and BIC checks, and the accounts the seed builds
 mocksap/statement.py  reading a FINSTA01 bank statement, and checking its sums
 mocksap/reconcile.py  matching a statement to the open items it pays

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape, quoteattr
 
+from . import money
 from .odata4 import edm_type
 from .schema import COMPLEX_TYPES, ENTITY_TYPES, EntityType, Service, set_for_type
 
@@ -58,7 +59,8 @@ def _property_attrs(p, namespace: str) -> str:
         if p.max_length and p.type == "Edm.String":
             attrs += _a("MaxLength", p.max_length)
         if p.type == "Edm.Decimal":
-            attrs += _a("Precision", p.precision or 13) + _a("Scale", p.scale or 3)
+            attrs += (_a("Precision", p.precision or 13)
+                      + _a("Scale", money.scale_of(p)))
     if not p.nullable:
         attrs += ' Nullable="false"'
     return attrs
@@ -333,7 +335,7 @@ def _json_property(p, ns: str) -> dict:
             entry["$MaxLength"] = p.max_length
     if p.type == "Edm.Decimal":
         entry["$Precision"] = p.precision or 13
-        entry["$Scale"] = p.scale or 3
+        entry["$Scale"] = money.scale_of(p)
     if not p.nullable:
         entry["$Nullable"] = False
     return entry

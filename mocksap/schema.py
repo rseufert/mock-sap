@@ -38,10 +38,18 @@ class Prop:
 
     @property
     def sql_type(self) -> str:
+        """The SQLite column this property is stored in.
+
+        `Edm.Decimal` is `TEXT` because SQLite has no decimal type and a
+        `REAL` one would make the declared scale a lie at rest: `REAL` cannot
+        hold 0.475, so a `Decimal(16,3)` column would not give back what was
+        written to it.  Stored as text at its scale, it does.  `Edm.Double`
+        stays `REAL`, because a double is what that type says it is.
+        """
         return {
             "Edm.Int32": "INTEGER",
             "Edm.Int16": "INTEGER",
-            "Edm.Decimal": "REAL",
+            "Edm.Decimal": "TEXT",
             "Edm.Double": "REAL",
             "Edm.Boolean": "INTEGER",
         }.get(self.type, "TEXT")

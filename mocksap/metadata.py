@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape, quoteattr
 
+from . import money
 from .schema import COMPLEX_TYPES, ENTITY_TYPES, EntityType, Service
 
 EDMX_NS = "http://schemas.microsoft.com/ado/2007/06/edmx"
@@ -30,7 +31,8 @@ def _property_attrs(p, namespace: str = "") -> str:
         if p.max_length and p.type == "Edm.String":
             attrs += _a("MaxLength", p.max_length)
         if p.type == "Edm.Decimal":
-            attrs += _a("Precision", p.precision or 13) + _a("Scale", p.scale or 3)
+            attrs += (_a("Precision", p.precision or 13)
+                      + _a("Scale", money.scale_of(p)))
     if not p.nullable:
         attrs += ' Nullable="false"'
     if p.concurrency:

@@ -12,7 +12,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from . import clock
+from . import clock, money
 from .schema import COMPLEX_TYPES, EntityType, Prop, Service, set_for_type
 
 EPOCH = _dt.datetime(1970, 1, 1)
@@ -92,8 +92,10 @@ def to_json_value(prop: Prop, value: Any) -> Any:
     if t in ("Edm.Int32", "Edm.Int16", "Edm.Int64"):
         return int(value)
     if t == "Edm.Decimal":
-        scale = prop.scale if prop.scale is not None else 3
-        return ("%." + str(scale) + "f") % float(value)
+        # V2 serves a decimal as a string, at its declared scale, and it is
+        # read out of the column as one: no float stands between the stored
+        # figure and the wire.
+        return money.text(value, money.scale_of(prop))
     if t == "Edm.Double":
         return float(value)
     if t == "Edm.DateTime":
@@ -135,7 +137,16 @@ def to_db_value(prop: Prop, value: Any) -> Any:
             return 1 if value else 0
         if t in ("Edm.Int32", "Edm.Int16", "Edm.Int64"):
             return int(value)
-        if t in ("Edm.Decimal", "Edm.Double"):
+        if t == "Edm.Decimal":
+            # Quantised on the way in, so the column holds the scale the
+            # property declares rather than whatever the client happened to
+            # send - and rounded half up, the way SAP rounds.  An empty
+            # string is not a zero: a client that sent one meant something,
+            # and Gateway tells it so rather than guessing.
+            if isinstance(value, str) and not value.strip():
+                raise ValueError(value)
+            return money.text(value, money.scale_of(prop))
+        if t == "Edm.Double":
             return float(value)
         if t == "Edm.DateTime":
             dt = _parse_datetime(value)
@@ -173,6 +184,21 @@ _TOKEN_RE = re.compile(
 
 _COMPARISON = {"eq": "=", "ne": "<>", "gt": ">", "ge": ">=", "lt": "<", "le": "<="}
 _ARITH = {"add": "+", "sub": "-", "mul": "*", "div": "/", "mod": "%"}
+
+
+def column_sql(column: str, prop: Prop) -> str:
+    """How a column is named in SQL that compares, sorts or sums it.
+
+    A decimal is stored as text so that its scale survives, and SQLite would
+    then compare it as text: `'99.000' > '100.000'` is true of the strings
+    and false of the amounts.  So a decimal is cast where it is used as a
+    number.  SQLite has no decimal type to cast to, so the comparison itself
+    goes through a double - the stored figure stays exact, and a filter
+    boundary is the one place in this mock where an amount is a float.
+    """
+    if prop.type == "Edm.Decimal":
+        return 'CAST("%s" AS REAL)' % column
+    return '"%s"' % column
 
 
 class FilterError(SapError):
@@ -344,7 +370,7 @@ class _Filter:
                     % (path.split("/")[1], name))
             raise FilterError(
                 "Property '%s' not found in type '%s'" % (path, self.et.name))
-        return _Frag('"%s"' % resolved[0])
+        return _Frag(column_sql(resolved[0], resolved[1]))
 
     def parse_function(self, name):
         self.expect("(")
@@ -434,7 +460,7 @@ def build_orderby(expr: str, et: EntityType) -> str:
             if bits[1].lower() not in ("asc", "desc"):
                 raise SapError("Invalid $orderby direction '%s'" % bits[1], 400)
             direction = bits[1].upper()
-        parts.append('"%s" %s' % (name, direction))
+        parts.append("%s %s" % (column_sql(name, resolved[1]), direction))
     if not parts:
         raise SapError("Empty $orderby", 400)
     return ", ".join(parts)

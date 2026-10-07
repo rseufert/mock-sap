@@ -25,7 +25,11 @@ def to_json_value(prop: Prop, value: Any) -> Any:
     if t in ("Edm.Int32", "Edm.Int16", "Edm.Int64"):
         return int(value)
     if t in ("Edm.Decimal", "Edm.Double"):
-        return float(value)  # a number, not a string, unlike V2
+        # A number, not a string, unlike V2 - that is V4's own shape for a
+        # decimal, and the only place an amount is a float in this mock. The
+        # stored figure stays exact; this is the wire format asking for a
+        # JSON number and getting the shortest one that reads back as itself.
+        return float(value)
     if t == "Edm.DateTime":  # V4 calls it Edm.DateTimeOffset
         moment = _parse_datetime(value)
         if moment is None:

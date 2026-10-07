@@ -10,9 +10,10 @@ import random
 import sqlite3
 import threading
 import uuid
+from decimal import Decimal
 from typing import Optional
 
-from . import bank
+from . import bank, money
 from .schema import ENTITY_TYPES, EntityType
 
 _MEMORY_URI = "file:mocksap?mode=memory&cache=shared"
@@ -325,6 +326,35 @@ _MATERIALS = [
 _PLANTS = ["1710", "1010", "2010"]
 
 
+def _stored(table: str, row: dict) -> dict:
+    """A seed row with its decimals written the way the columns declare them.
+
+    The seed writes straight to SQLite rather than through `store`, so this is
+    where an amount gets its scale: a `Decimal(16,3)` column holds `1190.000`
+    and not `1190.0`, whoever wrote the row.
+    """
+    et = ENTITY_TYPES.get(table)
+    if et is None:
+        return row
+    props = dict(_columns_with_views(et))
+    out = {}
+    for name, value in row.items():
+        prop = props.get(name)
+        if prop is not None and prop.type == "Edm.Decimal" and value is not None:
+            value = money.text(value, money.scale_of(prop))
+        out[name] = value
+    return out
+
+
+def _seed_insert(cur: sqlite3.Cursor, table: str, row: dict) -> None:
+    """One seed row, replacing whatever was there before."""
+    row = _stored(table, row)
+    cols = ", ".join('"%s"' % c for c in row)
+    marks = ", ".join("?" for _ in row)
+    cur.execute('INSERT OR REPLACE INTO "%s" (%s) VALUES (%s)' % (table, cols, marks),
+                list(row.values()))
+
+
 def _iso(d: _dt.date) -> str:
     return _dt.datetime(d.year, d.month, d.day).isoformat()
 
@@ -336,12 +366,7 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
     today = _dt.date(2026, 1, 15)
 
     def ins(table, row):
-        cols = ", ".join('"%s"' % c for c in row)
-        marks = ", ".join("?" for _ in row)
-        cur.execute(
-            'INSERT OR REPLACE INTO "%s" (%s) VALUES (%s)' % (table, cols, marks),
-            list(row.values()),
-        )
+        _seed_insert(cur, table, row)
 
     # ---- business partners -------------------------------------------------
     customers, suppliers = [], []
@@ -546,14 +571,14 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
         sold_to = rnd.choice(customers)
         doc_date = today - _dt.timedelta(days=rnd.randint(0, 180))
         currency = "EUR"
-        total = 0.0
+        total = Decimal(0)
         n_items = rnd.randint(1, 4)
         items = []
         for i in range(n_items):
             mat, desc, _t, mgroup, unit, _g, _n = rnd.choice(_MATERIALS)
-            qty = float(rnd.randint(1, 50))
-            price = round(rnd.uniform(15, 2400), 2)
-            amount = round(qty * price, 2)
+            qty = Decimal(rnd.randint(1, 50))
+            price = money.at(rnd.uniform(15, 2400), money.CURRENCY_SCALE)
+            amount = money.at(qty * price, money.CURRENCY_SCALE)
             total += amount
             items.append(
                 dict(
@@ -571,7 +596,7 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
                 SalesOrder=so, SalesOrderType="OR", SalesOrganization="1710",
                 DistributionChannel="10", OrganizationDivision="00", SoldToParty=sold_to,
                 PurchaseOrderByCustomer="PO-%d" % rnd.randint(10000, 99999),
-                TransactionCurrency=currency, TotalNetAmount=round(total, 2),
+                TransactionCurrency=currency, TotalNetAmount=total,
                 SalesOrderDate=_iso(doc_date),
                 RequestedDeliveryDate=_iso(doc_date + _dt.timedelta(days=14)),
                 ShippingCondition="01", IncotermsClassification=rnd.choice(["EXW", "FOB", "CIF", "DAP"]),
@@ -631,8 +656,10 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
                     PurchaseOrder=po, PurchaseOrderItem=str((i + 1) * 10).zfill(5),
                     PurchaseOrderItemText=desc, Material=mat, MaterialGroup=mgroup,
                     Plant=rnd.choice(_PLANTS), StorageLocation="171%d" % rnd.randint(0, 9),
-                    OrderQuantity=float(rnd.randint(5, 500)), PurchaseOrderQuantityUnit=unit,
-                    NetPriceAmount=round(rnd.uniform(5, 900), 2), NetPriceQuantity=1.0,
+                    OrderQuantity=Decimal(rnd.randint(5, 500)),
+                    PurchaseOrderQuantityUnit=unit,
+                    NetPriceAmount=money.at(rnd.uniform(5, 900), money.CURRENCY_SCALE),
+                    NetPriceQuantity=Decimal(1),
                     DocumentCurrency="EUR", TaxCode="V1",
                     IsCompletelyDelivered=rnd.choice([0, 0, 1]),
                 ),
@@ -683,13 +710,15 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
     back to what it came from, so the order-to-cash chain can be walked in
     either direction.
     """
+    # `documents` imports this module, so it is imported here rather than at
+    # the top: the seed needs the one rate the mock bills at, and that number
+    # belongs where billing happens rather than copied to where it is used.
+    from . import documents
+
     cur = conn.cursor()
 
     def ins(table, row):
-        cols = ", ".join('"%s"' % c for c in row)
-        marks = ", ".join("?" for _ in row)
-        cur.execute('INSERT OR REPLACE INTO "%s" (%s) VALUES (%s)' % (table, cols, marks),
-                    list(row.values()))
+        _seed_insert(cur, table, row)
 
     orders = cur.execute(
         'SELECT * FROM "A_SalesOrder" ORDER BY "SalesOrder" LIMIT 8').fetchall()
@@ -709,13 +738,14 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
         # ---- delivery
         delivery = str(delivery_no).zfill(10)
         delivery_no += 1
-        weight = sum(float(item["RequestedQuantity"] or 0) for item in items)
+        weight = sum((money.of(item["RequestedQuantity"]) for item in items),
+                     Decimal(0))
         ins("A_OutbDeliveryHeader", dict(
             DeliveryDocument=delivery, DeliveryDocumentType="LF", ShippingPoint="1710",
             SalesOrganization=order["SalesOrganization"], SoldToParty=order["SoldToParty"],
             ShipToParty=order["SoldToParty"], DeliveryDate=_iso(shipped),
             ActualGoodsMovementDate=_iso(shipped), OverallSDProcessStatus="C",
-            OverallGoodsMovementStatus="C", TotalWeight=round(weight, 3), WeightUnit="KG",
+            OverallGoodsMovementStatus="C", TotalWeight=weight, WeightUnit="KG",
             CreatedByUser="CB9980000001", CreationDate=_iso(shipped),
             LastChangeDate=_iso(shipped)))
         for item in items:
@@ -728,7 +758,7 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
                 StorageLocation="171%d" % rnd.randint(0, 9),
                 ReferenceSDDocument=order["SalesOrder"],
                 ReferenceSDDocumentItem=item["SalesOrderItem"],
-                ItemGrossWeight=round(float(item["RequestedQuantity"] or 0), 3),
+                ItemGrossWeight=money.of(item["RequestedQuantity"]),
                 ItemWeightUnit="KG"))
 
         # only some of the deliveries have been invoiced
@@ -739,8 +769,8 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
         billing = str(billing_no).zfill(10)
         billing_no += 1
         billed = shipped + _dt.timedelta(days=rnd.randint(1, 5))
-        net = round(sum(float(item["NetAmount"] or 0) for item in items), 2)
-        tax = round(net * 0.19, 2)
+        net = sum((money.of(item["NetAmount"]) for item in items), Decimal(0))
+        tax = money.at(net * documents.TAX_RATE, money.CURRENCY_SCALE)
         accounting = str(accounting_no).zfill(10)
         accounting_no += 1
         fiscal_year = str(billed.year)
@@ -750,19 +780,21 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
             SalesOrganization=order["SalesOrganization"], SoldToParty=order["SoldToParty"],
             PayerParty=order["SoldToParty"], BillingDocumentDate=_iso(billed),
             TransactionCurrency=order["TransactionCurrency"], TotalNetAmount=net,
-            TotalTaxAmount=tax, TotalGrossAmount=round(net + tax, 2),
+            TotalTaxAmount=tax, TotalGrossAmount=net + tax,
             AccountingPostingStatus="C", AccountingDocument=accounting,
             CreatedByUser="CB9980000001", CreationDate=_iso(billed),
             LastChangeDate=_iso(billed)))
         for item in items:
-            item_net = round(float(item["NetAmount"] or 0), 2)
+            item_net = money.of(item["NetAmount"])
             ins("A_BillingDocumentItem", dict(
                 BillingDocument=billing, BillingDocumentItem=item["SalesOrderItem"],
                 Material=item["Material"],
                 BillingDocumentItemText=item["SalesOrderItemText"],
                 BillingQuantity=item["RequestedQuantity"],
                 BillingQuantityUnit=item["RequestedQuantityUnit"],
-                NetAmount=item_net, TaxAmount=round(item_net * 0.19, 2),
+                NetAmount=item_net,
+                TaxAmount=money.at(item_net * documents.TAX_RATE,
+                                   money.CURRENCY_SCALE),
                 TransactionCurrency=item["TransactionCurrency"],
                 SalesDocument=order["SalesOrder"], SalesDocumentItem=item["SalesOrderItem"]))
 
@@ -776,7 +808,7 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
             ReferenceDocument=billing, CreatedByUser="CB9980000001",
             CreationDate=_iso(billed), LastChangeDate=_iso(billed)))
         lines = [
-            ("000001", "0012100000", "S", round(net + tax, 2), "Receivable",
+            ("000001", "0012100000", "S", net + tax, "Receivable",
              order["SoldToParty"], ""),
             ("000002", "0041000000", "H", net, "Revenue", "", ""),
             ("000003", "0022000000", "H", tax, "Output tax", "", ""),
@@ -814,13 +846,12 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
 
 def seed_gwsample(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date) -> None:
     """Seed the classic Gateway demo service, structured addresses and all."""
+    from . import documents            # late, as in `seed_documents`
+
     cur = conn.cursor()
 
     def ins(table, row):
-        cols = ", ".join('"%s"' % c for c in row)
-        marks = ", ".join("?" for _ in row)
-        cur.execute('INSERT OR REPLACE INTO "%s" (%s) VALUES (%s)' % (table, cols, marks),
-                    list(row.values()))
+        _seed_insert(cur, table, row)
 
     for index, (bp, name, country, city, postal, street, building, currency) in enumerate(
             _GW_COMPANIES):
@@ -873,26 +904,28 @@ def seed_gwsample(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date)
         bp, company = rnd.choice([(c[0], c[1]) for c in _GW_COMPANIES])
         lifecycle, lifecycle_text, billing, billing_text = rnd.choice(statuses)
         created = today - _dt.timedelta(days=rnd.randint(0, 120))
-        net = 0.0
+        net = Decimal(0)
         items = []
         for position in range(1, rnd.randint(2, 4)):
             product = rnd.choice(_GW_PRODUCTS)
-            quantity = float(rnd.randint(1, 12))
-            item_net = round(quantity * product[5], 2)
-            item_tax = round(item_net * 0.19, 2)
+            quantity = Decimal(rnd.randint(1, 12))
+            item_net = money.at(quantity * money.of(product[5]),
+                                money.CURRENCY_SCALE)
+            item_tax = money.at(item_net * documents.TAX_RATE,
+                                money.CURRENCY_SCALE)
             net += item_net
             items.append(dict(
                 SalesOrderID=order, ItemPosition=str(position * 10).zfill(10),
                 ProductID=product[0], Note=product[3], NoteLanguage="EN",
-                CurrencyCode="EUR", GrossAmount=round(item_net + item_tax, 2),
+                CurrencyCode="EUR", GrossAmount=item_net + item_tax,
                 NetAmount=item_net, TaxAmount=item_tax,
                 DeliveryDate=_iso(created + _dt.timedelta(days=rnd.randint(3, 21))),
                 Quantity=quantity, QuantityUnit="EA"))
-        tax = round(net * 0.19, 2)
+        tax = money.at(net * documents.TAX_RATE, money.CURRENCY_SCALE)
         ins("SalesOrder", dict(
             SalesOrderID=order, Note="EPM DG: SO ID %s Deliver as fast as possible" % order,
             NoteLanguage="EN", CustomerID=bp, CustomerName=company, CurrencyCode="EUR",
-            GrossAmount=round(net + tax, 2), NetAmount=round(net, 2), TaxAmount=tax,
+            GrossAmount=net + tax, NetAmount=net, TaxAmount=tax,
             LifecycleStatus=lifecycle, LifecycleStatusDescription=lifecycle_text,
             BillingStatus=billing, BillingStatusDescription=billing_text,
             DeliveryStatus=rnd.choice(["N", "D"]),

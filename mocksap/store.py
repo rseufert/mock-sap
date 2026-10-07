@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from . import bank, clock, db
+from . import bank, clock, db, money
 from .odata import SapError, to_db_value
 from .schema import COMPLEX_TYPES, ENTITY_TYPES, EntityType
 
@@ -147,7 +147,10 @@ def initial_value(prop):
     """The ABAP initial value for a property's type."""
     if prop.type == "Edm.DateTime":
         return None
-    if prop.type in ("Edm.Decimal", "Edm.Double"):
+    if prop.type == "Edm.Decimal":
+        # A zero amount is still an amount with a scale: 0.000, not 0.0.
+        return money.text(0, money.scale_of(prop))
+    if prop.type == "Edm.Double":
         return 0.0
     if prop.type in ("Edm.Int32", "Edm.Int16", "Edm.Int64", "Edm.Boolean"):
         return 0
@@ -431,11 +434,17 @@ def _recalculate_totals(conn, et: EntityType, row: Dict[str, Any]) -> None:
     """Keep TotalNetAmount consistent with the items, like the SD pricing run."""
     if et.name == "A_SalesOrderItem":
         so = row.get("SalesOrder")
-        total = conn.execute(
-            'SELECT COALESCE(SUM("NetAmount"),0) t FROM "A_SalesOrderItem" WHERE "SalesOrder"=?',
-            (so,)).fetchone()["t"]
+        # Summed here rather than in SQL: SQLite would add the items up as
+        # doubles, and the order total is a figure a client reads back and
+        # checks against the items it sent.
+        items = conn.execute(
+            'SELECT "NetAmount" FROM "A_SalesOrderItem" WHERE "SalesOrder"=?',
+            (so,)).fetchall()
+        total = sum((money.of(item["NetAmount"]) for item in items),
+                    money.of(0))
+        prop = ENTITY_TYPES["A_SalesOrder"].prop("TotalNetAmount")
         conn.execute('UPDATE "A_SalesOrder" SET "TotalNetAmount"=? WHERE "SalesOrder"=?',
-                     (round(total, 2), so))
+                     (money.text(total, money.scale_of(prop)), so))
         conn.commit()
     elif et.name == "A_SalesOrder":
         _recalculate_totals(conn, ENTITY_TYPES["A_SalesOrderItem"],
