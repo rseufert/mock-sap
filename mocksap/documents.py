@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from . import clock, db, money, store
 from .odata import SapError
@@ -187,17 +187,56 @@ def apply_delivery_status(ctx, order) -> str:
     return status
 
 
+class Terms(NamedTuple):
+    """What a payment-terms key says: when a line is due, and what pays early.
+
+    `discount_percent` is a percentage and not a fraction, because that is how
+    T052 holds ZBD1P and how an invoice states it: 2% is `Decimal("2")`. A key
+    offering no discount carries zero days and zero percent, which is every key
+    this table had before #176.
+    """
+
+    net_days: int
+    discount_days: int = 0
+    discount_percent: Decimal = Decimal("0")
+
+
 # T052 in miniature. A supplier or customer line is due a number of days after
 # its baseline date, and which number is configuration in a real system - so
 # this table is deliberately short, and a document that carries its own
 # NetPaymentDays (a purchase order does) should pass that instead of a key.
+#
+# A key can also offer a cash discount - ZBD1T and ZBD1P beside ZBD3T - and
+# that is the half of the terms only this mock knows: a bank sees a customer
+# pay 98% of an invoice on day 40 and cannot tell an earned discount from one
+# taken late, because it never saw the terms (#65).
 PAYMENT_TERMS = {
-    "": 0,        # no terms: payable at once, as a blank ZTERM means in SAP
-    "0001": 0,    # payable immediately due net
-    "NT30": 30,
-    "NT45": 45,
-    "NT60": 60,
+    "": Terms(0),         # no terms: payable at once, as a blank ZTERM means in SAP
+    "0001": Terms(0),     # payable immediately due net
+    "NT30": Terms(30),
+    "NT45": Terms(45),
+    "NT60": Terms(60),
+    # Four characters, because ZTERM is CHAR4 and `PaymentTerms` is declared
+    # `max_length=4`. Opaque numbers rather than self-describing keys, because
+    # in a real system the key means nothing and the customising holds the
+    # terms - a client that read `2%` out of the key would be reading something
+    # SAP does not put there. These particular numbers are this mock's own,
+    # plausible rather than authentic, as the `sap-message` classes are; ask
+    # `terms_of` what they mean rather than parsing them.
+    "0002": Terms(30, 10, Decimal("2")),     # 2% 10, net 30
+    "0003": Terms(45, 14, Decimal("3")),     # 3% 14, net 45
 }
+
+
+def terms_of(terms: str = "") -> Terms:
+    """What a payment-terms key says, keyed as a document writes it.
+
+    An unrecognised key is `Terms(0)` - due at once, no discount - rather than
+    a refusal, because an inbound `INVOIC` carries whatever ZTERM the sender's
+    system had and this table is deliberately short. That is what the lookup
+    this replaced already did for the net days.
+    """
+    return PAYMENT_TERMS.get((terms or "").strip().upper(), Terms(0))
 
 # SAP's KOART, defined in `store` next to the queries that select open items
 # by it, and re-exported here because this is where lines are given one.
@@ -238,9 +277,91 @@ def net_due_date(baseline: str, terms: str = "", days=None) -> str:
     ``days`` wins when the document carries its own net payment days, because
     that is the document's own answer rather than a lookup.
     """
-    allowed = int(days) if days not in (None, "") else PAYMENT_TERMS.get(
-        (terms or "").strip().upper(), 0)
+    allowed = int(days) if days not in (None, "") else terms_of(terms).net_days
     return (as_date(baseline) + _dt.timedelta(days=allowed)).isoformat()
+
+
+class Discount(NamedTuple):
+    """A cash discount on an amount: what a payment earned, and what was offered.
+
+    Both are the discount itself rather than what is left after it. `earned`
+    equal to `available` and above zero is a payment inside the window;
+    `earned` zero below a non-zero `available` is a discount taken late, and
+    `available - earned` is what stays owed when the invoice itself clears.
+    Both zero means the terms offer no discount at all.
+    """
+
+    earned: Decimal
+    available: Decimal
+
+
+def _offer(terms: str, days, percent) -> Optional[Tuple[int, Decimal]]:
+    """The discount in force as (days, percent), or `None` if there is none.
+
+    A document's own figures win over its terms' the way `days` wins in
+    `net_due_date`, because they are the document's answer rather than a
+    lookup. A rate of zero is no offer however many days come with it: a
+    window on nothing is not a discount.
+    """
+    table = terms_of(terms)
+    allowed = int(days) if days not in (None, "") else table.discount_days
+    rate = money.of(percent) if percent not in (None, "") else table.discount_percent
+    return None if rate == 0 else (allowed, rate)
+
+
+def discount_due_date(baseline: str, terms: str = "", days=None,
+                      percent=None) -> Optional[str]:
+    """The last day a cash discount can be taken, or `None` if none is offered.
+
+    `None` rather than the baseline date, because a caller has to be able to
+    tell "there was no discount" from "it had to be paid the same day", and a
+    date would read as the second.
+    """
+    offer = _offer(terms, days, percent)
+    if offer is None:
+        return None
+    return (as_date(baseline) + _dt.timedelta(days=offer[0])).isoformat()
+
+
+def discount_on(terms: str, baseline: str, paid_on: str, amount,
+                days=None, percent=None,
+                scale: int = money.CURRENCY_SCALE) -> Discount:
+    """The cash discount on `amount` under `terms`, for a payment on `paid_on`.
+
+    This is the judgement a bank cannot make. An incoming credit for 1,225 on
+    day 40 against an invoice of 1,250 is 25 short, and only the terms say
+    whether those 25 were a discount the payer had earned or one they took
+    after the window closed - in which case the invoice clears and the 25 stay
+    open, which is what #65 needs and what `camt.053` can never tell it.
+
+    Four things it decides, and says so rather than implying it looked:
+
+    **It does not choose the base.** A real system reads SKFBT and a config
+    switch to decide whether the discount comes off the gross or the net of
+    tax. This mock has no such table, so whatever `amount` arrives is the base
+    and the caller - who is holding the document - picks which figure that is.
+
+    **It rounds at two places**, `money.CURRENCY_SCALE`, with the
+    `ROUND_HALF_UP` every amount here uses. An open item's
+    `AmountInTransactionCurrency` is declared at three, but a discount is money
+    that someone actually keeps, and SAP rounds WSKTO per currency. Pass
+    `scale=money.scale_of(prop)` to get a property's own scale instead.
+
+    **Paying early is paying in time.** A date before the baseline earns the
+    discount; nothing here treats it as a mistake.
+
+    **The sign is the caller's.** A negative amount gives a negative discount.
+    Which way money is moving is the caller's question, and `statement.py`
+    already has a convention for it.
+    """
+    zero = money.at(0, scale)
+    offer = _offer(terms, days, percent)
+    if offer is None:
+        return Discount(zero, zero)
+    allowed, rate = offer
+    available = money.at(money.of(amount) * rate / Decimal(100), scale)
+    in_time = as_date(paid_on) <= as_date(baseline) + _dt.timedelta(days=allowed)
+    return Discount(available if in_time else zero, available)
 
 
 def post_journal_entry(ctx, header: Dict[str, Any],
@@ -444,7 +565,7 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
         "DueCalculationBaseDate": baseline,
         "NetPaymentDays": int(invoice.get("net_payment_days")
                               if invoice.get("net_payment_days") not in (None, "")
-                              else PAYMENT_TERMS.get(terms.upper(), 0)),
+                              else terms_of(terms).net_days),
         "PaymentBlockingReason": str(invoice.get("payment_block") or ""),
         "PaymentMethod": str(invoice.get("payment_method") or ""),
         # which account to pay into. A supplier's first account unless the
