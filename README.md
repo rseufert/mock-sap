@@ -392,6 +392,15 @@ each delivery was asked on its own whether it covered the order and neither 5 di
 are shipped half short for the same reason, so a split shipment is in the data
 rather than something you have to build.
 
+**A `DELVRY` that moved no order is `51`, not `53`.** An unknown `VGBEL`, or a
+`VGPOS` the order does not have, posts nothing and changes nothing, so filing it as
+*Application document posted* told a client the opposite of what happened
+([#96](https://github.com/rseufert/mock-sap/issues/96)). The status text names the
+order or the position. The per-order detail survives the refusal — `APPLIED` still
+says which order it was about, because 51 is the status and not a reason to forget
+what was attempted. One order moving is enough for `53`; the others keep their own
+answer, since `51` is for an IDoc that posted *nothing*.
+
 **Delivering more than was ordered is refused**, as SAP refuses past an item's
 over-delivery tolerance. The tolerance is the order item's own
 `OverdelivTolrtdLmtRatioInPct` — SAP's UEBTO, initial on a created item, so by

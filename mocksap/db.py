@@ -204,6 +204,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             sales_order TEXT NOT NULL,
             status TEXT,
             delivery TEXT,
+            -- the position a DELVRY named that the order does not have, so
+            -- `outcome.delivery_message` can rebuild which it was. Blank
+            -- when the order itself was the thing that did not exist.
+            position TEXT,
             PRIMARY KEY (docnum, seq)
         )"""
     )
