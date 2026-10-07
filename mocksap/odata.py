@@ -261,6 +261,8 @@ _TOKEN_RE = re.compile(
     r"""\s*(?:
         (?P<dtlit>(?:datetimeoffset|datetime|guid|time)'(?:[^']|'')*')
       | (?P<str>'(?:[^']|'')*')
+      | (?P<v4date>\d{4}-\d{2}-\d{2}
+            (?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?)
       | (?P<num>-?\d+\.\d+[mdfMDF]?|-?\d+[LlmMdDfF]?)
       | (?P<op>\(|\)|,|/)
       | (?P<ident>[A-Za-z_][A-Za-z0-9_]*)
@@ -325,10 +327,18 @@ class _Filter:
     the generated SQL (``endswith`` for instance) binds its value twice.
     """
 
-    def __init__(self, tokens, et: EntityType):
+    def __init__(self, tokens, et: EntityType, version: int = 2):
         self.t = tokens
         self.i = 0
         self.et = et
+        self.version = version
+
+    def wrong_dialect(self, text: str, instead: str) -> "FilterError":
+        """A literal spelled for the other OData version, and how to spell it."""
+        return FilterError(
+            "%s is an OData V%d literal, and this service speaks V%d; "
+            "write %s" % (text, 2 if self.version >= 4 else 4, self.version,
+                          instead))
 
     # -- helpers
     def peek(self):
@@ -419,11 +429,22 @@ class _Filter:
             return _Frag("?", [text[1:-1].replace("''", "'")])
         if kind == "num":
             raw = re.sub(r"[LlmMdDfF]$", "", text)
+            if raw != text and self.version >= 4:
+                raise self.wrong_dialect(text, raw)
             return _Frag("?", [float(raw) if "." in raw else int(raw)])
         if kind == "dtlit":
             value = text.split("'", 1)[1][:-1]
+            if self.version >= 4:
+                raise self.wrong_dialect(text, _v4_spelling(text, value))
             dt = _parse_datetime(value)
             return _Frag("?", [dt.isoformat() if dt else value])
+        if kind == "v4date":
+            if self.version < 4:
+                raise self.wrong_dialect(text, "datetime'%s'" % _v2_moment(text))
+            moment = _v4_moment(text)
+            if moment is None:
+                raise FilterError("'%s' is not a date in $filter" % text)
+            return _Frag("?", [moment.isoformat()])
         if kind == "ident":
             low = text.lower()
             if low == "null":
@@ -525,8 +546,57 @@ class _Filter:
         raise FilterError("Unsupported $filter function '%s'" % name)
 
 
-def build_where(expr: str, et: EntityType) -> Tuple[str, List[Any]]:
-    return _Filter(tokenize(expr), et).parse()
+def _v4_moment(text: str) -> Optional[_dt.datetime]:
+    """A V4 date or date-time literal as the naive UTC moment a row stores."""
+    try:
+        if "T" not in text:
+            return _dt.datetime.strptime(text, "%Y-%m-%d")
+        stamp, offset = text, _dt.timedelta()
+        if stamp.endswith("Z"):
+            stamp = stamp[:-1]
+        elif stamp[-6] in "+-" and stamp[-3] == ":":
+            hours, minutes = int(stamp[-5:-3]), int(stamp[-2:])
+            offset = _dt.timedelta(hours=hours, minutes=minutes)
+            if stamp[-6] == "-":
+                offset = -offset
+            stamp = stamp[:-6]
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+            try:
+                # +02:00 is two hours ahead of UTC, so the UTC moment is earlier
+                return _dt.datetime.strptime(stamp, fmt) - offset
+            except ValueError:
+                continue
+    except ValueError:
+        pass
+    return None
+
+
+def _v2_moment(text: str) -> str:
+    """How a V4 date literal would have been written inside datetime'...'."""
+    moment = _v4_moment(text)
+    return moment.isoformat() if moment else text
+
+
+def _v4_spelling(text: str, value: str) -> str:
+    """How a V2 prefixed literal is written in V4, for the refusal to quote."""
+    kind = text.split("'", 1)[0].lower()
+    if kind in ("datetime", "datetimeoffset"):
+        moment = _parse_datetime(value)
+        if moment is not None:
+            return moment.isoformat() + "Z"
+    return value
+
+
+def build_where(expr: str, et: EntityType, version: int = 2) -> Tuple[str, List[Any]]:
+    """`$filter` as SQL, read in the dialect of the service it was sent to.
+
+    The two versions spell a literal differently - `datetime'2026-01-01T00:00:00'`
+    and `100.50M` in V2, `2026-01-01T00:00:00Z` and `100.50` in V4 - and a
+    service takes its own. Both used to be read as V2 everywhere, so a V4
+    service accepted the literals of the version it does not speak and refused
+    its own (#165).
+    """
+    return _Filter(tokenize(expr), et, version).parse()
 
 
 def build_orderby(expr: str, et: EntityType) -> str:

@@ -135,7 +135,7 @@ def parse(expr: str, et: EntityType) -> Aggregation:
             if plan.group or plan.aggregates:
                 raise SapError(
                     "filter must come before groupby or aggregate in this mock", 400)
-            where, params = build_where(args, et)
+            where, params = build_where(args, et, 4)   # $apply is V4's own
             plan.where = "(%s) AND (%s)" % (plan.where, where) if plan.where else where
             plan.params.extend(params)
         elif name == "groupby":

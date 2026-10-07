@@ -129,6 +129,7 @@ honestly apart - a V2 option on a V4 service is an error, and the other way roun
 | Entity | `{"d":{…}}` | the entity object itself |
 | Timestamps | `/Date(1754611200000)/` | `2025-08-08T00:00:00Z` |
 | Decimals | `"123991.820"` | `123991.82` |
+| `$filter` literals | `datetime'2025-08-08T00:00:00'`, `100.50M` | `2025-08-08T00:00:00Z`, `2025-08-08`, `100.50` |
 | Count | `$inlinecount=allpages` → `__count` | `$count=true` → `@odata.count` |
 | ETag | `__metadata.etag` | `@odata.etag` |
 | Links | `__deferred`, `$links` | omitted, `$ref` |
@@ -144,6 +145,13 @@ honestly apart - a V2 option on a V4 service is an error, and the other way roun
 ```bash
 curl "http://127.0.0.1:8000/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001/SalesOrder?\$top=1&\$count=true"
 ```
+
+A literal spelled for the other version is refused, and the refusal says how
+this one writes it. An option the mock would not honour is refused too rather
+than accepted and dropped: `$search` (501, use `$filter`), a `$skiptoken` (the
+mock never pages, so it never issued one - use `$top` and `$skip`), and a
+`$format` other than JSON on entity data. The service document and `$metadata`
+are the resources served as XML.
 
 **An amount is a decimal all the way down.** `Edm.Decimal` is declared with a
 scale, stored at that scale and computed in `decimal.Decimal`, and a figure the

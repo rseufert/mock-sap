@@ -1,4 +1,5 @@
 """OData V4: the same documents as V2, in the shapes of the other dialect."""
+import datetime
 import json
 import unittest
 from xml.etree import ElementTree as ET
@@ -307,6 +308,134 @@ class TestEveryV4Service(V4Case):
         _, _, v2 = self.get(
             "/sap/opu/odata/sap/API_PRODUCT_SRV/A_Product('TG11')?$format=json")
         self.assertEqual(v2["d"]["ProductGroup"], "L099")
+
+
+
+class TestAServiceReadsItsOwnLiterals(V4Case):
+    """V4 spells a date bare and a number unsuffixed; V2 does neither (#165).
+
+    Every `$filter` was read as V2, so this service took `datetime'...'` and
+    refused `2026-01-01T00:00:00Z`. What a filter kept is checked here against
+    rows read with no filter at all and counted in the test, because a parser
+    compared with itself agrees with itself however it reads a date.
+    """
+
+    def orders(self):
+        _, _, body = self.get(V4 + "/SalesOrder?$select=SalesOrder,SalesOrderDate,"
+                                   "TotalNetAmount")
+        return body["value"]
+
+    def kept(self, expression, base=V4 + "/SalesOrder"):
+        status, _, body = self.get(base + "?$filter=" + expression)
+        self.assertEqual(status, 200, body)
+        return sorted(row["SalesOrder"] for row in body["value"])
+
+    def refused(self, expression, base=V4 + "/SalesOrder"):
+        status, _, body = self.get(base + "?$format=json&$filter=" + expression)
+        self.assertEqual(status, 400, body)
+        error = body["error"]["message"]
+        return error if isinstance(error, str) else error["value"]
+
+    def a_boundary(self):
+        """A moment some orders are before and some are not."""
+        dates = sorted({row["SalesOrderDate"] for row in self.orders()})
+        self.assertGreater(len(dates), 2, "the seed spreads its order dates")
+        return dates[len(dates) // 2]
+
+    def test_a_date_time_with_z(self):
+        boundary = self.a_boundary()
+        expected = sorted(row["SalesOrder"] for row in self.orders()
+                          if row["SalesOrderDate"] >= boundary)
+        self.assertTrue(0 < len(expected) < len(self.orders()))
+
+        self.assertEqual(self.kept("SalesOrderDate ge " + boundary), expected)
+
+    def test_a_bare_date(self):
+        day = self.a_boundary()[:10]
+        expected = sorted(row["SalesOrder"] for row in self.orders()
+                          if row["SalesOrderDate"][:10] >= day)
+
+        self.assertEqual(self.kept("SalesOrderDate ge " + day), expected)
+
+    def test_an_offset_names_the_same_moment(self):
+        boundary = self.a_boundary()                 # midnight UTC in the seed
+        self.assertTrue(boundary.endswith("T00:00:00Z"), boundary)
+        ahead = boundary[:10] + "T02:00:00%2B02:00"  # the same instant, in +02:00
+
+        self.assertEqual(self.kept("SalesOrderDate ge " + ahead),
+                         self.kept("SalesOrderDate ge " + boundary))
+        day_before = (datetime.date.fromisoformat(boundary[:10])
+                      - datetime.timedelta(days=1)).isoformat()
+        behind = day_before + "T22:00:00-02:00"      # and again, in -02:00
+        # `gt`, because the seed dates every order at midnight: read two
+        # hours early instead of two hours late, `ge` would keep the same rows
+        self.assertEqual(self.kept("SalesOrderDate gt " + behind),
+                         self.kept("SalesOrderDate gt " + boundary))
+        self.assertNotEqual(self.kept("SalesOrderDate ge " + ahead),
+                            self.kept("SalesOrderDate ge " + boundary[:10]
+                                      + "T02:00:00Z"),
+                            "two hours later is a different question")
+
+    def test_an_unsuffixed_number(self):
+        amounts = sorted(row["TotalNetAmount"] for row in self.orders())
+        middle = amounts[len(amounts) // 2]
+        expected = sorted(row["SalesOrder"] for row in self.orders()
+                          if row["TotalNetAmount"] > middle)
+
+        self.assertEqual(self.kept("TotalNetAmount gt %s" % middle), expected)
+
+    def test_a_v2_date_is_refused_and_told_how_to_be_written(self):
+        said = self.refused("SalesOrderDate gt datetime'2026-01-01T00:00:00'")
+
+        self.assertEqual(
+            said, "datetime'2026-01-01T00:00:00' is an OData V2 literal, and "
+                  "this service speaks V4; write 2026-01-01T00:00:00Z")
+
+    def test_a_v2_number_suffix_is_refused(self):
+        for literal, bare in (("100m", "100"), ("100.5M", "100.5"),
+                              ("7L", "7"), ("1.5d", "1.5")):
+            with self.subTest(literal=literal):
+                self.assertEqual(
+                    self.refused("TotalNetAmount gt " + literal),
+                    "%s is an OData V2 literal, and this service speaks V4; "
+                    "write %s" % (literal, bare))
+
+    def test_inside_apply_and_expand_too(self):
+        """Both carry a `$filter` of their own, read by the same service."""
+        boundary = self.a_boundary()
+        status, _, body = self.get(
+            V4 + "/SalesOrder?$apply=filter(SalesOrderDate ge %s)"
+                 "/aggregate($count as Orders)" % boundary)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["value"][0]["Orders"],
+                         len(self.kept("SalesOrderDate ge " + boundary)))
+
+        status, _, body = self.get(
+            V4 + "/SalesOrder?$top=1&$expand=to_Item($filter=NetAmount gt 1m)")
+        self.assertEqual(status, 400, body)
+        self.assertIn("OData V2 literal", body["error"]["message"])
+
+    def test_the_v2_service_still_reads_v2_and_refuses_v4(self):
+        with_v2 = self.get(
+            SRV + "/A_SalesOrder?$format=json&$filter="
+                  "SalesOrderDate ge datetime'%s'" % self.a_boundary()[:19])[2]
+        self.assertEqual(
+            sorted(row["SalesOrder"] for row in with_v2["d"]["results"]),
+            self.kept("SalesOrderDate ge " + self.a_boundary()),
+            "the same rows, each service asked in its own spelling")
+        self.assertEqual(
+            self.get(SRV + "/A_SalesOrder/$count?$filter=TotalNetAmount gt 1m")[0],
+            200, "a suffix is V2's own")
+
+        said = self.refused("SalesOrderDate ge 2026-01-01T00:00:00Z",
+                            base=SRV + "/A_SalesOrder")
+        self.assertEqual(
+            said, "2026-01-01T00:00:00Z is an OData V4 literal, and this "
+                  "service speaks V2; write datetime'2026-01-01T00:00:00'")
+
+    def test_a_date_that_is_not_one(self):
+        self.assertEqual(self.refused("SalesOrderDate ge 2026-13-45"),
+                         "'2026-13-45' is not a date in $filter")
 
 
 if __name__ == "__main__":
