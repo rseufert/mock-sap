@@ -867,7 +867,12 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
                 PaymentTerms="NT30" if owed else "",
                 PaymentBlockingReason="",
                 PaymentRunID="", PaymentRunDate=None,
-                NetDueDate=_iso(billed + _dt.timedelta(days=30)) if owed else None,
+                # Derived from the terms rather than written out again: these
+                # rows used to say "NT30" and "+30 days" as two literals that
+                # agreed only because NT30 happens to mean thirty (#182).
+                DueCalculationBaseDate=_iso(billed) if owed else None,
+                NetDueDate=(documents.net_due_date(_iso(billed), "NT30")
+                            if owed else None),
                 ClearingAccountingDocument="", ClearingDate=None,
                 ClearingCreationDate=None, ClearingItem="",
                 ClearingDocFiscalYear="", ClearingIsReversed=False))
