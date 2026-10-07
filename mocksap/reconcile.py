@@ -374,8 +374,15 @@ def _sets_summing_to(quoted: List[tuple], wanted: Decimal) -> List[List[tuple]]:
 
 
 # The most ways of paying what a line quotes that are tried. An invoice whose
-# terms offer a discount can be paid two ways, so the ways outrun the sets.
-MOST_WAYS = 1 << MOST_QUOTED
+# terms offer a discount can be paid two ways, so the ways outrun the sets:
+# sixteen plain invoices are 65,536 and one discount among them makes that
+# 98,304. The budget is well above the first figure so that a line which
+# cleared before discounts existed is not refused because one of the invoices
+# it quotes happens to offer one.
+MOST_WAYS = 1 << 20
+
+# The house bank's G/L account, which every payment and receipt moves.
+BANK_ACCOUNT = "0000113100"
 
 # Where a cash discount a customer was entitled to is posted. This mock's own
 # number, plausible rather than authentic, like the accounts beside it.
@@ -391,7 +398,7 @@ def _discount_offered(item: dict, paid_on: str) -> Optional[documents.Discount]:
     no rule for discounting net of tax, and `discount_on` says the base is the
     caller's to choose.
     """
-    baseline = item.get("DueCalculationBaseDate") or item.get("PostingDate")
+    baseline = item.get("DueCalculationBaseDate")
     if not baseline:
         return None
     offered = documents.discount_on(
@@ -430,6 +437,8 @@ def _readings_summing_to(quoted: List[tuple], ways: List[List[tuple]],
     found: List[List[tuple]] = []
 
     def search(index: int, total: Decimal, chosen: List[tuple]) -> None:
+        if total > wanted:
+            return          # every amount is positive, so this only gets worse
         if index == len(quoted):
             if chosen and total == wanted:
                 found.append(list(chosen))
@@ -548,6 +557,28 @@ def _match_receipt(conn, line: dict, candidates: List[dict],
                _priced(owed, paid_in), _priced(amount, paid_in), gap)}
 
 
+def _paid_net(conn, item: dict) -> bool:
+    """Whether the receipt that cleared this item took a discount on anything.
+
+    Read off the receipt document rather than remembered anywhere: a receipt
+    that took no discount gives the bank exactly what it takes off the
+    customer, and one that did gives the bank less (#185). The whole document
+    is judged, not the one item, because a transfer goes back whole.
+    """
+    rows = [dict(row) for row in conn.execute(
+        'SELECT * FROM "%s" WHERE "AccountingDocument" = ? AND "CompanyCode" = ? '
+        'AND "FiscalYear" = ?' % ENTITY_TYPES[CUBE].table,
+        (item["ClearingAccountingDocument"], item["CompanyCode"],
+         item["ClearingDocFiscalYear"])).fetchall()]
+    credited = sum((money.of(row["AmountInTransactionCurrency"]) for row in rows
+                    if row.get("Customer") and row["DebitCreditCode"] == "H"),
+                   Decimal("0"))
+    banked = sum((money.of(row["AmountInTransactionCurrency"]) for row in rows
+                  if row["GLAccount"] == BANK_ACCOUNT
+                  and row["DebitCreditCode"] == "S"), Decimal("0"))
+    return banked < credited
+
+
 def _match_returned_receipt(conn, line: dict) -> Dict[str, Any]:
     """The cleared receivables a returned transfer had settled, or why none.
 
@@ -566,6 +597,17 @@ def _match_returned_receipt(conn, line: dict) -> Dict[str, Any]:
         return {"items": [], "reason":
                 "this line is money we received going back and no cleared "
                 "receivable quotes its reference, so it reopens nothing"}
+    discounted = [item for item, _ in quoted if _paid_net(conn, item)]
+    if discounted:
+        # Whatever the debit is for. Net, it is less than the item; gross, it
+        # is more than arrived - and reopening the item whole on the strength
+        # of the gross figure left an unearned discount owed twice, once on
+        # the invoice and once on the line the receipt had opened for it.
+        return {"items": [], "reason":
+                "%s paid net of a cash discount, and giving back a receipt "
+                "that took one is not built: the discount would have to be "
+                "undone with it, so nothing is reopened"
+                % _in_words(["%s was" % _named(item) for item in discounted])}
     same = [(item, reference) for item, reference in quoted
             if _currency_of(item) == paid_in]
     if amount is not None and paid_in and 0 < len(same) <= MOST_QUOTED:
@@ -697,7 +739,7 @@ def _pay(ctx, settling: List[dict], posting: str, statement: str) -> List[dict]:
               "Amount": amount,
               "Text": "Clearing %s" % s["item"]["AccountingDocument"]}
              for s, amount in zip(settling, amounts)]
-    lines.append({"GLAccount": "0000113100", "Amount": -total,
+    lines.append({"GLAccount": BANK_ACCOUNT, "Amount": -total,
                   "Text": "Bank"})
     document, company, year = documents.post_journal_entry(ctx, {
         "CompanyCode": first["CompanyCode"],
@@ -771,7 +813,7 @@ def _collect(ctx, settling: List[dict], posting: str, statement: str) -> List[di
               "Text": "Clearing %s" % s["item"]["AccountingDocument"]}
              for s, amount in zip(settling, owed)]
     clearing = [str(index).zfill(6) for index in range(1, len(lines) + 1)]
-    lines.append({"GLAccount": "0000113100",
+    lines.append({"GLAccount": BANK_ACCOUNT,
                   "Amount": sum(owed, Decimal("0")) - sum(taken, Decimal("0")),
                   "Text": "Bank"})
     unearned = []
@@ -825,8 +867,7 @@ def _unearned(settled: dict, document: str, index: str, posting: str,
     """
     item, discount = settled["item"], settled["discount"]
     terms = item.get("PaymentTerms") or ""
-    baseline = str(item.get("DueCalculationBaseDate")
-                   or item.get("PostingDate"))[:10]
+    baseline = str(item["DueCalculationBaseDate"])[:10]
     return ("Line %s paid item %s net of %s discount under terms %s, which "
             "could be taken until %s and was taken on %s: the item is "
             "cleared and the discount is still owed, open as item %s of "
@@ -873,7 +914,7 @@ def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
         "HeaderText": "Return of %s" % item["AccountingDocument"],
         "ReferenceDocument": line.get("reference") or "",
     }, [
-        {"GLAccount": "0000113100", "Amount": bank * amount, "Text": "Bank"},
+        {"GLAccount": BANK_ACCOUNT, "Amount": bank * amount, "Text": "Bank"},
         {field: item[field], "Amount": -bank * amount, "Text": text},
     ])
     _set_clearing(ctx, item, {

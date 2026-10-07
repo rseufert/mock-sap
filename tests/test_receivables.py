@@ -866,9 +866,9 @@ class TestPayingNetOfADiscount(ReceivableCase):
         self.assertIn(" or ", reason)
 
     def test_more_ways_of_paying_than_it_will_try_are_refused(self):
-        """Eleven invoices each payable two ways is 177,146 readings, though
-        eleven is fewer than the sixteen it will take in full."""
-        bills = [self.billed("10.00") for _ in range(11)]
+        """Thirteen invoices each payable two ways is 1,594,322 readings,
+        though thirteen is fewer than the sixteen it will take in full."""
+        bills = [self.billed("10.00") for _ in range(13)]
         for _, document, _ in bills:
             self.on_terms(document)
         total = "%.2f" % sum(Decimal(owed) for _, _, owed in bills)
@@ -879,11 +879,27 @@ class TestPayingNetOfADiscount(ReceivableCase):
 
         self.assertEqual(applied["CLEARED"], [])
         reason = applied["UNPROCESSED"][0]["REASON"]
-        self.assertIn("11 open receivables", reason)
-        self.assertIn("65536", reason)
+        self.assertIn("13 open receivables", reason)
+        self.assertIn("1048576", reason)
+
+    def test_one_discount_among_sixteen_does_not_refuse_a_plain_payment(self):
+        """Sixteen plain invoices are searched, and an offer of discount on
+        one of them the payer did not take must not change that. The amounts
+        are powers of two so that only one set comes to any sum."""
+        bills = [self.billed("%d.00" % 2 ** k) for k in range(16)]
+        self.on_terms(bills[3][1])
+        billing, document, owed = bills[15]
+
+        applied = self.post(
+            line("000001", owed, note=" ".join(b[0] for b in bills),
+                 action="RCV"), statement="00317", date="20260910")
+
+        self.assertEqual(applied["UNPROCESSED"], [])
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"]
+                          for row in applied["CLEARED"]], [document])
 
     def test_a_discounted_receipt_going_back_is_reported_not_reopened(self):
-        """Not built, and said so: the debit is for less than the item."""
+        """Not built, and said so, for the money that actually arrived."""
         self.pay_net("00314", "20260910")
 
         applied = self.post(line("000001", self.NET + "-", reference=SMALL[0],
@@ -892,7 +908,42 @@ class TestPayingNetOfADiscount(ReceivableCase):
 
         self.assertEqual(applied["REOPENED"], [])
         self.assertEqual(len(applied["UNPROCESSED"]), 1)
+        self.assertIn("net of a cash discount",
+                      applied["UNPROCESSED"][0]["REASON"])
         self.assertNotIn(SMALL[1], self.open_receivables())
+
+    def test_nor_is_it_reopened_by_a_debit_for_the_whole_invoice(self):
+        """The item's own amount is not what the receipt received. Matching
+        on it reopened the invoice whole beside the discount the receipt had
+        already left open, so the customer owed the discount twice."""
+        paid = self.pay_net("00318", "20260927")
+        receipt = paid["CLEARED"][0]["CLEARINGDOCUMENT"]
+        owing = sorted(self.open_receivables())
+
+        applied = self.post(line("000001", SMALL[2] + "-", reference=SMALL[0],
+                                 action="RET"),
+                            statement="00319", date="20260928")
+
+        self.assertEqual(applied["REOPENED"], [])
+        self.assertIn("net of a cash discount",
+                      applied["UNPROCESSED"][0]["REASON"])
+        self.assertIn(SMALL[1], applied["UNPROCESSED"][0]["REASON"])
+        self.assertEqual(sorted(self.open_receivables()), owing)
+        self.assertIn(receipt, owing, "the discount is still owed, once")
+        self.assertNotIn(SMALL[1], owing)
+
+    def test_a_plain_receipt_beside_it_still_goes_back(self):
+        """Only the receipt that took a discount is held back."""
+        self.pay_net("00320", "20260927")
+        self.post(line("000001", LARGE[2], reference=LARGE[0], action="RCV"),
+                  statement="00321", date="20260927")
+
+        applied = self.post(line("000001", LARGE[2] + "-", reference=LARGE[0],
+                                 action="RET"),
+                            statement="00322", date="20260928")
+
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"]
+                          for row in applied["REOPENED"]], [LARGE[1]])
 
 
 if __name__ == "__main__":
