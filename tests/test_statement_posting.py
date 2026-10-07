@@ -78,6 +78,32 @@ class TestClearingWhatItPaid(StatementCase):
         self.assertTrue(item["ClearingDate"])
         self.assertFalse(item["ClearingIsReversed"])
 
+    def test_the_payment_s_own_line_is_cleared_on_the_day_it_posted(self):
+        """Named as cleared and dated as open is two answers (#160)."""
+        self.bill("SUP-B2", "1190.00")
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="SUP-B2")))["APPLIED"][0]
+
+        own = self.item_of(applied["CLEARED"][0]["CLEARINGDOCUMENT"])
+
+        self.assertEqual(own["ClearingAccountingDocument"],
+                         own["AccountingDocument"], "it clears itself")
+        self.assertTrue(own["PostingDate"])
+        self.assertEqual(own["ClearingDate"], own["PostingDate"])
+        self.assertEqual(own["ClearingCreationDate"], own["PostingDate"])
+
+    def test_it_is_cleared_on_the_same_day_as_the_invoice_it_paid(self):
+        invoice = self.bill("SUP-B3", "1190.00")
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="SUP-B3")))["APPLIED"][0]
+
+        paid = self.item_of(invoice["ACCOUNTINGDOCUMENT"])
+        own = self.item_of(applied["CLEARED"][0]["CLEARINGDOCUMENT"])
+
+        self.assertEqual(own["ClearingDate"], paid["ClearingDate"])
+        self.assertEqual(own["ClearingCreationDate"],
+                         paid["ClearingCreationDate"])
+
     def test_the_payment_does_not_leave_a_payable_of_its_own(self):
         """A payment document's own supplier line is not a new debt."""
         invoice = self.bill("SUP-B2", "1190.00")
@@ -533,6 +559,40 @@ class TestAReturnedPayment(StatementCase):
         self.assertFalse(was_never_paid["ClearingIsReversed"],
                          "this one nobody ever paid - a treasury team needs "
                          "to tell these apart")
+
+
+    def test_an_item_open_again_does_not_say_when_it_was_cleared(self):
+        returned = self.bill("SUP-G4", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="SUP-G4"),
+                         statement="00062"))
+        cleared = self.item_of(returned["ACCOUNTINGDOCUMENT"])
+        self.assertTrue(cleared["ClearingCreationDate"], "something to lose")
+
+        self.send(finsta(line("000001", "1190.00", reference="SUP-G4", action="RET"),
+                         statement="00063"))
+
+        reopened = self.item_of(returned["ACCOUNTINGDOCUMENT"])
+        self.assertIsNone(reopened["ClearingDate"])
+        self.assertIsNone(reopened["ClearingCreationDate"],
+                          "the day a clearing was entered goes with the clearing")
+        self.assertTrue(reopened["ClearingIsReversed"],
+                        "which is what still says it was paid once")
+
+    def test_the_return_s_own_line_is_cleared_on_the_day_it_posted(self):
+        self.bill("SUP-G5", "1190.00")
+        self.send(finsta(line("000001", "1190.00-", reference="SUP-G5"),
+                         statement="00064"))
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="SUP-G5", action="RET"),
+            statement="00065"))["APPLIED"][0]
+
+        own = self.item_of(applied["REOPENED"][0]["REVERSALDOCUMENT"])
+
+        self.assertEqual(own["ClearingAccountingDocument"],
+                         own["AccountingDocument"])
+        self.assertTrue(own["PostingDate"])
+        self.assertEqual(own["ClearingDate"], own["PostingDate"])
+        self.assertEqual(own["ClearingCreationDate"], own["PostingDate"])
 
 
 class TestWhenMoneyArrivesQuotingAPaidInvoice(StatementCase):
