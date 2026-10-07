@@ -454,11 +454,11 @@ def undefined_references(text: str):
     """The numbers the changelog links to and never defines, lowest first.
 
     Eight of them had accumulated by 0.6.0, so the released section rendered
-    `[#181]` as that literal text (#226). The rule asked every author to add
-    the definition by hand at the foot of `CHANGELOG.md` - the one shared line
-    range that `changelog.d/` exists to keep people out of - so following it
-    brought back the conflicts it was meant to end. Nobody followed it and
-    nothing noticed.
+    `[#181]` as that literal text (mock-edi#226). The rule asked every author
+    to add the definition by hand at the foot of `CHANGELOG.md` - the one
+    shared line range that `changelog.d/` exists to keep people out of - so
+    following it brought back the conflicts it was meant to end. Nobody
+    followed it and nothing noticed.
     """
     defined = set(DEFINITION.findall(text))
     return sorted({number for number in REFERENCE.findall(text)
@@ -559,8 +559,8 @@ def merged_pull_request(subject: str) -> str:
 
     A push to `main` carries no pull request in its event, so the workflow
     has no labels to pass and the entry rule fires on a change that was
-    already excused by `no changelog` (#193). The merge commit says which
-    pull request it came from, and this reads it.
+    already excused by `no changelog` (mock-edi#193). The merge commit says
+    which pull request it came from, and this reads it.
 
     Deliberately narrow. Anything that is not GitHub's own merge subject -
     a hand-written commit, a revert, "Merge branch 'main'" - returns "", and
