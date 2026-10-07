@@ -908,7 +908,7 @@ class TestPayingNetOfADiscount(ReceivableCase):
 
         self.assertEqual(applied["REOPENED"], [])
         self.assertEqual(len(applied["UNPROCESSED"]), 1)
-        self.assertIn("net of a cash discount",
+        self.assertIn("took a cash discount",
                       applied["UNPROCESSED"][0]["REASON"])
         self.assertNotIn(SMALL[1], self.open_receivables())
 
@@ -925,12 +925,34 @@ class TestPayingNetOfADiscount(ReceivableCase):
                             statement="00319", date="20260928")
 
         self.assertEqual(applied["REOPENED"], [])
-        self.assertIn("net of a cash discount",
+        self.assertIn("took a cash discount",
                       applied["UNPROCESSED"][0]["REASON"])
         self.assertIn(SMALL[1], applied["UNPROCESSED"][0]["REASON"])
         self.assertEqual(sorted(self.open_receivables()), owing)
         self.assertIn(receipt, owing, "the discount is still owed, once")
         self.assertNotIn(SMALL[1], owing)
+
+    def test_an_invoice_paid_in_full_on_the_same_receipt_is_not_called_net(self):
+        """One receipt covers what a customer paid on a statement, so it is
+        held back with the rest - and the reason is about the receipt, since
+        this invoice was paid every cent."""
+        self.on_terms(SMALL[1])
+        paid = self.post(
+            line("000001", self.NET, reference=SMALL[0], action="RCV"),
+            line("000002", LARGE[2], reference=LARGE[0], action="RCV"),
+            statement="00323", date="20260927")
+        receipt = {row["CLEARINGDOCUMENT"] for row in paid["CLEARED"]}
+        self.assertEqual(len(receipt), 1)
+
+        applied = self.post(line("000001", LARGE[2] + "-", reference=LARGE[0],
+                                 action="RET"),
+                            statement="00324", date="20260928")
+
+        self.assertEqual(applied["REOPENED"], [])
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        self.assertIn("%s of customer %s was cleared by receipt %s, which "
+                      "took one" % (LARGE[1], LARGE[3], receipt.pop()), reason)
+        self.assertNotIn("paid net", reason)
 
     def test_a_plain_receipt_beside_it_still_goes_back(self):
         """Only the receipt that took a discount is held back."""

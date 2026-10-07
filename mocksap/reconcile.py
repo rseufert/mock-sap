@@ -603,11 +603,18 @@ def _match_returned_receipt(conn, line: dict) -> Dict[str, Any]:
         # is more than arrived - and reopening the item whole on the strength
         # of the gross figure left an unearned discount owed twice, once on
         # the invoice and once on the line the receipt had opened for it.
+        # Said of the receipt, not of the item: one receipt covers all a
+        # customer paid on a statement, so an item paid in full can sit in a
+        # receipt that took a discount on another, and "was paid net" would
+        # be a false statement about it.
         return {"items": [], "reason":
-                "%s paid net of a cash discount, and giving back a receipt "
-                "that took one is not built: the discount would have to be "
-                "undone with it, so nothing is reopened"
-                % _in_words(["%s was" % _named(item) for item in discounted])}
+                "%s, and giving back a receipt that took a cash discount is "
+                "not built: the discount would have to be undone with it, so "
+                "nothing is reopened"
+                % _in_words(["%s was cleared by receipt %s, which took one"
+                             % (_named(item),
+                                item["ClearingAccountingDocument"])
+                             for item in discounted])}
     same = [(item, reference) for item, reference in quoted
             if _currency_of(item) == paid_in]
     if amount is not None and paid_in and 0 < len(same) <= MOST_QUOTED:
