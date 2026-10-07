@@ -14,7 +14,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from .odata import SapError, build_where, to_json_value
+from . import money
+from .odata import SapError, build_where, column_sql, to_json_value
 from .schema import EntityType
 
 SUPPORTED = ("filter", "groupby", "aggregate", "orderby", "top", "skip", "identity")
@@ -85,8 +86,9 @@ class Aggregation:
             elif integral:
                 out[alias] = int(value)
             elif prop is not None and prop.type == "Edm.Decimal":
-                # an average of amounts is an amount: keep the scale SAP declares
-                out[alias] = round(float(value), prop.scale if prop.scale is not None else 3)
+                # an average of amounts is an amount: keep the scale SAP
+                # declares, and round a half up rather than to even
+                out[alias] = float(money.at(value, money.scale_of(prop)))
             else:
                 out[alias] = float(value)
         return out
@@ -211,8 +213,13 @@ def _aggregate(plan: Aggregation, args: str, et: EntityType) -> None:
             raise SapError(
                 "Property '%s' is not numeric, so it cannot be aggregated with %s"
                 % (path, operator), 400, target=path)
-        plan.aggregates.append((alias, _AGGREGATES[operator] % ('"%s"' % column),
-                                prop, operator in _COUNTING))
+        # A decimal is cast to a number before it is summed or compared,
+        # because the column holding it is text: `MAX` over text would answer
+        # with the longest-looking amount rather than the largest.  Counting
+        # is done on the stored value, where exactness still costs nothing.
+        counting = operator in _COUNTING
+        sql = '"%s"' % column if counting else column_sql(column, prop)
+        plan.aggregates.append((alias, _AGGREGATES[operator] % sql, prop, counting))
 
 
 def _orderby(plan: Aggregation, args: str) -> None:

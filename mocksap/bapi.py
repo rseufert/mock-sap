@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-from . import clock, db, documents, store
+from . import clock, db, documents, money, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -85,11 +85,17 @@ def _sap_date(value) -> str:
     return text.split("T")[0]
 
 
-def _num(value, default=0.0) -> float:
+def _num(value, default=0):
+    """One ABAP numeric field, as a decimal.
+
+    A BAPI's quantities and amounts arrive as the characters a caller typed,
+    and they stay decimal from here: a quantity that multiplies a price must
+    not pick up a binary rounding error on the way through this layer.
+    """
     try:
-        return float(str(value).strip() or default)
+        return money.of(value, default=str(default))
     except (TypeError, ValueError):
-        return default
+        return money.of(default)
 
 
 # --------------------------------------------------------------------------
@@ -166,7 +172,8 @@ def _so_create(ctx, params):
                     v1=material, row=index, parameter="ORDER_ITEMS_IN", fld="MATERIAL"))
             continue
         qty = _num(field(item, "REQ_QTY", field(item, "TARGET_QTY", 1)), 1.0)
-        price = _num(field(item, "COND_VALUE", 0)) or round(qty * 100.0, 2)
+        price = (_num(field(item, "COND_VALUE", 0))
+                 or money.at(qty * 100, money.CURRENCY_SCALE))
         payload_items.append({
             "SalesOrderItem": str(field(item, "ITM_NUMBER", "")).strip() or None,
             "Material": material,
@@ -237,7 +244,7 @@ def _so_getlist(ctx, params):
         "SOLD_TO": r["SoldToParty"],
         "PURCH_NO_C": r["PurchaseOrderByCustomer"],
         "DOC_DATE": _sap_date(r["SalesOrderDate"]),
-        "NET_VALUE": "%.2f" % (r["TotalNetAmount"] or 0),
+        "NET_VALUE": money.text(r["TotalNetAmount"], money.CURRENCY_SCALE),
         "CURRENCY": r["TransactionCurrency"],
     } for r in rows]
     messages = [] if orders else [ret("W", "No sales orders found", "V1", "175")]
@@ -258,7 +265,7 @@ def _so_getstatus(ctx, params):
         "ITM_NUMBER": it["SalesOrderItem"],
         "MATERIAL": it["Material"],
         "SHORT_TEXT": it["SalesOrderItemText"],
-        "REQ_QTY": "%.3f" % (it["RequestedQuantity"] or 0),
+        "REQ_QTY": money.text(it["RequestedQuantity"], 3),
         "SALES_UNIT": it["RequestedQuantityUnit"],
         "DLV_STAT": row["OverallDeliveryStatus"],
         "PROCESS_STAT": row["OverallSDProcessStatus"],
@@ -332,9 +339,9 @@ def _po_getdetail(ctx, params):
         "POITEM": [{
             "PO_ITEM": it["PurchaseOrderItem"], "MATERIAL": it["Material"],
             "SHORT_TEXT": it["PurchaseOrderItemText"], "PLANT": it["Plant"],
-            "QUANTITY": "%.3f" % (it["OrderQuantity"] or 0),
+            "QUANTITY": money.text(it["OrderQuantity"], 3),
             "PO_UNIT": it["PurchaseOrderQuantityUnit"],
-            "NET_PRICE": "%.2f" % (it["NetPriceAmount"] or 0),
+            "NET_PRICE": money.text(it["NetPriceAmount"], money.CURRENCY_SCALE),
         } for it in items],
         "RETURN": [ret("S", "Purchase order %s read" % row["PurchaseOrder"], "06", "017")],
     }
@@ -376,12 +383,16 @@ def _delivery_create(ctx, params):
             messages.append(ret("E", "Item %s does not exist in order %s"
                                 % (position, number), "V1", "555", row=index))
             continue
-        open_quantity = float(item["RequestedQuantity"] or 0)
+        open_quantity = money.of(item["RequestedQuantity"])
         quantity = quantity or open_quantity
-        if quantity > open_quantity + 1e-9:
+        # Compared exactly: both sides are decimals, so asking for all of a
+        # quantity cannot overshoot it by a fraction the way it could when
+        # this had a tolerance and both sides were floats.
+        if quantity > open_quantity:
             messages.append(ret(
-                "E", "Only %.3f %s are open for item %s"
-                % (open_quantity, item["RequestedQuantityUnit"], item["SalesOrderItem"]),
+                "E", "Only %s %s are open for item %s"
+                % (money.text(open_quantity, 3),
+                   item["RequestedQuantityUnit"], item["SalesOrderItem"]),
                 "VL", "367", row=index, fld="DLV_QTY"))
             continue
         selected.append((item, quantity))
@@ -459,9 +470,10 @@ def _acc_document_post(ctx, params):
 
     balance = documents.balance_of(lines)
     if balance:
+        shown = money.text(balance, money.CURRENCY_SCALE)
         return {"OBJ_KEY": "", "RETURN": [ret(
-            "E", "Balance in transaction currency: %.2f %s" % (balance, currency),
-            "F5", "702", v1="%.2f" % balance, v2=currency)]}
+            "E", "Balance in transaction currency: %s %s" % (shown, currency),
+            "F5", "702", v1=shown, v2=currency)]}
 
     posting = str(field(header, "PSTNG_DATE", "")) or None
     document, company_code, year = documents.post_journal_entry(ctx, {
@@ -502,8 +514,8 @@ def _material_detail(ctx, params):
             "MATL_GROUP": row["ProductGroup"],
             "BASE_UOM": row["BaseUnit"],
             "DIVISION": row["Division"],
-            "NET_WEIGHT": "%.3f" % (row["NetWeight"] or 0),
-            "GROSS_WT": "%.3f" % (row["GrossWeight"] or 0),
+            "NET_WEIGHT": money.text(row["NetWeight"], 3),
+            "GROSS_WT": money.text(row["GrossWeight"], 3),
             "UNIT_OF_WT": row["WeightUnit"],
             "CREATED_ON": _sap_date(row["CreationDate"]),
             "PLANT": plant,
@@ -942,8 +954,10 @@ def _flat_value(prop, value) -> str:
         return str(value)[:10].replace("-", "")
     if prop.type == "Edm.Boolean":
         return "X" if value else ""
-    if prop.type in ("Edm.Decimal", "Edm.Double"):
-        return ("%%.%df" % (prop.scale if prop.scale is not None else 3)) % float(value)
+    if prop.type == "Edm.Decimal":
+        return money.text(value, money.scale_of(prop))
+    if prop.type == "Edm.Double":
+        return ("%%.%df" % money.scale_of(prop)) % float(value)
     return str(value)
 
 

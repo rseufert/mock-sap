@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import threading
-from typing import Dict, List, Optional
+from decimal import Decimal
+from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-from . import clock, db, documents, outcome, reconcile, store
+from . import clock, db, documents, money, outcome, reconcile, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -159,7 +160,7 @@ def _apply_delivery(ctx, body: bytes, docnum: str = "") -> List[dict]:
     except ET.ParseError as exc:
         raise NotPosted("The DELVRY is not well-formed XML: %s" % exc)
 
-    delivered: Dict[str, Dict[str, float]] = {}
+    delivered: Dict[str, Dict[str, Any]] = {}
     for element in root.iter():
         if _local(element.tag) != "E1EDL24":
             continue
@@ -169,9 +170,9 @@ def _apply_delivery(ctx, body: bytes, docnum: str = "") -> List[dict]:
         if not order or not position:
             continue
         try:
-            quantity = float(values.get("LFIMG") or values.get("LGMNG") or 0)
+            quantity = money.of(values.get("LFIMG") or values.get("LGMNG"))
         except ValueError:
-            quantity = 0.0
+            quantity = Decimal(0)
         delivered.setdefault(order, {})[position] = quantity
 
     # the delivery the IDoc describes, if it names one
@@ -274,9 +275,9 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
     def amount(sumid):
         raw = (sums.get(sumid) or {}).get("SUMME", "")
         try:
-            return float(raw)
+            return money.of(raw)
         except ValueError:
-            return 0.0
+            return Decimal(0)
 
     gross = amount("010")
     net = amount("011") or gross
@@ -306,7 +307,7 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
         } for item in items],
     }
     posted = documents.post_supplier_invoice(ctx, invoice)
-    gross_text = "%.2f" % posted["gross"]
+    gross_text = money.text(posted["gross"], money.CURRENCY_SCALE)
     applied = [{
         "SUPPLIERINVOICE": posted["supplier_invoice"],
         "FISCALYEAR": posted["fiscal_year"],
@@ -525,7 +526,8 @@ def generate_orders05(ctx, sales_order: str) -> dict:
         _seg("E1EDK01", {
             "CURCY": row["TransactionCurrency"], "HWAER": row["TransactionCurrency"],
             "WKURS": "1.00000", "ZTERM": row["CustomerPaymentTerms"],
-            "BELNR": row["SalesOrder"], "NTGEW": "%.3f" % (row["TotalNetAmount"] or 0),
+            "BELNR": row["SalesOrder"],
+            "NTGEW": money.text(row["TotalNetAmount"], 3),
         }),
         _seg("E1EDK14", {"QUALF": "008", "ORGID": row["SalesOrganization"]}),
         _seg("E1EDK14", {"QUALF": "007", "ORGID": row["DistributionChannel"]}),
@@ -544,9 +546,10 @@ def generate_orders05(ctx, sales_order: str) -> dict:
         child = _seg("E1EDP19", {
             "QUALF": "002", "IDTNR": it["Material"], "KTEXT": it["SalesOrderItemText"]})
         segments.append(_seg("E1EDP01", {
-            "POSEX": it["SalesOrderItem"], "MENGE": "%.3f" % (it["RequestedQuantity"] or 0),
+            "POSEX": it["SalesOrderItem"],
+            "MENGE": money.text(it["RequestedQuantity"], 3),
             "MENEE": it["RequestedQuantityUnit"], "PSTYV": it["SalesOrderItemCategory"],
-            "WERKS": it["Plant"], "NTGEW": "%.3f" % (it["NetAmount"] or 0),
+            "WERKS": it["Plant"], "NTGEW": money.text(it["NetAmount"], 3),
             "CURCY": it["TransactionCurrency"],
         }, child))
 
@@ -613,6 +616,7 @@ def generate_invoic02(ctx, sales_order: str) -> dict:
     doc_date = str(row["SalesOrderDate"] or "")[:10].replace("-", "")
     today = clock.now().strftime("%Y%m%d")
     currency = row["TransactionCurrency"]
+    cents = money.CURRENCY_SCALE
     net, tax = invoice["net"], invoice["tax"]
 
     segments = [
@@ -620,7 +624,7 @@ def generate_invoic02(ctx, sales_order: str) -> dict:
         _seg("E1EDK01", {
             "CURCY": currency, "HWAER": currency, "WKURS": "1.00000",
             "ZTERM": row["CustomerPaymentTerms"], "BELNR": billing,
-            "NTGEW": "%.3f" % net, "BSART": "INVO",
+            "NTGEW": money.text(net, 3), "BSART": "INVO",
         }),
         _seg("E1EDK02", {"QUALF": "009", "BELNR": billing, "DATUM": today}),
         _seg("E1EDK02", {"QUALF": "001", "BELNR": row["SalesOrder"], "DATUM": doc_date}),
@@ -631,27 +635,27 @@ def generate_invoic02(ctx, sales_order: str) -> dict:
         _partner_segment("AG", row["SoldToParty"], partner, address),
     ]
     for item in items:
-        quantity = float(item["RequestedQuantity"] or 0)
-        amount = float(item["NetAmount"] or 0)
-        price = round(amount / quantity, 2) if quantity else amount
+        quantity = money.of(item["RequestedQuantity"])
+        amount = money.of(item["NetAmount"])
+        price = (money.at(amount / quantity, money.CURRENCY_SCALE)
+                 if quantity else amount)
         children = "".join([
             _seg("E1EDP19", {"QUALF": "002", "IDTNR": item["Material"],
                              "KTEXT": item["SalesOrderItemText"]}),
-            _seg("E1EDP26", {"QUALF": "003", "BETRG": "%.2f" % amount}),
-            _seg("E1EDP26", {"QUALF": "011", "BETRG": "%.2f" % price}),
+            _seg("E1EDP26", {"QUALF": "003", "BETRG": money.text(amount, cents)}),
+            _seg("E1EDP26", {"QUALF": "011", "BETRG": money.text(price, cents)}),
         ])
         segments.append(_seg("E1EDP01", {
-            "POSEX": item["SalesOrderItem"], "MENGE": "%.3f" % quantity,
+            "POSEX": item["SalesOrderItem"], "MENGE": money.text(quantity, 3),
             "MENEE": item["RequestedQuantityUnit"], "PSTYV": item["SalesOrderItemCategory"],
-            "WERKS": item["Plant"], "VPREI": "%.2f" % price, "NETWR": "%.2f" % amount,
+            "WERKS": item["Plant"], "VPREI": money.text(price, cents),
+            "NETWR": money.text(amount, cents),
             "CURCY": currency, "VGBEL": row["SalesOrder"], "VGPOS": item["SalesOrderItem"],
         }, children))
-    segments.append(_seg("E1EDS01", {"SUMID": "010", "SUMME": "%.2f" % (net + tax),
-                                     "SUNIT": currency}))
-    segments.append(_seg("E1EDS01", {"SUMID": "011", "SUMME": "%.2f" % net,
-                                     "SUNIT": currency}))
-    segments.append(_seg("E1EDS01", {"SUMID": "205", "SUMME": "%.2f" % tax,
-                                     "SUNIT": currency}))
+    for sumid, total in (("010", net + tax), ("011", net), ("205", tax)):
+        segments.append(_seg("E1EDS01", {"SUMID": sumid,
+                                         "SUMME": money.text(total, cents),
+                                         "SUNIT": currency}))
 
     xml = ('<?xml version="1.0" encoding="utf-8"?><INVOIC02><IDOC BEGIN="1">%s'
            "</IDOC></INVOIC02>" % "".join(segments))
@@ -665,14 +669,16 @@ def generate_delvry07(ctx, sales_order: str) -> dict:
     row, items, partner, address = _sales_order_context(ctx, sales_order)
     # likewise the delivery: it is created, and the IDoc describes it
     delivery = documents.create_delivery(
-        ctx, row, [(item, float(item["RequestedQuantity"] or 0)) for item in items])
+        ctx, row, [(item, money.of(item["RequestedQuantity"])) for item in items])
     docnum = db.next_number(ctx.conn, "IDOC", 16)
     today = clock.now().strftime("%Y%m%d")
-    weight = sum(float(item["RequestedQuantity"] or 0) for item in items)
+    weight = sum((money.of(item["RequestedQuantity"]) for item in items),
+                 Decimal(0))
 
     children = "".join([
         _seg("E1EDL21", {"LFART": "LF", "VSTEL": "1710", "VKORG": row["SalesOrganization"],
-                         "ROUTE": "R00001", "BTGEW": "%.3f" % weight, "GEWEI": "KGM"}),
+                         "ROUTE": "R00001", "BTGEW": money.text(weight, 3),
+                         "GEWEI": "KGM"}),
         _seg("E1EDL22", {"VBELN": delivery, "VSTEL": "1710", "LFDAT": today,
                          "LFUHR": "120000", "KODAT": today}),
         _seg("E1ADRM1", {"PARTNER_Q": "WE", "PARTNER_ID": row["SoldToParty"],
@@ -684,11 +690,12 @@ def generate_delvry07(ctx, sales_order: str) -> dict:
     ])
     item_segments = []
     for item in items:
-        quantity = float(item["RequestedQuantity"] or 0)
+        quantity = money.of(item["RequestedQuantity"])
         item_segments.append(_seg("E1EDL24", {
             "POSNR": item["SalesOrderItem"], "MATNR": item["Material"],
-            "WERKS": item["Plant"], "LFIMG": "%.3f" % quantity,
-            "VRKME": item["RequestedQuantityUnit"], "LGMNG": "%.3f" % quantity,
+            "WERKS": item["Plant"], "LFIMG": money.text(quantity, 3),
+            "VRKME": item["RequestedQuantityUnit"],
+            "LGMNG": money.text(quantity, 3),
             "MEINS": item["RequestedQuantityUnit"],
             "ARKTX": item["SalesOrderItemText"],
             "VGBEL": row["SalesOrder"], "VGPOS": item["SalesOrderItem"],
@@ -698,7 +705,7 @@ def generate_delvry07(ctx, sales_order: str) -> dict:
         _control_record(docnum, "DELVRY07", "DELVRY", ctx.client),
         _seg("E1EDL20", {"VBELN": delivery, "VSTEL": "1710", "VKORG": row["SalesOrganization"],
                          "LFART": "LF", "KUNNR": row["SoldToParty"],
-                         "BTGEW": "%.3f" % weight, "GEWEI": "KGM",
+                         "BTGEW": money.text(weight, 3), "GEWEI": "KGM",
                          "ANZPK": str(len(items)).zfill(5)},
              children + "".join(item_segments)),
     ]
@@ -719,7 +726,7 @@ def _money_out(amount) -> str:
     a credit on the supplier's account; the perspective flips in the
     conversion, not here.
     """
-    return "%.2f-" % amount
+    return money.text(amount, money.CURRENCY_SCALE) + "-"
 
 
 def generate_pexr2002(ctx, clearing_document: str) -> dict:
@@ -776,7 +783,7 @@ def generate_pexr2002(ctx, clearing_document: str) -> dict:
     return {"docnum": docnum, "xml": xml,
             "clearing_document": paid["document"],
             "payee": paid["payee"],
-            "total": "%.2f" % paid["total"],
+            "total": money.text(paid["total"], money.CURRENCY_SCALE),
             "invoices": [row["reference"] or row["invoice"]
                          for row in paid["rows"]]}
 

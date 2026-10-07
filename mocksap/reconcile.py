@@ -33,7 +33,8 @@ import json
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from . import clock, db, documents, outcome, statement as statement_reader, store
+from . import (clock, db, documents, money, outcome,
+               statement as statement_reader, store)
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -45,10 +46,6 @@ SUPPLIER_LINE = documents.ITEM_TYPE_SUPPLIER
 CUSTOMER_LINE = documents.ITEM_TYPE_CUSTOMER
 
 
-def _decimal(value) -> Decimal:
-    return Decimal(str(value if value not in (None, "") else "0"))
-
-
 def _money(value) -> str:
     """An amount as a reader compares them: two places, and always positive.
 
@@ -57,7 +54,7 @@ def _money(value) -> str:
     makes "1190.0 vs -1000.00" look like a formatting bug rather than the
     disagreement it is.
     """
-    return "%.2f" % abs(_decimal(value))
+    return money.text(abs(money.of(value)), money.CURRENCY_SCALE)
 
 
 def _tight(text: str) -> str:
@@ -262,7 +259,7 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
     if not quoted:
         return {"item": None, "reason": "no open item quotes this reference"}
 
-    wanted = abs(_decimal(amount))
+    wanted = abs(money.of(amount))
     paid_in = (line.get("currency") or "").strip().upper()
     if not paid_in:
         # `statement.py` falls back to the account's own FIIKWAER when a line
@@ -272,7 +269,7 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
                 "neither the line nor the account it is on names a currency, "
                 "and an amount without one is not an amount"}
     equal = [(item, reference) for item, reference in quoted
-             if abs(_decimal(item["AmountInTransactionCurrency"])) == wanted]
+             if abs(money.of(item["AmountInTransactionCurrency"])) == wanted]
     paying = [(item, reference) for item, reference in equal
               if _currency_of(item) == paid_in]
     if len({_party_of(item) for item, _ in paying}) > 1:
@@ -400,14 +397,14 @@ def _pay(ctx, settling: List[dict], posting: str, statement: str) -> List[dict]:
     ever be right while a payment settled exactly one invoice.
     """
     first = settling[0]["item"]
-    amounts = [abs(_decimal(s["line"].get("amount"))) for s in settling]
+    amounts = [abs(money.of(s["line"].get("amount"))) for s in settling]
     total = sum(amounts, Decimal("0"))
     # the payables go away, the bank account pays for all of them at once
     lines = [{"Supplier": s["item"].get("Supplier") or "",
-              "Amount": float(amount),
+              "Amount": amount,
               "Text": "Clearing %s" % s["item"]["AccountingDocument"]}
              for s, amount in zip(settling, amounts)]
-    lines.append({"GLAccount": "0000113100", "Amount": -float(total),
+    lines.append({"GLAccount": "0000113100", "Amount": -total,
                   "Text": "Bank"})
     document, company, year = documents.post_journal_entry(ctx, {
         "CompanyCode": first["CompanyCode"],
@@ -446,7 +443,7 @@ def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
     ever paid.  Without that, the two look identical and the difference is
     exactly what a treasury team is trying to see.
     """
-    amount = abs(_decimal(line.get("amount")))
+    amount = abs(money.of(line.get("amount")))
     document, company, year = documents.post_journal_entry(ctx, {
         "CompanyCode": item["CompanyCode"],
         "AccountingDocumentType": "ZP",
@@ -455,8 +452,8 @@ def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
         "HeaderText": "Return of %s" % item["AccountingDocument"],
         "ReferenceDocument": line.get("reference") or "",
     }, [
-        {"GLAccount": "0000113100", "Amount": float(amount), "Text": "Bank"},
-        {"Supplier": item["Supplier"], "Amount": -float(amount),
+        {"GLAccount": "0000113100", "Amount": amount, "Text": "Bank"},
+        {"Supplier": item["Supplier"], "Amount": -amount,
          "Text": "Payment returned"},
     ])
     _set_clearing(ctx, item, {
@@ -521,7 +518,7 @@ def settlement_of(ctx, document: str) -> dict:
     rows, total = [], Decimal("0")
     for item in settled:
         paid = lines.get(item["ClearingItem"])
-        amount = _decimal((paid or item)["AmountInTransactionCurrency"])
+        amount = money.of((paid or item)["AmountInTransactionCurrency"])
         total += amount
         rows.append({
             "invoice": item["AccountingDocument"],
@@ -531,7 +528,7 @@ def settlement_of(ctx, document: str) -> dict:
         })
 
     bank = [row for row in lines.values() if not (row.get("Supplier") or "")]
-    credited = sum((_decimal(row["AmountInTransactionCurrency"]) for row in bank),
+    credited = sum((money.of(row["AmountInTransactionCurrency"]) for row in bank),
                    Decimal("0"))
     if bank and credited != total:
         raise SapError(
@@ -593,7 +590,7 @@ def check_balances(conn, parsed: dict) -> List[str]:
     previous = _previous(conn, parsed["account"]["number"])
     opening = parsed.get("opening")
     if previous and previous.get("closing") is not None and opening is not None:
-        if not previous.get("interim") and _decimal(previous["closing"]) != opening:
+        if not previous.get("interim") and money.of(previous["closing"]) != opening:
             findings.append(
                 "Statement %s opens at %s, but statement %s closed at %s: a "
                 "statement is missing" % (parsed.get("statement") or "(unnumbered)",

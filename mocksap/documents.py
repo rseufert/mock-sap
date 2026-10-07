@@ -8,9 +8,10 @@ creation lives here rather than in whichever layer needed it first.
 from __future__ import annotations
 
 import datetime as _dt
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import clock, db, store
+from . import clock, db, money, store
 from .odata import SapError
 from .schema import ENTITY_TYPES
 
@@ -32,18 +33,19 @@ def order_items(ctx, order) -> List[Any]:
     return store.children(ctx.conn, order, so, so.nav("to_Item"))
 
 
-def create_delivery(ctx, order, lines: List[Tuple[Any, float]]) -> str:
+def create_delivery(ctx, order, lines: List[Tuple[Any, Any]]) -> str:
     """Create an outbound delivery for `lines`, each an order item and a quantity."""
     delivery = db.next_number(ctx.conn, "DELIVERY", 10)
     today = _today()
-    weight = sum(quantity for _item, quantity in lines)
+    lines = [(item, money.of(quantity)) for item, quantity in lines]
+    weight = sum((quantity for _item, quantity in lines), Decimal(0))
     store.insert(ctx.conn, ENTITY_TYPES["A_OutbDeliveryHeader"], {
         "DeliveryDocument": delivery, "DeliveryDocumentType": "LF",
         "ShippingPoint": "1710", "SalesOrganization": order["SalesOrganization"],
         "SoldToParty": order["SoldToParty"], "ShipToParty": order["SoldToParty"],
         "DeliveryDate": today, "ActualGoodsMovementDate": today,
         "OverallSDProcessStatus": "C", "OverallGoodsMovementStatus": "C",
-        "TotalWeight": round(weight, 3), "WeightUnit": "KG",
+        "TotalWeight": weight, "WeightUnit": "KG",
     }, user=ctx.user)
 
     for item, quantity in lines:
@@ -57,7 +59,7 @@ def create_delivery(ctx, order, lines: List[Tuple[Any, float]]) -> str:
             "Plant": item["Plant"], "StorageLocation": "1710",
             "ReferenceSDDocument": order["SalesOrder"],
             "ReferenceSDDocumentItem": item["SalesOrderItem"],
-            "ItemGrossWeight": round(quantity, 3), "ItemWeightUnit": "KG",
+            "ItemGrossWeight": quantity, "ItemWeightUnit": "KG",
         }, user=ctx.user)
 
     apply_delivery_status(ctx, order,
@@ -65,13 +67,18 @@ def create_delivery(ctx, order, lines: List[Tuple[Any, float]]) -> str:
     return delivery
 
 
-def apply_delivery_status(ctx, order, delivered: Dict[str, float]) -> str:
-    """Move the order's delivery status to fully or partly delivered."""
+def apply_delivery_status(ctx, order, delivered: Dict[str, Any]) -> str:
+    """Move the order's delivery status to fully or partly delivered.
+
+    Quantities are compared exactly, because both sides are decimals: an
+    order for 0.3 delivered in full is complete without the tolerance this
+    used to carry, which was there because neither 0.3 was quite 0.3.
+    """
     items = order_items(ctx, order)
     complete = bool(items)
     for item in items:
-        wanted = float(item["RequestedQuantity"] or 0)
-        if delivered.get(item["SalesOrderItem"], 0.0) + 1e-9 < wanted:
+        wanted = money.of(item["RequestedQuantity"])
+        if money.of(delivered.get(item["SalesOrderItem"])) < wanted:
             complete = False
             break
     status = "C" if complete else "B"
@@ -135,13 +142,13 @@ def post_journal_entry(ctx, header: Dict[str, Any],
     }, user=ctx.user)
 
     for index, line in enumerate(lines, start=1):
-        amount = float(line.get("Amount") or 0)
+        amount = money.at(line.get("Amount"), money.CURRENCY_SCALE)
         store.insert(ctx.conn, ENTITY_TYPES["A_JournalEntryItem"], {
             "AccountingDocument": document, "CompanyCode": company, "FiscalYear": year,
             "AccountingDocumentItem": str(index).zfill(6),
             "GLAccount": line.get("GLAccount") or "",
             "DebitCreditCode": "S" if amount >= 0 else "H",
-            "AmountInTransactionCurrency": abs(round(amount, 2)),
+            "AmountInTransactionCurrency": abs(amount),
             "TransactionCurrency": line.get("TransactionCurrency")
             or header.get("TransactionCurrency") or "EUR",
             "DocumentItemText": line.get("Text") or "",
@@ -229,10 +236,11 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
     posting = str(invoice.get("posting_date") or _today())[:10]
     year = posting[:4]
     currency = str(invoice.get("currency") or "EUR")
-    gross = round(float(invoice.get("gross") or 0), 2)
-    net = round(float(invoice.get("net") or gross), 2)
-    tax = round(float(invoice.get("tax") if invoice.get("tax") is not None
-                      else gross - net), 2)
+    cents = money.CURRENCY_SCALE
+    gross = money.at(invoice.get("gross"), cents)
+    net = money.at(invoice.get("net") or gross, cents)
+    tax = money.at(invoice.get("tax") if invoice.get("tax") is not None
+                   else gross - net, cents)
     terms = str(invoice.get("terms") or "")
     baseline = str(invoice.get("baseline_date") or posting)[:10]
 
@@ -299,8 +307,8 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
             "PurchaseOrder": str(item.get("purchase_order") or ""),
             "PurchaseOrderItem": str(item.get("purchase_order_item") or ""),
             "DocumentCurrency": currency,
-            "SupplierInvoiceItemAmount": round(float(item.get("amount") or 0), 2),
-            "QuantityInPurchaseOrderUnit": float(item.get("quantity") or 0),
+            "SupplierInvoiceItemAmount": money.at(item.get("amount"), cents),
+            "QuantityInPurchaseOrderUnit": money.of(item.get("quantity")),
             "PurchaseOrderQuantityUnit": str(item.get("unit") or ""),
             "SupplierInvoiceItemText": str(item.get("text") or "")[:50],
         }, user=ctx.user)
@@ -310,20 +318,41 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
             "gross": gross, "currency": currency}
 
 
-def balance_of(lines: List[Dict[str, Any]]) -> float:
-    """What the debits and credits come to.  Zero, or the document is not postable."""
-    return round(sum(float(line.get("Amount") or 0) for line in lines), 2)
+def balance_of(lines: List[Dict[str, Any]]) -> Decimal:
+    """What the debits and credits come to.  Zero, or the document is not postable.
+
+    Added as decimals, so the answer is the lines' own arithmetic.  Added as
+    floats it was not: three lines of 0.1 against one of 0.3 came to
+    2.8e-17, and what kept that from refusing the document was the rounding
+    to two places rather than anything about the sum - which held for the
+    sizes a document has, and was a bet on them.
+    """
+    return money.at(sum((money.of(line.get("Amount")) for line in lines),
+                        Decimal(0)), money.CURRENCY_SCALE)
 
 
-def create_billing_document(ctx, order, items=None, tax_rate: float = 0.19
-                            ) -> Dict[str, str]:
+# The one output tax rate this mock bills at: Germany's standard rate, which
+# is what company code 1710 implies.  A real system reads it from the
+# condition records a pricing procedure found, and nothing here does pricing.
+TAX_RATE = Decimal("0.19")
+
+
+def create_billing_document(ctx, order, items=None, tax_rate=TAX_RATE
+                            ) -> Dict[str, Any]:
     """Invoice a sales order, and post the journal entry that follows from it."""
     items = order_items(ctx, order) if items is None else items
     billing = db.next_number(ctx.conn, "BILLINGDOCUMENT", 10)
     today = _today()
+    cents = money.CURRENCY_SCALE
+    rate = money.of(tax_rate)
     currency = order["TransactionCurrency"] or "EUR"
-    net = round(sum(float(item["NetAmount"] or 0) for item in items), 2)
-    tax = round(net * tax_rate, 2)
+    net = money.at(sum((money.of(item["NetAmount"]) for item in items),
+                       Decimal(0)), cents)
+    # Half up, because that is what a tax authority specifies and what SAP
+    # does: 19% of 2.50 is 0.4750 exactly, and so 0.48.  `round()` would make
+    # it 0.47, both by rounding the half to even and by never seeing a half
+    # in the first place - 2.50 * 0.19 is a shade under 0.475 in binary.
+    tax = money.at(net * rate, cents)
 
     store.insert(ctx.conn, ENTITY_TYPES["A_BillingDocument"], {
         "BillingDocument": billing, "BillingDocumentType": "F2",
@@ -331,18 +360,18 @@ def create_billing_document(ctx, order, items=None, tax_rate: float = 0.19
         "SoldToParty": order["SoldToParty"], "PayerParty": order["SoldToParty"],
         "BillingDocumentDate": today, "TransactionCurrency": currency,
         "TotalNetAmount": net, "TotalTaxAmount": tax,
-        "TotalGrossAmount": round(net + tax, 2), "AccountingPostingStatus": "C",
+        "TotalGrossAmount": net + tax, "AccountingPostingStatus": "C",
     }, user=ctx.user)
 
     for item in items:
-        amount = round(float(item["NetAmount"] or 0), 2)
+        amount = money.at(item["NetAmount"], cents)
         store.insert(ctx.conn, ENTITY_TYPES["A_BillingDocumentItem"], {
             "BillingDocument": billing, "BillingDocumentItem": item["SalesOrderItem"],
             "Material": item["Material"],
             "BillingDocumentItemText": item["SalesOrderItemText"],
             "BillingQuantity": item["RequestedQuantity"],
             "BillingQuantityUnit": item["RequestedQuantityUnit"],
-            "NetAmount": amount, "TaxAmount": round(amount * tax_rate, 2),
+            "NetAmount": amount, "TaxAmount": money.at(amount * rate, cents),
             "TransactionCurrency": currency,
             "SalesDocument": order["SalesOrder"],
             "SalesDocumentItem": item["SalesOrderItem"],
@@ -353,7 +382,7 @@ def create_billing_document(ctx, order, items=None, tax_rate: float = 0.19
         "TransactionCurrency": currency, "ReferenceDocument": billing,
         "HeaderText": "Invoice %s" % billing,
     }, [
-        {"GLAccount": "0012100000", "Amount": round(net + tax, 2),
+        {"GLAccount": "0012100000", "Amount": net + tax,
          "Text": "Receivable", "Customer": order["SoldToParty"]},
         {"GLAccount": "0041000000", "Amount": -net, "Text": "Revenue",
          "ProfitCenter": "YB110"},
@@ -365,4 +394,4 @@ def create_billing_document(ctx, order, items=None, tax_rate: float = 0.19
 
     return {"billing_document": billing, "accounting_document": document,
             "company_code": company, "fiscal_year": year,
-            "net": net, "tax": tax, "gross": round(net + tax, 2)}
+            "net": net, "tax": tax, "gross": net + tax}
