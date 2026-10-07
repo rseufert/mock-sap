@@ -214,10 +214,20 @@ class TestWhichKindOfCreditALineIs(unittest.TestCase):
         self.assertEqual(only["action"], "RCV")
         self.assertEqual(only["kind"], "receipt")
 
-    def test_a_debit_has_no_kind_whatever_it_says(self):
-        """Money out has one reading, so no claim about its kind is read.
+    def test_a_debit_saying_RET_is_money_we_received_going_back(self):
+        """Money out has two readings too, once a customer can pay (#181)."""
+        only = parse(finsta(line("000001", value="1190.00-",
+                                 action="RET")))["lines"][0]
+        self.assertEqual(only["side"], "debit")
+        self.assertEqual(only["kind"], "return")
 
-        A writer that stamps `LINACTION` on every line must not have its
+    def test_a_debit_saying_nothing_has_no_kind_and_is_a_payment(self):
+        only = parse(finsta(line("000001", value="1190.00-")))["lines"][0]
+        self.assertEqual(only["side"], "debit")
+        self.assertIsNone(only["kind"])
+
+    def test_a_debit_is_never_money_arriving_whatever_it_says(self):
+        """A writer that stamps `LINACTION` on every line must not have its
         payments described as money arriving.
         """
         only = parse(finsta(line("000001", value="1190.00-",

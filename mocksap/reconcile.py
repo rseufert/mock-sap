@@ -448,6 +448,40 @@ def _match_receipt(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
                _priced(owed, paid_in), _priced(amount, paid_in), gap)}
 
 
+def _match_returned_receipt(conn, line: dict) -> Dict[str, Any]:
+    """The cleared receivables a returned transfer had settled, or why none.
+
+    The receipt's rule read backwards (#181): the set of the cleared
+    receivables this line quotes whose amounts come to exactly what went
+    back.  A transfer that settled three invoices comes back as one debit for
+    the three, and all three are owed again.  One set or nothing - where no
+    set fits, or more than one does, `_match` has the sentence, and nothing
+    is reopened.
+    """
+    candidates = _cleared_items(conn, CUSTOMER_LINE)
+    amount = line.get("amount")
+    paid_in = (line.get("currency") or "").strip().upper()
+    quoted = _quoted_by(conn, line, candidates)
+    if not quoted:
+        return {"items": [], "reason":
+                "this line is money we received going back and no cleared "
+                "receivable quotes its reference, so it reopens nothing"}
+    same = [(item, reference) for item, reference in quoted
+            if _currency_of(item) == paid_in]
+    if amount is not None and paid_in and 0 < len(same) <= MOST_QUOTED:
+        sets = _sets_summing_to(same, abs(money.of(amount)))
+        if len(sets) == 1:
+            return {"items": sets[0]}
+        if sets:
+            return {"items": [], "reason":
+                    "this line is for %s going back, which is %s, and "
+                    "nothing on the line says which had been paid with it"
+                    % (_priced(amount, paid_in),
+                       " or ".join(_in_words([_named(item) for item, _ in chosen])
+                                   for chosen in sets))}
+    return {"items": [], "reason": _match(conn, line, candidates)["reason"]}
+
+
 def _set_clearing(ctx, item: dict, values: dict) -> None:
     store.update(ctx.conn, ENTITY_TYPES[CUBE], {
         "AccountingDocument": item["AccountingDocument"],
@@ -641,6 +675,15 @@ def _collect(ctx, settling: List[dict], posting: str, statement: str) -> List[di
     return received
 
 
+# What differs between taking back a payment of ours and giving back a
+# customer's, by the side of the item being reopened: the party's field, the
+# document type, which way the bank moves, and what the party's line says.
+_REVERSAL = {
+    SUPPLIER_LINE: ("Supplier", "ZP", 1, "Payment returned"),
+    CUSTOMER_LINE: ("Customer", "DZ", -1, "Receipt returned"),
+}
+
+
 def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
     """A returned payment: reverse the clearing and leave the item open.
 
@@ -650,19 +693,26 @@ def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
     item that was paid and returned can still be told apart from one nobody
     ever paid.  Without that, the two look identical and the difference is
     exactly what a treasury team is trying to see.
+
+    Either side (#181).  A payment of ours coming back puts money in the bank
+    and the debt back on the supplier's account; a customer's payment going
+    back takes money out of the bank and puts what they owe back on theirs.
+    The amount is the item's, not the line's: one returned transfer can have
+    settled several invoices, and the line then carries the sum of them.
     """
-    amount = abs(money.of(line.get("amount")))
+    side = item.get("AccountingDocumentItemType")
+    field, doc_type, bank, text = _REVERSAL.get(side, _REVERSAL[SUPPLIER_LINE])
+    amount = abs(money.of(item["AmountInTransactionCurrency"]))
     document, company, year = documents.post_journal_entry(ctx, {
         "CompanyCode": item["CompanyCode"],
-        "AccountingDocumentType": "ZP",
+        "AccountingDocumentType": doc_type,
         "PostingDate": posting,
         "TransactionCurrency": item["TransactionCurrency"] or "EUR",
         "HeaderText": "Return of %s" % item["AccountingDocument"],
         "ReferenceDocument": line.get("reference") or "",
     }, [
-        {"GLAccount": "0000113100", "Amount": amount, "Text": "Bank"},
-        {"Supplier": item["Supplier"], "Amount": -amount,
-         "Text": "Payment returned"},
+        {"GLAccount": "0000113100", "Amount": bank * amount, "Text": "Bank"},
+        {field: item[field], "Amount": -bank * amount, "Text": text},
     ])
     _set_clearing(ctx, item, {
         "ClearingAccountingDocument": "",
@@ -674,8 +724,9 @@ def _reopen(ctx, item: dict, line: dict, posting: str) -> dict:
         "ClearingDocFiscalYear": "",
         "ClearingIsReversed": True,
     })
-    # The reversal's own supplier line is not a new debt either.
-    _self_clear(ctx, document, company, year, posting)
+    # The reversal's own party line is not a new debt either.
+    _self_clear(ctx, document, company, year, posting,
+                side if side in _REVERSAL else SUPPLIER_LINE)
     return {"document": document, "amount": amount}
 
 
@@ -839,10 +890,16 @@ def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
     settling: List[dict] = []
     receiving: List[dict] = []
     returning: List[tuple] = []
+    refunding: List[tuple] = []
     claimed = set()
     for seq, line in enumerate(parsed["lines"]):
         side = line.get("side")
-        if side == "debit":
+        if side == "debit" and line.get("kind") == "return":
+            # Money out that says it is a customer's payment going back
+            # (#181). It is not a payment of ours, so it is kept away from
+            # the payables altogether and posted with the other returns.
+            refunding.append((seq, line))
+        elif side == "debit":
             # An item a line above has already spoken for is not open to this
             # one. Clearing used to post as each line was read, which took the
             # item out of `_open_items` for free; the payment is now posted
@@ -929,6 +986,24 @@ def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
             "REVERSALDOCUMENT": posted["document"],
             "AMOUNT": str(posted["amount"]),
         }))
+
+    # A customer's payment going back, after the receipts for the same reason
+    # the returns follow the payments: a statement that receives a transfer
+    # and gives it back reads the same whichever order the two lines are in.
+    for seq, line in refunding:
+        matched = _match_returned_receipt(ctx.conn, line)
+        if not matched["items"]:
+            unprocessed.append((seq, {"LINE": line["line"],
+                                      "REASON": matched["reason"]}))
+            continue
+        for item, reference in matched["items"]:
+            posted = _reopen(ctx, item, line, posting)
+            reopened.append((seq, {
+                "LINE": line["line"], "REFERENCE": reference,
+                "ACCOUNTINGDOCUMENT": item["AccountingDocument"],
+                "REVERSALDOCUMENT": posted["document"],
+                "AMOUNT": str(posted["amount"]),
+            }))
 
     cleared = _in_line_order(cleared)
     reopened = _in_line_order(reopened)
