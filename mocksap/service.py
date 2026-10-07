@@ -15,11 +15,13 @@ from . import clock
 from . import annotations as sap_annotations
 from . import apply as odata_apply
 from . import delta as odata_delta
+from . import documents
 from . import messages as sap_messages, metadata, metadata4, odata4, store
 from .odata import (SapError, build_orderby, build_where, check_writable,
                     collection_envelope, entity_envelope, entity_uri,
                     error_payload, etag_for, etag_matches, key_predicate,
-                    parse_key_predicate, serialize_entity, to_json_value)
+                    parse_key_predicate, serialize_entity, to_db_value,
+                    to_json_value)
 from .schema import ENTITY_TYPES, SERVICES, EntityType, Service, service_for_path
 
 JSON_CT = "application/json;charset=utf-8"
@@ -902,12 +904,115 @@ def _with_messages(response: Response, warnings: List[dict]) -> Response:
     return response
 
 
+# How `A_SupplierInvoice` spells the things `documents.post_supplier_invoice`
+# asks for, and what an item of one spells. Declared rather than written out
+# at the call site, so the two vocabularies sit side by side where a reader
+# can check them against each other.
+_SUPPLIER_INVOICE = {
+    "InvoicingParty": "supplier",
+    "SupplierInvoiceIDByInvcgParty": "reference",
+    "CompanyCode": "company_code",
+    "DocumentDate": "document_date",
+    "PostingDate": "posting_date",
+    "InvoiceGrossAmount": "gross",
+    "DocumentCurrency": "currency",
+    "PaymentTerms": "terms",
+    "DueCalculationBaseDate": "baseline_date",
+    "NetPaymentDays": "net_payment_days",
+    "PaymentBlockingReason": "payment_block",
+    "PaymentMethod": "payment_method",
+    "BPBankAccountInternalID": "bank_details",
+}
+
+_SUPPLIER_INVOICE_ITEM = {
+    "PurchaseOrder": "purchase_order",
+    "PurchaseOrderItem": "purchase_order_item",
+    "SupplierInvoiceItemAmount": "amount",
+    "QuantityInPurchaseOrderUnit": "quantity",
+    "PurchaseOrderQuantityUnit": "unit",
+    "SupplierInvoiceItemText": "text",
+}
+
+
+def _invoice_fields(et, payload, allowed):
+    """`payload` in `post_supplier_invoice`'s vocabulary, or a refusal.
+
+    Anything this route does not act on is refused by name, and the message
+    says what it does take: a POST that appears to set the accounting
+    document and silently does not is worse than one that says it cannot.
+
+    Values go out through the EDM conversions, so a `/Date(...)/` a V2 client
+    sent arrives as the ISO date `post_supplier_invoice` reads.
+    """
+    out = {}
+    for name, value in payload.items():
+        if name in ("__metadata", "__count", "__deferred") or et.nav(name):
+            continue
+        prop = et.prop(name)
+        if prop is None:
+            raise SapError(
+                "Property '%s' does not exist in type '%s'" % (name, et.name),
+                400, target=name)
+        if name in allowed:
+            out[allowed[name]] = to_json_value(prop, to_db_value(prop, value))
+        elif prop.key:
+            # The document number comes from the SUPPLIERINVOICE range and
+            # the fiscal year from the posting date, as they do for an
+            # invoice posted from an inbound INVOIC. Honouring a number the
+            # client chose is what let a POST take the range's next value.
+            raise SapError(
+                "Key property '%s' is assigned when the invoice posts and "
+                "cannot be supplied" % name, 400, target=name)
+        else:
+            raise SapError(
+                "Property '%s' is not set when posting a supplier invoice; "
+                "this route takes %s" % (name, ", ".join(sorted(allowed))),
+                400, target=name)
+    return out
+
+
+def _post_supplier_invoice(ctx, et, payload):
+    """A POST to `A_SupplierInvoice` posts the invoice, not just stores a row.
+
+    `documents` is where a document is made - "a document created one way has
+    to look like one created another" - and this route was the one caller
+    going around it. So a POST landed an invoice with no accounting document
+    and no open item: one that exists, says nothing about not being posted,
+    and can never be paid, answered with a 201 (#97). It also drew its number
+    from `MAX(existing) + 1` rather than from the number range, taking the
+    value the next inbound `INVOIC` was going to use (#154).
+
+    Going through `post_supplier_invoice` settles both, and makes the two ways
+    an invoice gets into this mock produce the same thing.
+
+    The entity publishes a gross and no split, so an invoice posted this way
+    carries no input tax: its net is its gross. Items are optional, and if
+    they all state an amount they have to come to that net - which is
+    `post_supplier_invoice`'s own rule, not a second one here.
+    """
+    invoice = _invoice_fields(et, payload, _SUPPLIER_INVOICE)
+    children = payload.get("to_SuplrInvcItemPurOrdRef") or []
+    if isinstance(children, dict):
+        children = children.get("results", [children])
+    items = [_invoice_fields(ENTITY_TYPES["A_SuplrInvcItemPurOrdRef"], child,
+                             _SUPPLIER_INVOICE_ITEM) for child in children]
+    if items:
+        invoice["items"] = items
+    posted = documents.post_supplier_invoice(ctx, invoice)
+    return {"SupplierInvoice": posted["supplier_invoice"],
+            "FiscalYear": posted["fiscal_year"]}
+
+
 def _create(ctx, svc, et, set_name, opts, body, parent_keys=None) -> Response:
     payload = _json_body(body)
     # Before anything is written, and including the children of a deep
     # insert: a payload refused halfway is a payload that half happened.
     check_writable(et, payload, creating=True)
-    keys = store.insert(ctx.conn, et, payload, user=ctx.user, parent_keys=parent_keys)
+    if et.name == "A_SupplierInvoice" and not parent_keys:
+        keys = _post_supplier_invoice(ctx, et, payload)
+    else:
+        keys = store.insert(ctx.conn, et, payload, user=ctx.user,
+                            parent_keys=parent_keys)
     warnings = list(sap_messages.after_write(ctx.conn, et, keys))
     for nav in et.navs:
         if nav.multiplicity != "*" or nav.name not in payload:

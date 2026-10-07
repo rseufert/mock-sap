@@ -581,6 +581,16 @@ than only inside an example. The accounting document it posts leaves an **open
 payable**, which is what a payment run then selects.
 
 **Blocking an invoice blocks the money.** `PaymentBlockingReason` on
+**A POST to `A_SupplierInvoice` posts the invoice**, rather than filing a row: it
+draws its number from the `SUPPLIERINVOICE` range, posts an accounting document and
+leaves the payable a payment run selects — the same thing an inbound `INVOIC`
+produces, because both go through the one place a supplier invoice is made. The
+entity publishes a gross and no split, so an invoice posted this way carries no
+input tax and its net is its gross; items are optional, and if they all state an
+amount they have to come to that net. A field the route does not act on is refused
+by name rather than dropped, and the document number and fiscal year are refused
+outright because posting assigns them.
+
 `A_SupplierInvoice` reaches the open item its accounting document posted, so a
 payment run - which reads the item, not the invoice - stops picking it up.
 The two are separate rows and keeping them in step is done rather than assumed;
