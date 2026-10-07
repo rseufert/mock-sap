@@ -72,9 +72,13 @@ jobs:
       # wrote it; this is the one check held to schemas nobody here wrote, and a
       # confusing test error is not what it should arrive as.
       #
-      # --require because the validation needs xmllint, which the runner image
-      # has: without the flag a runner that stopped shipping libxml2 would turn
-      # this job green by skipping the only part that needs it.
+      # The validation needs xmllint, and the runner image does not carry it -
+      # which is what --require is for. Without the flag this job would have
+      # gone green by skipping the only part of itself that validates anything.
+      - name: xmllint, which is what validates against an XSD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxml2-utils
       - run: python tools/check_csdl.py --require
 
   smoke:
