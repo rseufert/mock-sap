@@ -138,6 +138,15 @@ SQLite's online backup API before the changeset runs, and restores it if any req
 inside fails. The databases involved are small and the mock is not a production
 store, which makes the blunt approach the right one.
 
+"Fails" means either way a request can: answering with an error, or raising
+something nobody turned into an answer. The second leaves by the exception path,
+where any half-finished transaction is rolled back before the snapshot goes back
+over it, and the exception carries on to become the 500 it would have been.
+
+A single deep insert is narrower than a changeset and does use a savepoint:
+`store.insert()` opens one for the header, its children write inside it without
+committing, and a child that fails takes the header with it.
+
 ### SAP's system behaviour is modelled where it is observable
 
 A client cannot tell whether pricing ran, but it can tell whether the document

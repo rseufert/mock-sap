@@ -120,6 +120,16 @@ def _restore(conn, snap) -> None:
         snap.backup(conn)
 
 
+def _undo(conn, snap) -> None:
+    """Restore after an exception rather than after an error response.
+
+    Whatever raised may have stopped halfway through a write, and a database
+    with a transaction open cannot be restored over: the half goes first.
+    """
+    conn.rollback()
+    _restore(conn, snap)
+
+
 def handle_batch(ctx: Context, content_type: str, body: bytes,
                  service_path: str) -> Response:
     boundary = boundary_of(content_type)
@@ -166,17 +176,23 @@ def _run_changeset(ctx: Context, part: Part, service_path: str, resp_boundary: s
     rendered: List[bytes] = []
     failure: Optional[Response] = None
 
-    for member in part.parts:
-        resp = _run_single(ctx, member, service_path)
-        if resp.status >= 400:
-            failure = resp
-            break
-        rendered.append(
-            b"--" + cs_boundary.encode() + CRLF
-            + b"Content-Type: application/http" + CRLF
-            + b"Content-Transfer-Encoding: binary" + CRLF + CRLF
-            + render_response(resp) + CRLF
-        )
+    try:
+        for member in part.parts:
+            resp = _run_single(ctx, member, service_path)
+            if resp.status >= 400:
+                failure = resp
+                break
+            rendered.append(
+                b"--" + cs_boundary.encode() + CRLF
+                + b"Content-Type: application/http" + CRLF
+                + b"Content-Transfer-Encoding: binary" + CRLF + CRLF
+                + render_response(resp) + CRLF
+            )
+    except BaseException:
+        # A member that fails without a response to show for it - anything
+        # but a SapError - still takes the members before it down with it.
+        _undo(ctx.conn, snapshot)
+        raise
 
     if failure is not None:
         # SAP rolls the whole changeset back and returns just the error.
@@ -266,10 +282,14 @@ def _run_json_request(ctx: Context, request: dict, service_path: str) -> dict:
 def _run_json_group(ctx: Context, members: list, service_path: str) -> list:
     snapshot = _snapshot(ctx.conn)
     done = []
-    for member in members:
-        result = _run_json_request(ctx, member, service_path)
-        done.append(result)
-        if result["status"] >= 400:
-            _restore(ctx.conn, snapshot)
-            return [result]          # the group failed as a whole
+    try:
+        for member in members:
+            result = _run_json_request(ctx, member, service_path)
+            done.append(result)
+            if result["status"] >= 400:
+                _restore(ctx.conn, snapshot)
+                return [result]          # the group failed as a whole
+    except BaseException:
+        _undo(ctx.conn, snapshot)
+        raise
     return done

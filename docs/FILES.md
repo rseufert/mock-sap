@@ -85,6 +85,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_links.py` | `$links` reads for to-one and to-many associations, paging and counting over them, and the write paths - including the refusal to re-point a composition, which would rewrite a key. |
 | `test_etag.py` | The read-modify-write cycle: ETags on entity and header, conditional reads, `If-Match` on update and delete, `If-Match: *`, a changeset rolled back by a failed precondition, and the strict mode that demands a validator. |
 | `test_batch.py` | A mixed batch of a GET and a changeset, and the rollback of a changeset whose second request fails. |
+| `test_atomic.py` | A write that fails partway leaves nothing: a deep insert whose child is refused or raises, and a changeset or atomicity group whose member raises instead of answering. |
 | `test_rfc.py` | BAPI create over JSON, the error `RETURN` table, unknown function modules, and the same functions over SOAP including a fault. |
 | `test_idoc.py` | ORDERS05 generation, posting it back in, reading it, setting a status, and a flat-file IDoc. |
 | `test_oauth.py` | The token endpoint and its failure modes, bearer validation across OData and RFC, the principal a SAML token carries into `CreatedByUser`, expiry and refresh-token rotation, revocation, and OAuth beside basic auth. |

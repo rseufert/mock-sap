@@ -339,8 +339,15 @@ def set_open_item(ctx, payload: dict) -> dict:
 
 
 def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
-           parent_keys: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Insert one entity (with children, if the payload is a deep insert)."""
+           parent_keys: Optional[Dict[str, Any]] = None,
+           _nested: bool = False) -> Dict[str, Any]:
+    """Insert one entity (with children, if the payload is a deep insert).
+
+    All of it or none of it: a deep insert whose third item is refused leaves
+    no header and no first two items behind (#92). `_nested` is this function
+    calling itself for a child, which writes inside its parent's savepoint
+    and leaves the commit to it.
+    """
     ctx = _context(user)
     flat, deep = split_payload(et, payload)
     row: Dict[str, Any] = {}
@@ -396,16 +403,32 @@ def insert(conn, et: EntityType, payload: dict, user: str = "MOCKUSER",
 
     cols = ", ".join(_quote(c) for c in row)
     marks = ", ".join("?" for _ in row)
-    conn.execute('INSERT INTO "%s" (%s) VALUES (%s)' % (et.table, cols, marks),
-                 list(row.values()))
+    if not _nested:
+        conn.execute("SAVEPOINT entity_insert")
+    try:
+        conn.execute('INSERT INTO "%s" (%s) VALUES (%s)' % (et.table, cols, marks),
+                     list(row.values()))
 
-    for nav_name, items in deep.items():
-        nav = et.nav(nav_name)
-        target = ENTITY_TYPES[nav.target]
-        child_keys = {remote: row[local] for local, remote in nav.join}
-        for item in items:
-            insert(conn, target, item, user=user, parent_keys=child_keys)
+        for nav_name, items in deep.items():
+            nav = et.nav(nav_name)
+            target = ENTITY_TYPES[nav.target]
+            child_keys = {remote: row[local] for local, remote in nav.join}
+            for item in items:
+                insert(conn, target, item, user=user, parent_keys=child_keys,
+                       _nested=True)
+        if _nested:
+            _recalculate_totals(conn, et, row, commit=False)
+    except BaseException:
+        # Whatever stopped a child - a refusal, or a fault nobody foresaw -
+        # the header it belonged to goes with it.
+        if not _nested:
+            conn.execute("ROLLBACK TO entity_insert")
+            conn.execute("RELEASE entity_insert")
+        raise
+    if _nested:
+        return keys
 
+    conn.execute("RELEASE entity_insert")
     conn.commit()
     _recalculate_totals(conn, et, row)
     return keys
@@ -430,7 +453,8 @@ def _next_child_number(conn, et: EntityType, row: Dict[str, Any], p) -> str:
     return str(highest + step).zfill(width)
 
 
-def _recalculate_totals(conn, et: EntityType, row: Dict[str, Any]) -> None:
+def _recalculate_totals(conn, et: EntityType, row: Dict[str, Any],
+                        commit: bool = True) -> None:
     """Keep TotalNetAmount consistent with the items, like the SD pricing run."""
     if et.name == "A_SalesOrderItem":
         so = row.get("SalesOrder")
@@ -445,10 +469,11 @@ def _recalculate_totals(conn, et: EntityType, row: Dict[str, Any]) -> None:
         prop = ENTITY_TYPES["A_SalesOrder"].prop("TotalNetAmount")
         conn.execute('UPDATE "A_SalesOrder" SET "TotalNetAmount"=? WHERE "SalesOrder"=?',
                      (money.text(total, money.scale_of(prop)), so))
-        conn.commit()
+        if commit:
+            conn.commit()
     elif et.name == "A_SalesOrder":
         _recalculate_totals(conn, ENTITY_TYPES["A_SalesOrderItem"],
-                            {"SalesOrder": row.get("SalesOrder")})
+                            {"SalesOrder": row.get("SalesOrder")}, commit)
 
 
 def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
