@@ -3,8 +3,8 @@ import datetime
 import time
 import unittest
 
-from mocksap import delta as delta_module
 from support import MockServerCase, SRV
+from mocksap import delta as delta_module
 
 V4 = "/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001"
 TRACK = {"Prefer": "odata.track-changes"}

@@ -170,9 +170,6 @@ class TestWrite(MockServerCase):
         self.assertEqual(status, 201)
         self.assertEqual(created["d"]["SalesOrder"], key)
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class TestSalesOrderWriteShapes(MockServerCase):
     """The shapes an order-management client posts: partner addresses, texts
@@ -286,3 +283,7 @@ class TestSalesOrderWriteShapes(MockServerCase):
             "POST", SRV + "/A_SalesOrder", body=payload, headers=headers)
         self.assertEqual(status, 400)
         self.assertIn("BusinessPartnerName1", body["error"]["message"]["value"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

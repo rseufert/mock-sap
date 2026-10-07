@@ -93,6 +93,10 @@ file. Read the first before a change of any size.
   tracked file has no row in `docs/FILES.md`, if a row names a file that is gone,
   or if a module is missing from the README's layout block. It checks coverage,
   not prose - keeping the prose true is on you.
+- **A test module that runs whole on its own.** `python3 tests/test_batch.py`
+  has to run every test in the file, so the `if __name__` block goes last and
+  `support` is imported before `mocksap`. The same tool checks both: a class
+  below `unittest.main()` is skipped without a word, and the run still says OK.
 - **A changelog entry, as its own file.** A pull request that touches `mocksap/`
   adds one file under [`changelog.d/`](changelog.d/), named
   `<issue>.<kind>.md` and holding the bullet exactly as it will appear in the

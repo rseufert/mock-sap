@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import unittest
 
-from mocksap import bank
 from support import BP_SRV, MockServerCase
+from mocksap import bank
 
 V4_BP = ("/sap/opu/odata4/sap/api_businesspartner/srvd_a2x/sap"
          "/api_businesspartner/0001")
@@ -158,10 +158,6 @@ class TestResetRestoresTheAccounts(BankCase):
         self.assertEqual(status, 200, "the seeded account is back")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestTheSuppliersMockBankHolds(BankCase):
     """Four suppliers banked where mock-bank can act on them (#62).
 
@@ -211,3 +207,7 @@ class TestTheSuppliersMockBankHolds(BankCase):
                                  "%s has no IBAN, so no BIC to give"
                                  % account["BusinessPartner"])
                 self.assertTrue(account["BankNumber"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1053,9 +1053,6 @@ class TestFindingTheIDocThatSettledAnInvoice(StatementCase):
                          "nothing has settled it, so nothing names it")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class TestWhenAPaymentRunHasClaimedAnItem(StatementCase):
     """A claim says an item is *waiting* to be paid, so it goes when it stops.
 
@@ -1145,3 +1142,7 @@ class TestWhenAPaymentRunHasClaimedAnItem(StatementCase):
         self.assertEqual(item["PaymentRunID"], "",
                          "so a payment run can select it again")
         self.assertEqual(self.invoice_of(billed)["PaymentRunID"], "")
+
+
+if __name__ == "__main__":
+    unittest.main()
