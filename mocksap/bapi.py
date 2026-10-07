@@ -22,7 +22,7 @@ from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
 from . import clock, db, documents, money, store
-from .odata import SapError
+from .odata import SapError, whole_number
 from .schema import ENTITY_TYPES
 
 SOAP_NS = "urn:sap-com:document:sap:soap:functions:mc-style"
@@ -1070,7 +1070,7 @@ class BehaviourRules:
                 "message": message,
                 "msg_id": str(rule.get("id") or rule.get("msg_id") or "SR"),
                 "number": str(rule.get("number") or "000"),
-                "count": int(rule.get("count") or 0),   # 0 = until cleared
+                "count": whole_number(rule.get("count") or 0, "count"),   # 0 = until cleared
                 "hits": 0,
             }
             self._next_id += 1

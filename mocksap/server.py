@@ -17,7 +17,7 @@ from urllib.parse import unquote, urlparse
 
 from . import bapi, batch, clock as clocks, db, idoc, messages, metadata, oauth
 from .store import open_items as _open_items, set_open_item as _set_open_item
-from .odata import SapError, error_payload
+from .odata import SapError, error_payload, whole_number
 from .schema import SERVICES, service_for_path
 from .service import JSON_CT, Context, Response, dispatch, parse_query
 
@@ -69,14 +69,47 @@ class Faults:
         self._next_id = 1
 
     def add(self, rule: dict) -> dict:
+        rule = self._checked(rule)
         with self._lock:
-            rule = dict(rule)
             rule["id"] = self._next_id
             self._next_id += 1
             rule.setdefault("count", 0)  # 0 = unlimited
             rule.setdefault("hits", 0)
             self.rules.append(rule)
             return rule
+
+    @staticmethod
+    def _checked(rule: dict) -> dict:
+        """The rule, refused here if it could not be applied later (#158).
+
+        A rule is applied to somebody else's request. One that cannot be -
+        a status that is not a number, a pattern that does not compile -
+        used to be stored with a 201 and then fail every request it matched
+        with "Unexpected mock failure", which is a fault, but not the one
+        asked for and not one its author could trace to the rule.
+        """
+        rule = dict(rule)
+        if rule.get("status"):
+            status = whole_number(rule["status"], "status")
+            if not 100 <= status <= 599:
+                raise SapError("status is an HTTP status code, not %r"
+                               % (rule["status"],), 400)
+            rule["status"] = status
+        for name in ("count", "delay_ms"):
+            if rule.get(name):
+                rule[name] = whole_number(rule[name], name)
+        for name in ("method", "match", "scenario"):
+            if rule.get(name) is not None and not isinstance(rule[name], str):
+                raise SapError("%s is text, not %r" % (name, rule[name]), 400)
+        # A message is its text, or the whole object a `sap-message` carries.
+        if not isinstance(rule.get("message") or "", (str, dict)):
+            raise SapError("message is text or a message object, not %r"
+                           % (rule["message"],), 400)
+        try:
+            re.compile(rule.get("match") or "")
+        except re.error as bad:
+            raise SapError("match is not a regular expression: %s" % bad, 400)
+        return rule
 
     def clear(self) -> int:
         with self._lock:
@@ -217,10 +250,22 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         query = parsed.query
         headers = {k.lower(): v for k, v in self.headers.items()}
-        length = int(headers.get("content-length") or 0)
-        body = self.rfile.read(length) if length else b""
-
+        body = b""
         try:
+            # Read as HTTP defines it: digits and nothing else. `int()` would
+            # take "-1", and `read(-1)` is a read to the end of a stream the
+            # client is holding open for the answer - so the request hung.
+            # Anything else it could not parse raised, and the connection
+            # closed with no response at all (#158).
+            declared = (headers.get("content-length") or "0").strip()
+            if not (declared.isascii() and declared.isdigit()):
+                # The body cannot be told from the next request, so nothing
+                # after this one can be read from the connection either.
+                self.close_connection = True
+                raise SapError("Content-Length is a count of bytes, not %r"
+                               % declared, 400)
+            length = int(declared)
+            body = self.rfile.read(length) if length else b""
             response = self._route(method, path, query, headers, body)
         except SapError as err:
             response = Response.error(err)
@@ -588,7 +633,7 @@ class Handler(BaseHTTPRequestHandler):
                 return Response(201, body=receipt)
             if method == "GET":
                 return Response(body={"results": idoc.listing(
-                    ctx, int(opts.get("limit", 50)), opts.get("mestyp", ""),
+                    ctx, whole_number(opts.get("limit", 50), "limit"), opts.get("mestyp", ""),
                     opts.get("settled", ""))})
             raise SapError("Method %s is not allowed on the IDoc endpoint" % method, 405)
         if rest == "generate":
@@ -637,6 +682,12 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(body.decode("utf-8"))
             except ValueError:
                 raise SapError("The request body is not valid JSON", 400)
+            if not isinstance(payload, dict):
+                # Every endpoint here reads named fields. A list or a bare
+                # value is valid JSON and has none, and used to be a 500 from
+                # whichever `.get` met it first (#158).
+                raise SapError("The request body must be a JSON object, not %s"
+                               % _json_kind(payload), 400)
 
         if rest in ("", "health"):
             return Response(body={
@@ -672,11 +723,14 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "reset":
             if method != "POST":
                 raise SapError("Use POST to reset the mock", 405)
+            # Read before anything is deleted: a reset refused for its
+            # arguments must not have emptied the database on the way.
+            seeding = (
+                whole_number(payload.get("seed", mock.config.seed_value), "seed"),
+                whole_number(payload.get("orders", 25), "orders"),
+                whole_number(payload.get("purchaseOrders", 12), "purchaseOrders"))
             db.reset(mock.conn)
-            counts = db.seed(
-                mock.conn,
-                int(payload.get("seed", mock.config.seed_value)),
-                int(payload.get("orders", 25)), int(payload.get("purchaseOrders", 12)))
+            counts = db.seed(mock.conn, *seeding)
             mock.tokens.clear()
             mock.faults.clear()
             mock.idoc_posting.clear()
@@ -689,7 +743,7 @@ class Handler(BaseHTTPRequestHandler):
             return Response(body={"reset": True, "counts": counts,
                                   "clock": mock.clock.snapshot()})
         if rest == "requests":
-            limit = int(opts.get("limit", 25))
+            limit = whole_number(opts.get("limit", 25), "limit")
             columns = "id,ts,method,path,query,status,duration_ms"
             if _verbose(opts):
                 columns += ",headers,body"
@@ -703,12 +757,12 @@ class Handler(BaseHTTPRequestHandler):
                 columns += ",request,response"
             rows = mock.conn.execute(
                 "SELECT %s FROM rfc_log ORDER BY id DESC LIMIT ?" % columns,
-                (int(opts.get("limit", 25)),)).fetchall()
+                (whole_number(opts.get("limit", 25), "limit"),)).fetchall()
             return Response(body={"results": [_logged_call(r) for r in rows]})
         if rest == "idocs":
             ctx = mock.context(self._base_url({}), mock.config.client)
             return Response(body={"results": idoc.listing(
-                ctx, int(opts.get("limit", 50)), opts.get("mestyp", ""),
+                ctx, whole_number(opts.get("limit", 50), "limit"), opts.get("mestyp", ""),
                 opts.get("settled", ""))})
         if rest == "tokens":
             if mock.oauth is None:
@@ -782,6 +836,19 @@ REDACTED_HEADERS = frozenset((
     "authorization", "cookie", "set-cookie", "x-csrf-token", "proxy-authorization",
 ))
 REDACTED = "<redacted by the mock>"
+
+
+def _json_kind(value) -> str:
+    """What a JSON value is, in the words its author would use."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, list):
+        return "an array"
+    if isinstance(value, str):
+        return "a string"
+    return "a number"
 
 
 def _verbose(opts: Dict[str, Any]) -> bool:

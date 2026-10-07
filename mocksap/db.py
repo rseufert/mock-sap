@@ -246,8 +246,16 @@ def reset(conn: sqlite3.Connection) -> None:
             cur.execute('DELETE FROM "%s"' % et.name)
     for t in ("number_range", "idoc", "idoc_statement", "idoc_statement_line",
               "idoc_delivery", "idoc_invoice", "rfc_log", "deleted_entity",
-              "bank_statement"):
+              "bank_statement", "request_log"):
         cur.execute("DELETE FROM %s" % t)
+    # And the counters behind every AUTOINCREMENT id, which a DELETE leaves
+    # where they were: without this the first request after a reset is not
+    # request 1, and a suite that resets between tests gets ids that depend
+    # on what ran before it (#158). The table exists once any such id has
+    # been drawn, and init_schema's tables guarantee one could be.
+    if cur.execute("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'"
+                   ).fetchone():
+        cur.execute("DELETE FROM sqlite_sequence")
     conn.commit()
 
 
