@@ -234,5 +234,54 @@ class TestDeltaLimits(DeltaCase):
         return body["@odata.deltaLink"]
 
 
+
+class TestDeltaOnATypeStampedChangedAt(DeltaCase):
+    """A delta compares the change stamp, so one that never moves hides changes."""
+
+    GW = "/sap/opu/odata/IWBEP/GWSAMPLE_BASIC"
+
+    def test_a_changed_partner_is_reported(self):
+        status, headers, body = self.get(
+            self.GW + "/BusinessPartnerSet?$format=json", headers=TRACK)
+        self.assertEqual(status, 200)
+        link = self.relative(body["d"]["__delta"])
+        changed, untouched = [row["BusinessPartnerID"]
+                              for row in body["d"]["results"][:2]]
+        _, _, nothing = self.get(link)
+        self.assertEqual(nothing["d"]["results"], [], "nothing has changed yet")
+
+        status, _, _ = self.request(
+            "PATCH", self.GW + "/BusinessPartnerSet('%s')" % changed,
+            body={"EmailAddress": "delta@example.com"},
+            headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+        self.assertEqual(status, 204)
+
+        _, _, body = self.get(link)
+        reported = [row["BusinessPartnerID"] for row in body["d"]["results"]]
+        self.assertEqual(reported, [changed])
+        self.assertNotIn(untouched, reported)
+
+
+    def test_an_order_deleted_with_its_partner_is_reported_deleted(self):
+        """A cascade removes rows nobody named; a delta still has to say so."""
+        _, _, body = self.get(
+            self.GW + "/SalesOrderSet?$format=json", headers=TRACK)
+        link = self.relative(body["d"]["__delta"])
+        order = body["d"]["results"][0]
+
+        status, _, _ = self.request(
+            "DELETE", self.GW + "/BusinessPartnerSet('%s')" % order["CustomerID"],
+            headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+        self.assertEqual(status, 204)
+
+        _, _, body = self.get(link)
+        deleted = [row["__metadata"]["uri"] for row in body["d"]["results"]
+                   if row["__metadata"].get("deleted")]
+        self.assertTrue(deleted)
+        self.assertTrue(
+            any("SalesOrderSet('%s')" % order["SalesOrderID"] in uri
+                for uri in deleted), deleted)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

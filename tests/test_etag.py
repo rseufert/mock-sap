@@ -186,6 +186,82 @@ class TestETag(ETagCase):
         self.assertIn("changed by another user", body["error"]["message"]["value"])
 
 
+GW = "/sap/opu/odata/IWBEP/GWSAMPLE_BASIC"
+
+
+class TestAnETagRenderedFromChangedAt(MockServerCase):
+    """GWSAMPLE_BASIC names its change stamp `ChangedAt`, and it stood still.
+
+    Everything above is proved on a type that calls it `LastChangeDate`. The
+    ETag of a type that calls it something else was the seeded value for ever,
+    so every validator matched every version (#163).
+    """
+
+    def partner(self, index=0):
+        _, _, body = self.get(GW + "/BusinessPartnerSet?$top=8&$format=json")
+        return body["d"]["results"][index]["BusinessPartnerID"]
+
+    def read(self, partner):
+        status, headers, body = self.get(
+            GW + "/BusinessPartnerSet('%s')?$format=json" % partner)
+        self.assertEqual(status, 200)
+        return headers.get("ETag"), body["d"]
+
+    def patch(self, partner, value, if_match="*"):
+        return self.request(
+            "PATCH", GW + "/BusinessPartnerSet('%s')" % partner,
+            body={"EmailAddress": value},
+            headers=dict(self.csrf_token(), **{"If-Match": if_match}))
+
+    def test_every_change_produces_a_fresh_etag(self):
+        partner = self.partner(0)
+        before, _ = self.read(partner)
+        seen = {before}
+        for index in range(3):
+            status, headers, _ = self.patch(partner, "n%d@example.com" % index)
+            self.assertEqual(status, 204)
+            seen.add(headers["ETag"])
+
+        self.assertEqual(len(seen), 4)
+        self.assertEqual(self.read(partner)[0], headers["ETag"],
+                         "and a read agrees with what the last write answered")
+
+    def test_a_validator_from_before_the_change_is_refused(self):
+        partner = self.partner(1)
+        stale, _ = self.read(partner)
+        self.assertEqual(self.patch(partner, "first@example.com", stale)[0], 204)
+
+        status, _, _ = self.patch(partner, "second@example.com", stale)
+
+        self.assertEqual(status, 412, "this is the lost update an ETag exists for")
+        self.assertEqual(self.read(partner)[1]["EmailAddress"],
+                         "first@example.com")
+
+    def test_the_stamp_in_the_payload_moves_with_it(self):
+        partner = self.partner(2)
+        _, before = self.read(partner)
+
+        self.patch(partner, "moved@example.com")
+
+        _, after = self.read(partner)
+        self.assertNotEqual(after["ChangedAt"], before["ChangedAt"])
+        self.assertEqual(after["CreatedAt"], before["CreatedAt"],
+                         "when it was created has not changed")
+
+    def test_one_created_over_http_has_both_stamps(self):
+        status, headers, body = self.request(
+            "POST", GW + "/BusinessPartnerSet", headers=self.csrf_token(),
+            body={"BusinessPartnerID": "0199999999", "CompanyName": "Made Here",
+                  "CurrencyCode": "EUR", "BusinessPartnerRole": "01"})
+        self.assertEqual(status, 201, body)
+
+        created = body["d"]
+        self.assertTrue(created["CreatedAt"])
+        self.assertTrue(created["ChangedAt"])
+        self.assertNotEqual(created["__metadata"]["etag"], 'W/"datetime\'\'"',
+                            "an ETag rendered from no timestamp at all")
+
+
 class TestETagRequired(ETagCase):
     """A service configured to insist on a validator, as newer Gateway does."""
 
