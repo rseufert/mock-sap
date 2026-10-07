@@ -47,7 +47,17 @@ class NotPosted(Exception):
 
     This is the mock being honest about its own limits, not a fault injected on
     request.  A client that wants a refusal on demand uses ``/_mock/idoc-posting``.
+
+    ``applied`` is what the application *tried*, for a refusal that got far
+    enough to have tried something: a ``DELVRY`` naming one sales order that
+    does not exist posted nothing, so it is 51, and #116's argument still
+    holds for it - nothing else records which order that was.  A refusal with
+    nothing attempted, a ``DELVRY`` with no item segment at all, carries none.
     """
+
+    def __init__(self, reason, applied=None):
+        super().__init__(reason)
+        self.applied = applied
 
 
 class PostingRules:
@@ -197,6 +207,17 @@ def _apply_delivery(ctx, body: bytes, docnum: str = "") -> List[dict]:
             continue
 
         items = {item["SalesOrderItem"]: item for item in documents.order_items(ctx, row)}
+        # A position the order does not have delivers nothing either, and
+        # saying so beats dropping the line and reporting on the ones that
+        # were left - which, when none were, was a delivery of nothing
+        # reported as a delivery.
+        missing = [position for position in positions if position not in items]
+        if missing and len(missing) == len(positions):
+            applied.append({"SALESORDER": row["SalesOrder"], "STATUS": "",
+                            "ITEM": missing[0],
+                            "MESSAGE": outcome.delivery_message(
+                                row["SalesOrder"], "", "", missing[0])})
+            continue
         known = announced and store.get(
             ctx.conn, ENTITY_TYPES["A_OutbDeliveryHeader"],
             {"DeliveryDocument": announced.zfill(10)}) is not None
@@ -229,6 +250,17 @@ def _apply_delivery(ctx, body: bytes, docnum: str = "") -> List[dict]:
         applied.append(entry)
     if docnum:
         outcome.file_delivery(ctx.conn, docnum, applied)
+
+    # An IDoc that moved no order posted nothing, and 53 - *Application
+    # document posted* - would say the opposite (#96). Filed first, so the
+    # refusal is still remembered: 51 is the status, not an excuse to forget
+    # which order it was about. One order moving is enough for 53; the ones
+    # that did not have their own answer in APPLIED.
+    if not any(entry["STATUS"] for entry in applied):
+        raise NotPosted(
+            "This DELVRY moved no sales order, so it posted nothing: %s"
+            % "; ".join(entry["MESSAGE"] for entry in applied),
+            applied=applied)
     return applied
 
 
@@ -380,6 +412,9 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
             applied = _apply(ctx, info, body, is_xml, docnum)
         except NotPosted as declined:
             status, status_text = "51", str(declined)
+            # What it tried, when it got far enough to try: a refusal that
+            # names an order keeps that on the receipt as well as in the text.
+            applied = declined.applied
         except SapError as refused:
             # A field too long for SAP's own dictionary is a posting failure,
             # not a transport one (#101). The IDoc *was* received and a docnum

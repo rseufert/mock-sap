@@ -101,6 +101,30 @@ class TestADeliveryRemembersWhatItMoved(OutcomeCase):
         self.assertNotIn("DELIVERY", read,
                          "an order that does not exist got no delivery")
 
+    def test_a_position_the_order_lacks_reads_back_as_that_position(self):
+        """Not as "the order does not exist", which it is not (#96).
+
+        The position is stored and the sentence rebuilt from it, so a read
+        cannot tell a different story from the receipt.
+        """
+        order = self.an_order()
+        body = (
+            '<?xml version="1.0"?><DELVRY07><IDOC BEGIN="1">'
+            '<EDI_DC40 SEGMENT="1"><IDOCTYP>DELVRY07</IDOCTYP>'
+            "<MESTYP>DELVRY</MESTYP></EDI_DC40>"
+            '<E1EDL24 SEGMENT="1"><POSNR>008888</POSNR><LFIMG>1.000</LFIMG>'
+            "<VGBEL>%s</VGBEL><VGPOS>008888</VGPOS></E1EDL24>"
+            "</IDOC></DELVRY07>") % order
+        receipt = self.send(body)
+        self.assertEqual(receipt["STATUS"], "51")
+
+        read = self.idoc(receipt["DOCNUM"])["APPLIED"]
+        self.assertEqual(read, receipt["APPLIED"])
+        self.assertEqual(read[0]["SALESORDER"], order)
+        self.assertEqual(read[0]["ITEM"], "008888")
+        self.assertEqual(read[0]["MESSAGE"],
+                         "Item 008888 does not exist in order %s" % order)
+
     def test_two_orders_in_one_idoc_read_back_in_the_order_they_moved(self):
         first, second = self.an_order(), self.an_order()
         receipt = self.send(delvry(first, second))

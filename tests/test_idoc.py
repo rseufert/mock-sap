@@ -303,6 +303,66 @@ class TestInvoiceAndDelivery(MockServerCase):
         self.assertEqual(status, 201, "the IDoc is still filed")
         self.assertEqual(receipt["APPLIED"][0]["STATUS"], "")
         self.assertIn("does not exist", receipt["APPLIED"][0]["MESSAGE"])
+        # and the IDoc itself posted nothing, so it is 51 and not 53 (#96)
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("9999999999", receipt["STATUS_TEXT"])
+
+    def test_a_delvry_naming_a_position_the_order_lacks_is_51(self):
+        """An order that exists, a position that does not: still nothing moved.
+
+        The line used to be dropped and the order reported on whatever was
+        left - which, when nothing was, meant a delivery of nothing filed as
+        "Application document posted".
+        """
+        created = self.an_undelivered_order()
+        order = created["SalesOrder"]
+        body = (
+            '<?xml version="1.0"?><DELVRY07><IDOC BEGIN="1">'
+            '<EDI_DC40 SEGMENT="1"><IDOCTYP>DELVRY07</IDOCTYP>'
+            "<MESTYP>DELVRY</MESTYP></EDI_DC40>"
+            '<E1EDL24 SEGMENT="1"><POSNR>009999</POSNR><LFIMG>1.000</LFIMG>'
+            "<VGBEL>%s</VGBEL><VGPOS>009999</VGPOS></E1EDL24>"
+            "</IDOC></DELVRY07>") % order
+        status, _, receipt = self.request(
+            "POST", "/sap/bc/idoc", body=body,
+            headers=dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                               "Accept": "application/json"}))
+        self.assertEqual(status, 201, "the IDoc is still filed")
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("009999", receipt["STATUS_TEXT"])
+        self.assertEqual(receipt["APPLIED"][0]["ITEM"], "009999")
+        self.assertIn("009999", receipt["APPLIED"][0]["MESSAGE"])
+
+        _, _, entity = self.get(SRV + "/A_SalesOrder('%s')?$format=json" % order)
+        self.assertEqual(entity["d"]["OverallDeliveryStatus"], "A",
+                         "nothing moved, so nothing moved")
+
+    def test_a_delvry_that_moved_one_order_of_two_still_posts(self):
+        """One order moving is enough for 53; the other keeps its own answer.
+
+        51 is for an IDoc that posted *nothing*, which is the distinction
+        #96 is about - not for one that posted some of what it named.
+        """
+        order = self.an_undelivered_order(quantity="4")["SalesOrder"]
+        items = (
+            '<E1EDL24 SEGMENT="1"><POSNR>000010</POSNR><MATNR>TG11</MATNR>'
+            "<LFIMG>4.000</LFIMG><VGBEL>%s</VGBEL><VGPOS>000010</VGPOS></E1EDL24>"
+            '<E1EDL24 SEGMENT="1"><POSNR>000010</POSNR><MATNR>TG11</MATNR>'
+            "<LFIMG>4.000</LFIMG><VGBEL>9999999999</VGBEL>"
+            "<VGPOS>000010</VGPOS></E1EDL24>") % order
+        body = ('<?xml version="1.0"?><DELVRY07><IDOC BEGIN="1">'
+                '<EDI_DC40 SEGMENT="1"><IDOCTYP>DELVRY07</IDOCTYP>'
+                "<MESTYP>DELVRY</MESTYP></EDI_DC40>"
+                '<E1EDL20 SEGMENT="1"><VBELN>0080007654</VBELN>%s</E1EDL20>'
+                "</IDOC></DELVRY07>") % items
+        _, _, receipt = self.request(
+            "POST", "/sap/bc/idoc", body=body,
+            headers=dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                               "Accept": "application/json"}))
+        self.assertEqual(receipt["STATUS"], "53")
+        answers = {row["SALESORDER"]: row["STATUS"] for row in receipt["APPLIED"]}
+        self.assertEqual(answers[order], "C")
+        self.assertEqual(answers["9999999999"], "")
 
     # ----------------------------------------------------------------- posting
 

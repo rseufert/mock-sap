@@ -116,14 +116,22 @@ _DELIVERY_STATUS = {"A": "not yet delivered", "B": "partly delivered",
                     "C": "fully delivered"}
 
 
-def delivery_message(sales_order: str, status: str, delivery: str) -> str:
+def delivery_message(sales_order: str, status: str, delivery: str,
+                     position: str = "") -> str:
     """What posting a DELVRY did to one sales order.
 
-    A blank status is an order the mock could not find, which is the one
-    outcome that moved nothing: ``documents.apply_delivery_status`` answers
-    one of SAP's three statuses and never blank.
+    A blank status is an order this DELVRY moved nothing on, which
+    ``documents.apply_delivery_status`` never answers - it gives one of
+    SAP's three statuses. Two things produce one: an order the mock could
+    not find, and an order whose named position it could not find. The
+    position tells them apart, and is stored rather than the sentence,
+    because a sentence in a table is a sentence that can drift from the
+    numbers beside it.
     """
     if not status:
+        if position:
+            return ("Item %s does not exist in order %s"
+                    % (position, sales_order))
         return "Sales order %s does not exist" % sales_order
     moved = ("Delivery status set to %s (%s)"
              % (status, _DELIVERY_STATUS.get(status, status)))
@@ -137,16 +145,16 @@ def file_delivery(conn, docnum: str, applied: List[dict]) -> None:
     conn.execute("DELETE FROM idoc_delivery WHERE docnum = ?", (docnum,))
     for seq, row in enumerate(applied):
         conn.execute(
-            "INSERT INTO idoc_delivery(docnum,seq,sales_order,status,delivery) "
-            "VALUES(?,?,?,?,?)",
+            "INSERT INTO idoc_delivery(docnum,seq,sales_order,status,delivery,"
+            "position) VALUES(?,?,?,?,?,?)",
             (docnum, seq, row["SALESORDER"], row.get("STATUS", ""),
-             row.get("DELIVERY", "")))
+             row.get("DELIVERY", ""), row.get("ITEM", "")))
     conn.commit()
 
 
 def _delivery_of(conn, docnum: str) -> Optional[List[dict]]:
     rows = conn.execute(
-        "SELECT sales_order,status,delivery FROM idoc_delivery "
+        "SELECT sales_order,status,delivery,position FROM idoc_delivery "
         "WHERE docnum = ? ORDER BY seq", (docnum,)).fetchall()
     if not rows:
         return None
@@ -159,8 +167,11 @@ def _delivery_of(conn, docnum: str) -> Optional[List[dict]]:
             "SALESORDER": row["sales_order"],
             "STATUS": row["status"] or "",
             "MESSAGE": delivery_message(row["sales_order"], row["status"] or "",
-                                        row["delivery"] or ""),
+                                        row["delivery"] or "",
+                                        row["position"] or ""),
         }
+        if row["position"]:
+            entry["ITEM"] = row["position"]
         if row["delivery"]:
             entry["DELIVERY"] = row["delivery"]
         applied.append(entry)
