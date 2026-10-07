@@ -380,6 +380,21 @@ def receive(ctx, content_type: str, body: bytes, posting=None) -> dict:
             applied = _apply(ctx, info, body, is_xml, docnum)
         except NotPosted as declined:
             status, status_text = "51", str(declined)
+        except SapError as refused:
+            # A field too long for SAP's own dictionary is a posting failure,
+            # not a transport one (#101). The IDoc *was* received and a docnum
+            # *was* issued, so answering 400 with a Gateway error envelope
+            # tells a client the opposite of what happened - and leaves the
+            # status-record handling it will need in production unexercised by
+            # the very case most likely to hit it. Length and type checks
+            # belong to the OData surface and stay there; here the same input
+            # becomes 51 with the field and its limit in the text.
+            #
+            # Only `_apply` is inside this: a malformed IDoc is refused before
+            # it, where a transport error is the right answer.
+            status = "51"
+            status_text = "%s not posted: %s" % (
+                info.get("mestyp") or "IDoc", refused.message)
 
     now = clock.now().replace(microsecond=0)
     ctx.conn.execute(
