@@ -1,0 +1,17 @@
+edmx.xsd and edm.xsd in this directory are OASIS Open's, not this project's.
+
+They are the two XML schemas published alongside
+
+  OData Common Schema Definition Language (CSDL) XML Representation
+  Version 4.01, OASIS Standard, 11 May 2020
+
+and are kept here byte-for-byte as OASIS published them, so each one still
+carries, in its own leading comment, the notice OASIS put there:
+
+  Copyright (c) OASIS Open 2020. All Rights Reserved.
+  Source: https://docs.oasis-open.org/odata/odata-csdl-xml/v4.01/os/schemas/
+  TC IPR Statement: https://www.oasis-open.org/committees/odata/ipr.php
+
+Nothing in them has been edited, reformatted or re-indented; `tools/check_csdl.py`
+checks their SHA-256 before it uses them, and refuses to run if either has
+changed. The whole point of the files is that this project did not write them.

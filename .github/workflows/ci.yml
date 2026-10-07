@@ -59,6 +59,28 @@ jobs:
           LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
           python tools/check_changelog.py ${BASE:+--base "$BASE"} --labels "$LABELS"
 
+  csdl:
+    name: "served $metadata is valid CSDL"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # Its own job so that a failure names itself. Everything else that checks
+      # this mock's output checks it against mocksap/schema.py, which is what
+      # wrote it; this is the one check held to schemas nobody here wrote, and a
+      # confusing test error is not what it should arrive as.
+      #
+      # The validation needs xmllint, and the runner image does not carry it -
+      # which is what --require is for. Without the flag this job would have
+      # gone green by skipping the only part of itself that validates anything.
+      - name: xmllint, which is what validates against an XSD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxml2-utils
+      - run: python tools/check_csdl.py --require
+
   smoke:
     name: documented examples still work
     runs-on: ubuntu-latest
@@ -140,7 +162,7 @@ jobs:
     # never reports, so every pull request becomes permanently unmergeable with
     # no way round it from the pull request side. Change the ruleset first; see
     # docs/GITHUB.md.
-    needs: [test, docs, smoke, package, docker]
+    needs: [test, docs, csdl, smoke, package, docker]
     # Without always(), a failed dependency skips this job rather than failing
     # it, and a skipped check is not a red one.
     if: always()
