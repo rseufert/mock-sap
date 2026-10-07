@@ -249,6 +249,15 @@ def split_payload(et: EntityType, payload: dict):
                 value = [value]
             if not isinstance(value, list):
                 raise SapError("Invalid payload for navigation property '%s'" % key, 400, target=key)
+            # What is in the list is held to the same: each entry is an
+            # entity, and one that is a number or a string or a list used to
+            # get as far as `insert` and fail there as a 500 (#151).
+            for position, entry in enumerate(value, start=1):
+                if not isinstance(entry, dict):
+                    raise SapError(
+                        "Invalid payload for navigation property '%s': entry "
+                        "%d is not a JSON object" % (key, position), 400,
+                        target=key)
             deep[key] = value
             continue
         prop = et.prop(key)

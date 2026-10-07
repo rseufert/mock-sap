@@ -51,17 +51,48 @@ class TestADeepInsertThatFailsPartway(AtomicCase):
         self.assertEqual(self.held(), before,
                          "no header, and neither of the two items before it")
 
-    def test_so_does_a_child_that_fails_in_a_way_nobody_answered_for(self):
-        """An item that is not an object is not a refusal the mock words.
+    def test_a_child_that_is_not_an_object_is_refused_by_name(self):
+        """400 and the property, not a 500 and a Python error (#151).
 
-        Whatever status that earns - it is a 500 today - the header and the
-        item before it must not outlive it.
+        Each of these used to reach `insert` as an entity and fail on the
+        first thing it was asked, which a client saw as the server breaking.
         """
-        before = self.held()
-        status, _, body = self.post([ITEM, 5])
+        for entry in (5, "x", None, [ITEM], True):
+            with self.subTest(entry=entry):
+                before = self.held()
+                status, _, body = self.post([ITEM, entry])
 
-        self.assertGreaterEqual(status, 400, body)
+                self.assertEqual(status, 400, body)
+                message = body["error"]["message"]["value"]
+                self.assertIn("to_Item", message)
+                self.assertIn("entry 2", message)
+                self.assertNotIn("object has no attribute", message)
+                self.assertEqual(self.held(), before)
+
+    def test_so_is_one_inside_a_results_wrapper(self):
+        status, _, body = self.request(
+            "POST", SRV + "/A_SalesOrder",
+            body=dict(ORDER, to_Item={"results": [5]}),
+            headers=self.csrf_token())
+
+        self.assertEqual(status, 400, body)
+        self.assertIn("to_Item", body["error"]["message"]["value"])
+
+    def test_and_one_a_level_further_down(self):
+        """The item is an object; what it carries is not."""
+        before = self.held()
+        status, _, body = self.post([dict(ITEM, to_PricingElement=[7])])
+
+        self.assertEqual(status, 400, body)
+        self.assertIn("to_PricingElement", body["error"]["message"]["value"])
         self.assertEqual(self.held(), before)
+
+    def test_an_empty_list_is_still_no_children(self):
+        before = self.held()
+        status, _, body = self.post([])
+
+        self.assertEqual(status, 201, body)
+        self.assertEqual(self.held(), (before[0] + 1, before[1]))
 
     def test_the_order_after_a_failure_is_whole(self):
         """The failure left nothing open: the next deep insert commits."""
