@@ -290,6 +290,16 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
         raise NotPosted("No E1EDS01 segment with SUMID 010 gives an invoice "
                         "total, so this INVOIC bills nothing")
 
+    # Eight digits that are no day of any month - 20261345 - used to get as
+    # far as the due date and fail there, with the document half written.
+    dated = _idoc_date(dates.get("026", {}).get("DATUM"))
+    try:
+        dated = documents.as_date(dated).isoformat() if dated else None
+    except ValueError:
+        raise NotPosted("E1EDK03 IDDAT 026 gives the invoice date as %s, which "
+                        "is not a date, so there is no day this INVOIC falls "
+                        "due from" % dates["026"]["DATUM"])
+
     invoice = {
         "supplier": supplier,
         "reference": (references.get("009", {}).get("BELNR")
@@ -297,8 +307,8 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
         "currency": header.get("CURCY") or "EUR",
         "terms": header.get("ZTERM") or "",
         "gross": gross, "net": net, "tax": tax,
-        "document_date": _idoc_date(dates.get("026", {}).get("DATUM")) or None,
-        "baseline_date": _idoc_date(dates.get("026", {}).get("DATUM")) or None,
+        "document_date": dated,
+        "baseline_date": dated,
         "items": [{
             "purchase_order": item.get("VGBEL", ""),
             "purchase_order_item": item.get("VGPOS", ""),
