@@ -112,6 +112,33 @@ def _check_options(opts: Dict[str, str], version: int = 2) -> None:
                     "Query option '%s' belongs to OData V%d, and this service "
                     "speaks V%d" % (key, 2 if version >= 4 else 4, version), 400)
             raise SapError("Query option '%s' is not supported" % key, 400)
+    _refuse_what_would_be_ignored(opts)
+
+
+def _refuse_what_would_be_ignored(opts: Dict[str, str]) -> None:
+    """Three options this mock used to accept and then do nothing with (#165).
+
+    Each returned exactly what the request would have returned without it, so
+    a client could not tell an option that was applied from one that was
+    dropped: a `$search` that matched nothing still listed every row. An
+    option that is not going to be honoured is refused, by name, with what to
+    use instead.
+    """
+    if "$search" in opts:
+        raise SapError(
+            "$search is not implemented by this mock; narrow the read with "
+            "$filter instead", 501)
+    if "$skiptoken" in opts:
+        raise SapError(
+            "The $skiptoken '%s' is not one this system issued: this mock "
+            "never pages a response, so it never hands one out. Page with "
+            "$top and $skip" % opts["$skiptoken"], 400)
+    fmt = (opts.get("$format") or "").strip().lower()
+    if fmt and fmt != "json" and not fmt.startswith("application/json"):
+        raise SapError(
+            "$format=%s is not available for entity data, which this mock "
+            "serves as JSON only. The service document and $metadata are the "
+            "resources it serves as XML" % opts["$format"], 400)
 
 
 def _split_options(text: str, separator: str) -> List[str]:
@@ -200,7 +227,8 @@ def _render(ctx: Context, row, et: EntityType, svc: Service,
             where = " AND ".join('"%s" = ?' % remote for _l, remote in nav.join)
             params = [row[local] for local, _r in nav.join]
             if options.get("$filter"):
-                extra, extra_params = build_where(options["$filter"], target)
+                extra, extra_params = build_where(
+                    options["$filter"], target, target_svc.version)
                 where, params = _merge_where(where, params, extra, extra_params)
             order = build_orderby(options["$orderby"], target) if options.get("$orderby") else ""
             kids = store.query(ctx.conn, target, where, params, order,
@@ -361,7 +389,7 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
                 raise SapError(
                     "The $count segment cannot be combined with $apply; ask for "
                     "$count=true beside it instead", 400)
-            where, params = _where_from(opts, et)
+            where, params = _where_from(opts, et, svc.version)
             return Response(body=str(store.count(ctx.conn, et, where, params)),
                             content_type="text/plain;charset=utf-8")
         if tail:
@@ -465,7 +493,7 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
         raise SapError("Method %s is not allowed on this resource" % method, 405)
 
     if tail[1:] == ["$count"]:
-        where, params = _where_from(opts, target)
+        where, params = _where_from(opts, target, target_svc.version)
         combined, all_params = _merge_where(join_where, join_params, where, params)
         return Response(body=str(store.count(ctx.conn, target, combined, all_params)),
                         content_type="text/plain;charset=utf-8")
@@ -512,10 +540,10 @@ def _split_path(rest: str) -> List[str]:
     return [unquote(s) for s in out if s]
 
 
-def _where_from(opts, et) -> Tuple[str, list]:
+def _where_from(opts, et, version: int) -> Tuple[str, list]:
     if "$filter" not in opts or not opts["$filter"].strip():
         return "", []
-    return build_where(opts["$filter"], et)
+    return build_where(opts["$filter"], et, version)
 
 
 def _merge_where(w1, p1, w2, p2):
@@ -551,7 +579,7 @@ def _read_collection(ctx, svc, et, set_name, opts, extra_where="", extra_params=
     # mint would otherwise fall in the gap and never be reported.
     tracking = odata_delta.wants_tracking(headers)
     moment = clock.now() if tracking else None
-    where, params = _where_from(opts, et)
+    where, params = _where_from(opts, et, svc.version)
     where, params = _merge_where(extra_where, extra_params, where, params)
     order = build_orderby(opts["$orderby"], et) if opts.get("$orderby") else ""
     top = _int_option(opts, "$top")
@@ -602,7 +630,7 @@ def _read_delta(ctx, svc, et, set_name, opts, token, extra_where, extra_params) 
     """Answer with what changed since the token was issued, deletions included."""
     since = odata_delta.read(token)
     moment = clock.now()      # before the query, for the same reason
-    where, params = _where_from(opts, et)
+    where, params = _where_from(opts, et, svc.version)
     where, params = _merge_where(extra_where, extra_params, where, params)
     changed_where, changed_params = odata_delta.changed_since(et, since)
     where, params = _merge_where(where, params, changed_where, changed_params)
@@ -757,7 +785,7 @@ def _links(ctx, svc, et: EntityType, row, tail: List[str], method: str,
     if rest == ["$count"]:
         if method != "GET":
             raise SapError("Method %s is not allowed on $count" % method, 405)
-        where, params = _where_from(opts, target)
+        where, params = _where_from(opts, target, target_svc.version)
         combined, all_params = _merge_where(join_where, join_params, where, params)
         return Response(body=str(store.count(ctx.conn, target, combined, all_params)),
                         content_type="text/plain;charset=utf-8")
@@ -818,7 +846,7 @@ def _read_links(ctx, target_svc, target: EntityType, nav, row, opts,
                 "@odata.id": uri}, headers={"OData-Version": "4.0"})
         return Response(body={"d": {"uri": uri}})
 
-    where, params = _where_from(opts, target)
+    where, params = _where_from(opts, target, target_svc.version)
     where, params = _merge_where(join_where, join_params, where, params)
     order = build_orderby(opts["$orderby"], target) if opts.get("$orderby") else ""
     rows = store.query(ctx.conn, target, where, params, order,
