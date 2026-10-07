@@ -82,6 +82,9 @@ class Context:
         # What function modules have written since the last commit, which a
         # running mock shares across requests; see `bapi.UnitOfWork`.
         self.unit_of_work = None
+        # How two refusals are worded, which a run may choose; see `Config`.
+        self.rollback_type = "E"
+        self.unsupported_option_status = None
 
 
 # --------------------------------------------------------------------------
@@ -104,7 +107,8 @@ def _wants_xml(opts: Dict[str, str], headers: Dict[str, str]) -> bool:
     return "application/json" not in accept and ("xml" in accept or "atom" in accept)
 
 
-def _check_options(opts: Dict[str, str], version: int = 2) -> None:
+def _check_options(opts: Dict[str, str], version: int = 2,
+                   unsupported_status: Optional[int] = None) -> None:
     allowed = SUPPORTED_OPTIONS_V4 if version >= 4 else SUPPORTED_OPTIONS
     for key in opts:
         if not key.startswith("$"):
@@ -115,10 +119,17 @@ def _check_options(opts: Dict[str, str], version: int = 2) -> None:
                     "Query option '%s' belongs to OData V%d, and this service "
                     "speaks V%d" % (key, 2 if version >= 4 else 4, version), 400)
             raise SapError("Query option '%s' is not supported" % key, 400)
-    _refuse_what_would_be_ignored(opts)
+    _refuse_what_would_be_ignored(opts, unsupported_status)
 
 
-def _refuse_what_would_be_ignored(opts: Dict[str, str]) -> None:
+# The statuses a run may give a refused option (#170). Both say the request
+# will not be honoured as sent; which one a client maps to "unsupported" is
+# its own convention.
+UNSUPPORTED_STATUSES = (400, 501)
+
+
+def _refuse_what_would_be_ignored(opts: Dict[str, str],
+                                  status: Optional[int] = None) -> None:
     """Three options this mock used to accept and then do nothing with (#165).
 
     Each returned exactly what the request would have returned without it, so
@@ -130,18 +141,18 @@ def _refuse_what_would_be_ignored(opts: Dict[str, str]) -> None:
     if "$search" in opts:
         raise SapError(
             "$search is not implemented by this mock; narrow the read with "
-            "$filter instead", 501)
+            "$filter instead", status or 501)
     if "$skiptoken" in opts:
         raise SapError(
             "The $skiptoken '%s' is not one this system issued: this mock "
             "never pages a response, so it never hands one out. Page with "
-            "$top and $skip" % opts["$skiptoken"], 400)
+            "$top and $skip" % opts["$skiptoken"], status or 400)
     fmt = (opts.get("$format") or "").strip().lower()
     if fmt and fmt != "json" and not fmt.startswith("application/json"):
         raise SapError(
             "$format=%s is not available for entity data, which this mock "
             "serves as JSON only. The service document and $metadata are the "
-            "resources it serves as XML" % opts["$format"], 400)
+            "resources it serves as XML" % opts["$format"], status or 400)
 
 
 def _split_options(text: str, separator: str) -> List[str]:
@@ -370,7 +381,7 @@ def _dispatch(ctx, svc, rest, method, opts, headers, body, xml) -> Response:
         return Response(body=metadata.metadata_document(svc), content_type=XML_CT,
                         headers={"DataServiceVersion": "2.0"})
 
-    _check_options(opts, svc.version)
+    _check_options(opts, svc.version, ctx.unsupported_option_status)
     segments = _split_path(rest)
     first = segments[0]
     m = _SEGMENT_RE.match(first)

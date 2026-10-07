@@ -33,6 +33,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--require-if-match", action="store_true",
                    help="refuse to modify a concurrency-controlled entity that "
                         "arrives without an If-Match header (428)")
+    p.add_argument("--rollback-type", choices=("E", "W"), default="E",
+                   help="what BAPI_TRANSACTION_ROLLBACK answers when it follows "
+                        "a call that wrote something, which this mock cannot "
+                        "undo: an error (default) or a warning")
+    p.add_argument("--unsupported-option-status", type=int, choices=(400, 501),
+                   default=None,
+                   help="the status of a refused $search, $skiptoken or "
+                        "non-JSON $format (default: 501 for $search, 400 for "
+                        "the other two)")
     p.add_argument("--seed", dest="seed_value", type=int, default=42,
                    help="seed for the generated demo data (default: 42)")
     p.add_argument("--clock", default="", metavar="YYYY-MM-DDTHH:MM",

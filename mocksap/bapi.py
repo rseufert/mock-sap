@@ -598,6 +598,14 @@ def _bp_detail(ctx, params):
     }
 
 
+# What a rollback that could not undo anything may answer (#170). An error
+# fails a client that checks the rollback's RETURN, which is what stops a test
+# passing on a document that was never removed; a warning is for a client
+# whose error path calls the rollback and treats any E as a second failure.
+# S is not offered: after a write it would be untrue, which was #167.
+ROLLBACK_TYPES = ("E", "W")
+
+
 class UnitOfWork:
     """Which function modules have written since the last commit or rollback.
 
@@ -651,7 +659,7 @@ def _rollback(ctx, params):
         if name not in names:
             names.append(name)
     return {"RETURN": ret(
-        "E", "Nothing was rolled back: this mock commits each function call "
+        getattr(ctx, "rollback_type", "E"), "Nothing was rolled back: this mock commits each function call "
              "as it runs, so what %s wrote is still there. Use POST "
              "/_mock/reset to return to a known state" % ", ".join(names),
         "MOCK", "001")}
