@@ -13,6 +13,123 @@ Entries waiting for a release are one file each in
 cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
 into a dated section here.
 
+## [0.21.0] - 2026-10-07
+
+This release is the other half of the ledger. Until now a bank statement
+could only settle what this mock owed: `reconcile.py` cleared payables, and a
+credit from a customer was listed with "posting money in is not built yet". So
+half of what the mock models - sales orders, deliveries, billing documents and
+the customer open items they post - could be created and never paid. Now a
+customer's payment on a `FINSTA01` clears the receivable it quotes ([#65]),
+which makes order-to-cash runnable end to end for the first time.
+
+The interesting part is what a customer gets nearly right, because a customer
+chooses their own reference and their own amount. One credit can settle several
+invoices. A part payment is refused rather than posted, with the shortfall
+stated. A payment net of a cash discount is judged on the invoice's own terms
+and the day it arrived: earned, the invoice clears; taken late, the invoice
+clears and the discount stays open on the customer. And a payment the bank
+takes back reopens what it had cleared. In every case where a line could be
+read two ways, nothing is cleared and both readings are named.
+
+**Four things answer differently than they did in 0.20.0:**
+
+- **A credit declared `RCV` that quotes an open billing document now clears
+  it** ([#175]). It used to be listed under `UNPROCESSED` whatever it quoted.
+  One that quotes nothing owed is still listed, with a different sentence.
+- **A debit carrying `LINACTION` `RET` is no longer a payment of ours**
+  ([#181]). It is read as money we received going back, and clears no payable.
+  A debit carrying anything else, or nothing, is unchanged.
+- **A receivable posted by a billing document falls due on the order's
+  `CustomerPaymentTerms`** ([#182]), not on the day it posted, and carries those
+  terms. The seeded receivables are unchanged.
+- **A statement line two suppliers' items fit is cleared when exactly one of
+  them carries a payment run's claim** ([#173]). It used to clear neither.
+
+### Added
+
+- **A customer's payment on the statement clears the receivable it quotes**
+  ([#175]). A `FINSTA01` credit declared as money arriving (`LINACTION` `RCV`)
+  used to be listed with "posting money in is not built yet". It is now matched
+  against the open customer items by the billing document the customer quotes,
+  structured reference first and then the note to payee, and an exact match on
+  amount and currency clears the item with one `DZ` receipt document per
+  customer: bank debited, customer credited, the document's own customer lines
+  cleared. **A part payment is refused, not posted**: anything but the exact
+  amount clears nothing, makes no residual item, and is listed with both
+  figures. Money arriving that quotes no open receivable is listed as applied
+  to nothing. Payables are unchanged, and neither ledger can be cleared from
+  the other's side of the statement.
+
+- **Payment terms can offer a cash discount** ([#176]). `documents.PAYMENT_TERMS`
+  held net days and nothing else, so "2% 10 net 30" could not be expressed. A
+  key now carries discount days and a rate beside its net days, two keys that
+  offer one are seeded (`0002` is 2% 10 net 30, `0003` is 3% 14 net 45), and
+  `documents.discount_on()` says what a payment on a given day earned of the
+  discount and what the terms offered — which is the judgement a bank statement
+  cannot make, because a credit 2% short of an invoice looks the same whether
+  the discount was earned or taken a month late. Every key that existed answers
+  exactly as it did, due dates included, and an unrecognised one is still due at
+  once rather than refused.
+
+- **One credit can settle several of a customer's invoices** ([#178]). A
+  credit declared as money arriving that quotes several open receivables now
+  clears the set of them whose amounts come to exactly the credit, with one
+  `CLEARED` row and one receipt line per invoice. Only the items the line
+  quotes are considered. Where more than one set fits, none is cleared and the
+  reason names each; a line quoting more than 16 open receivables is not
+  searched. A credit that fits nothing now says how far short of, or over,
+  what it quotes it was.
+
+- **A customer's payment that goes back reopens the receivable** ([#181]). A
+  `FINSTA01` **debit** carrying `LINACTION` `RET` is now read as money we
+  received going back. It reopens the cleared receivables it quotes whose
+  amounts come to exactly the debit, with a `DZ` reversal and
+  `ClearingIsReversed` left set, and is never treated as a payment of ours. A
+  debit carrying anything else, or nothing, is a payment exactly as before.
+  **A writer that already stamps `RET` on debits will see those lines stop
+  clearing payables.**
+
+- **An open item says what its due date was counted from** ([#182]). The
+  open-item cube serves `DueCalculationBaseDate` beside `NetDueDate`, blank for
+  a G/L line as the due date already is, and `/_mock/open-items` can set it.
+  Subtracting the terms' days back off the due date was not the same fact: a
+  document that carries its own `NetPaymentDays` - a supplier invoice does -
+  has a due date its terms cannot explain.
+
+- **A customer who pays net of a cash discount is judged on the terms**
+  ([#185]). A credit short of a receivable by exactly the discount its
+  `PaymentTerms` offer used to be refused as a part payment. Now the invoice
+  clears. Within the discount days the discount is posted to the cash-discount
+  account `0048000000`; after them it **stays open** as a new customer line of
+  the receipt document, and the statement's `FINDINGS` name the invoice, the
+  amount, the terms and the last day it could have been taken. `CLEARED`
+  carries the money that arrived. Any other shortfall is still refused, and a
+  line that can be read two ways clears nothing.
+
+### Changed
+
+- **A statement line two suppliers' items fit is settled by the payment run's
+  claim** ([#173]). Where two suppliers number an invoice the same and bill the
+  same amount, a line paying one of them cleared neither, because nothing on
+  the line says which. The item says: the one a payment run sent carries
+  `PaymentRunID`. If exactly one of the items that fit carries a claim, **it
+  is now cleared**, its claim is released and the other is still owed. With no
+  claim, or more than one, the line is refused as before, and with several the
+  reason names the items and their runs. Before this the paid item stayed open
+  and claimed indefinitely, and a payment run that will not send two items
+  with one reference never paid the second supplier.
+
+- **A receivable falls due when the invoice we sent says it does** ([#182]). The
+  billing document's open item carries the sales order's
+  `CustomerPaymentTerms`, which is the same value the outbound `INVOIC` quotes
+  as `ZTERM`. It carried none before, so a customer promised 45 days was
+  already overdue in this mock's own books the moment they were invoiced -
+  invisible while every seeded order says `0001`, and wrong the moment one does
+  not. The seeded receivables are unchanged, and now take their due date from
+  `PAYMENT_TERMS` rather than from a second hard-coded literal that agreed with
+  it by coincidence.
+
 ## [0.20.0] - 2026-10-07
 
 This release is mostly this mock stopping saying yes. A dozen of these entries
@@ -1421,7 +1538,15 @@ First release.
 [#165]: https://github.com/rseufert/mock-sap/issues/165
 [#167]: https://github.com/rseufert/mock-sap/issues/167
 [#170]: https://github.com/rseufert/mock-sap/issues/170
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.20.0...HEAD
+[#173]: https://github.com/rseufert/mock-sap/issues/173
+[#175]: https://github.com/rseufert/mock-sap/issues/175
+[#176]: https://github.com/rseufert/mock-sap/issues/176
+[#178]: https://github.com/rseufert/mock-sap/issues/178
+[#181]: https://github.com/rseufert/mock-sap/issues/181
+[#182]: https://github.com/rseufert/mock-sap/issues/182
+[#185]: https://github.com/rseufert/mock-sap/issues/185
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/rseufert/mock-sap/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/rseufert/mock-sap/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rseufert/mock-sap/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rseufert/mock-sap/compare/v0.17.1...v0.18.0
