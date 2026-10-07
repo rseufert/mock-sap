@@ -481,6 +481,16 @@ _register(
             S("PurchaseOrderByCustomer", max_length=35, label="Customer Reference"),
             DEC("RequestedQuantity", label="Order Quantity"),
             S("RequestedQuantityUnit", max_length=3),
+            # SAP's UEBTO and UEBTK, under the spellings API_SALES_ORDER_SRV
+            # publishes. Both are initial on a created item, so an order
+            # delivers exactly what it asked for unless a client says
+            # otherwise - and `documents.over_delivery` reads them. A real
+            # system checks the tolerance per schedule line; this mock has no
+            # schedule lines, so it checks against the item's own quantity.
+            DEC("OverdelivTolrtdLmtRatioInPct", precision=3, scale=1,
+                label="Overdelivery Tolerance"),
+            BOOL("UnlimitedOverdeliveryIsAllowed",
+                 label="Unlimited Overdelivery Allowed"),
             DEC("NetAmount", precision=16, scale=3, label="Net Value"),
             S("TransactionCurrency", max_length=5),
             S("MaterialGroup", max_length=9),

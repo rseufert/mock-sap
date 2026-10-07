@@ -83,6 +83,26 @@ class TestInvoiceAndDelivery(MockServerCase):
         _, _, body = self.get(SRV + "/A_SalesOrder?$top=1&$format=json")
         return body["d"]["results"][0]["SalesOrder"]
 
+    def an_undelivered_order(self, quantity="10"):
+        """An order with nothing delivered against it, created for the test.
+
+        The seeded orders are not interchangeable for a delivery test any
+        more: some are shipped in full, and a delivery against one of those
+        is refused rather than silently doubling what it received (#95). An
+        order made here also has a quantity the test chose, so "partly
+        delivered" is not at the mercy of what the seed rolled.
+        """
+        _, _, created = self.request(
+            "POST", SRV + "/A_SalesOrder?$expand=to_Item",
+            headers=self.csrf_token(), body={
+                "SalesOrderType": "OR", "SalesOrganization": "1710",
+                "SoldToParty": "1000001", "DistributionChannel": "10",
+                "OrganizationDivision": "00", "TransactionCurrency": "EUR",
+                "to_Item": [{"Material": "TG11", "RequestedQuantity": quantity,
+                             "RequestedQuantityUnit": "PC",
+                             "NetAmount": "400.00"}]})
+        return created["d"]
+
     def generate(self, mestyp, order, **extra):
         payload = {"SalesOrder": order}
         if mestyp:
@@ -121,7 +141,7 @@ class TestInvoiceAndDelivery(MockServerCase):
         self.assertAlmostEqual(totals["011"], float(entity["d"]["TotalNetAmount"]), places=2)
 
     def test_delvry07(self):
-        order = self.an_order()
+        order = self.an_undelivered_order()["SalesOrder"]
         status, _, body = self.generate("DELVRY", order)
         self.assertEqual(status, 201)
         self.assertRegex(body["delivery"], r"^\d{10}$")
@@ -184,10 +204,69 @@ class TestInvoiceAndDelivery(MockServerCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["ReferenceSDDocument"], order)
 
-    def test_a_partial_delivery_says_so(self):
-        order = self.an_order()
+    def test_a_generated_delvry07_ships_what_is_open(self):
+        """Generating one twice sends the rest, then has nothing to send (#95).
+
+        It used to send the whole order quantity every time, so the second
+        DELVRY07 delivered the order all over again.
+        """
+        order = self.an_undelivered_order(quantity="10")["SalesOrder"]
         _, _, items = self.get(SRV + "/A_SalesOrder('%s')/to_Item?$format=json" % order)
-        first = items["d"]["results"][0]
+        position = items["d"]["results"][0]["SalesOrderItem"]
+
+        # take 4 of the 10 first, through the BAPI
+        _, _, posted = self.request(
+            "POST", "/sap/bc/rfc/BAPI_OUTB_DELIVERY_CREATE_SLS",
+            headers=self.csrf_token(),
+            body={"SALES_ORDER_ITEMS": [{"REF_DOC": order, "REF_ITEM": position,
+                                         "DLV_QTY": "4"}]})
+        self.assertEqual(posted["RETURN"][0]["TYPE"], "S")
+
+        status, _, body = self.generate("DELVRY", order)
+        self.assertEqual(status, 201)
+        quantities = [seg.find("LFIMG").text
+                      for seg in ET.fromstring(body["xml"]).findall(".//E1EDL24")]
+        self.assertEqual(quantities, ["6.000"], "the rest, not the order quantity")
+
+        _, _, entity = self.get(SRV + "/A_SalesOrder('%s')?$format=json" % order)
+        self.assertEqual(entity["d"]["OverallDeliveryStatus"], "C")
+
+        status, _, refused = self.generate("DELVRY", order)
+        self.assertEqual(status, 400)
+        self.assertIn("nothing open", refused["error"]["message"]["value"])
+
+    def test_a_delvry_that_overdelivers_posts_nothing(self):
+        """51 with a reason, not a delivery for more than the order wants."""
+        created = self.an_undelivered_order(quantity="2")
+        order = created["SalesOrder"]
+        first = created["to_Item"]["results"][0]
+        too_much = (
+            '<?xml version="1.0" encoding="utf-8"?><DELVRY07><IDOC BEGIN="1">'
+            '<EDI_DC40 SEGMENT="1"><IDOCTYP>DELVRY07</IDOCTYP>'
+            "<MESTYP>DELVRY</MESTYP></EDI_DC40>"
+            '<E1EDL20 SEGMENT="1"><VBELN>0080009998</VBELN>'
+            '<E1EDL24 SEGMENT="1"><POSNR>%s</POSNR><MATNR>%s</MATNR>'
+            "<LFIMG>9.000</LFIMG><VGBEL>%s</VGBEL><VGPOS>%s</VGPOS></E1EDL24>"
+            "</E1EDL20></IDOC></DELVRY07>"
+        ) % (first["SalesOrderItem"], first["Material"], order,
+             first["SalesOrderItem"])
+
+        _, _, receipt = self.request(
+            "POST", "/sap/bc/idoc", body=too_much,
+            headers=dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                               "Accept": "application/json"}))
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("open", receipt["STATUS_TEXT"])
+        self.assertNotIn("APPLIED", receipt)
+
+        _, _, entity = self.get(SRV + "/A_SalesOrder('%s')?$format=json" % order)
+        self.assertEqual(entity["d"]["OverallDeliveryStatus"], "A",
+                         "a declined DELVRY moves nothing")
+
+    def test_a_partial_delivery_says_so(self):
+        created = self.an_undelivered_order()
+        order = created["SalesOrder"]
+        first = created["to_Item"]["results"][0]
 
         partial = (
             '<?xml version="1.0" encoding="utf-8"?><DELVRY07><IDOC BEGIN="1">'
