@@ -196,10 +196,6 @@ class TestTheCubeIsAViewNotACopy(OpenItemCase):
         self.assertIn('Name="ClearingAccountingDocument"', document)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestTheCubeIsReadOnly(OpenItemCase):
     """The real API_OPLACCTGDOCITEMCUBE_SRV reports; it does not take writes.
 
@@ -260,3 +256,7 @@ class TestTheCubeIsReadOnly(OpenItemCase):
         document, _, _ = self.post(terms="NT30")
         line = self.supplier_line(document)
         self.assertEqual(line["Supplier"], "1000001")
+
+
+if __name__ == "__main__":
+    unittest.main()

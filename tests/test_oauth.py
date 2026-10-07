@@ -4,8 +4,8 @@ import time
 import unittest
 from urllib.parse import urlencode
 
-from mocksap import oauth as oauth_module
 from support import MockServerCase, SRV
+from mocksap import oauth as oauth_module
 
 TOKEN_URL = "/sap/bc/sec/oauth2/token"
 REVOKE_URL = "/sap/bc/sec/oauth2/revoke"
