@@ -236,6 +236,16 @@ def _claimed_by(item: dict) -> str:
     return (item.get("PaymentRunID") or "").strip()
 
 
+def _quoted_by(conn, line: dict, candidates: List[dict]) -> List[tuple]:
+    """The candidates this line names, each with the reference it named."""
+    quoted = []
+    for item in candidates:
+        reference = _invoice_reference(conn, item)
+        if _quotes(reference, line):
+            quoted.append((item, reference))
+    return quoted
+
+
 def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
     """The item this line pays, or why it pays none of them.
 
@@ -278,14 +288,9 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
     if amount is None:
         return {"item": None, "reason": "the line carries several amounts and "
                                         "none of them is named as the line's"}
-    quoted = []
-    for item in candidates:
-        reference = _invoice_reference(conn, item)
-        if _quotes(reference, line):
-            quoted.append((item, reference))
+    quoted = _quoted_by(conn, line, candidates)
     if not quoted:
-        return {"item": None, "unquoted": True,
-                "reason": "no open item quotes this reference"}
+        return {"item": None, "reason": "no open item quotes this reference"}
 
     wanted = abs(money.of(amount))
     paid_in = (line.get("currency") or "").strip().upper()
@@ -348,6 +353,99 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
             % (_in_words(["%s for %s" % (_named(item), _item_price(item))
                           for item, _ in quoted]),
                _priced(amount, paid_in))}
+
+
+# How many receivables one line may quote before the sets they could make are
+# not searched. Sixteen is 65,536 sets, and a line that quotes more invoices
+# than that is not one this mock should spend a minute being clever about.
+MOST_QUOTED = 16
+
+
+def _sets_summing_to(quoted: List[tuple], wanted: Decimal) -> List[List[tuple]]:
+    """Every set of the quoted items whose amounts come to exactly `wanted`."""
+    amounts = [abs(money.of(item["AmountInTransactionCurrency"]))
+               for item, _ in quoted]
+    found = []
+    for mask in range(1, 1 << len(quoted)):
+        chosen = [n for n in range(len(quoted)) if mask >> n & 1]
+        if sum((amounts[n] for n in chosen), Decimal("0")) == wanted:
+            found.append([quoted[n] for n in chosen])
+    return found
+
+
+def _match_receipt(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
+    """The receivables this credit settles, or why it settles none of them.
+
+    A customer chooses what to quote and what to send, and one transfer for
+    several invoices is ordinary: the line names each and carries the total.
+    So where a payable is one item per line, a receipt is a *set* - the set of
+    the items the line quotes whose amounts come to exactly what arrived
+    (#178).  One item for the exact amount is the smallest such set.
+
+    **Only what the line quotes is considered.**  The customer's other open
+    items might well add up to the credit, and clearing them because they do
+    would be this mock deciding what the customer meant.
+
+    **More than one set is no answer.**  A line quoting invoices for 100, 200
+    and 300 and paying 300 has paid the third or the first two, and nothing
+    says which; neither is cleared and the reason names both sets.
+
+    **No set is a part payment or an overpayment**, which is refused rather
+    than posted - the module's docstring says why.  The reason gives the
+    difference as well as the two figures, because how much they were short
+    is the one number the reader was going to work out next.
+    """
+    amount = line.get("amount")
+    paid_in = (line.get("currency") or "").strip().upper()
+    quoted = _quoted_by(conn, line, candidates)
+    if not quoted:
+        # Said as what it is. Money that arrived and settled nothing is the
+        # line most worth finding, and "no open item" reads as though nothing
+        # happened.
+        return {"items": [], "reason":
+                "this line is money arriving and no open receivable quotes "
+                "its reference, so it is applied to nothing"}
+    same = [(item, reference) for item, reference in quoted
+            if _currency_of(item) == paid_in]
+    if amount is None or not paid_in or not same:
+        # Nothing here is about sets: the line names no amount, or no
+        # currency, or one that nothing it quotes is owed in. `_match` already
+        # has the sentence for each.
+        return {"items": [], "reason": _match(conn, line, candidates)["reason"]}
+    if len(same) > MOST_QUOTED:
+        return {"items": [], "reason":
+                "this line quotes %d open receivables, and the sets of them "
+                "that could come to %s are not searched past %d"
+                % (len(same), _priced(amount, paid_in), MOST_QUOTED)}
+
+    wanted = abs(money.of(amount))
+    sets = _sets_summing_to(same, wanted)
+    if len(sets) == 1:
+        return {"items": sets[0]}
+    if sets:
+        return {"items": [], "reason":
+                "this line is for %s, which is %s, and nothing on the line "
+                "says which was paid"
+                % (_priced(amount, paid_in),
+                   " or ".join(_in_words([_named(item) for item, _ in chosen])
+                               for chosen in sets))}
+    owed = sum((abs(money.of(item["AmountInTransactionCurrency"]))
+                for item, _ in same), Decimal("0"))
+    gap = ("%s short of" % _priced(owed - wanted, paid_in) if wanted < owed
+           else "%s more than" % _priced(wanted - owed, paid_in))
+    if len(same) == 1:
+        item, reference = same[0]
+        return {"items": [], "reason":
+                "reference %s is item %s for %s, but the line is for %s, %s "
+                "it: a part payment is not posted, so nothing is cleared"
+                % (reference, item["AccountingDocument"], _item_price(item),
+                   _priced(amount, paid_in), gap)}
+    return {"items": [], "reason":
+            "this line quotes %s, %s together, but is for %s: %s all of them, "
+            "and no set of them comes to it, so nothing is cleared"
+            % (_in_words(["%s for %s" % (_named(item), _item_price(item))
+                          for item, _ in same]),
+               _priced(owed, paid_in), _priced(amount, paid_in), gap)}
 
 
 def _set_clearing(ctx, item: dict, values: dict) -> None:
@@ -510,7 +608,10 @@ def _collect(ctx, settling: List[dict], posting: str, statement: str) -> List[di
     that nothing is against, and the customer appears to be owed money.
     """
     first = settling[0]["item"]
-    amounts = [abs(money.of(s["line"].get("amount"))) for s in settling]
+    # What each invoice was for, not what the line carried: one line can
+    # settle several (#178), and its amount is then the sum of them.
+    amounts = [abs(money.of(s["item"]["AmountInTransactionCurrency"]))
+               for s in settling]
     total = sum(amounts, Decimal("0"))
     lines = [{"Customer": s["item"].get("Customer") or "",
               "Amount": -amount,
@@ -772,23 +873,15 @@ def apply_statement(ctx, body: bytes, docnum: str = "") -> dict:
                 # a supplier's is a refund, and clears nothing of ours (#89).
                 candidates = [item for item in _open_items(ctx.conn, CUSTOMER_LINE)
                               if _item_key(item) not in claimed]
-                matched = _match(ctx.conn, line, candidates)
-                if matched["item"] is None:
-                    reason = matched["reason"]
-                    if matched.get("unquoted"):
-                        # Said as what it is. Money that arrived and settled
-                        # nothing is the line most worth finding, and "no
-                        # open item" reads as though nothing happened.
-                        reason = ("this line is money arriving and no open "
-                                  "receivable quotes its reference, so it is "
-                                  "applied to nothing")
+                matched = _match_receipt(ctx.conn, line, candidates)
+                if not matched["items"]:
                     unprocessed.append((seq, {"LINE": line["line"],
-                                              "REASON": reason}))
+                                              "REASON": matched["reason"]}))
                     continue
-                claimed.add(_item_key(matched["item"]))
-                receiving.append({"seq": seq, "line": line,
-                                  "item": matched["item"],
-                                  "reference": matched["reference"]})
+                for item, reference in matched["items"]:
+                    claimed.add(_item_key(item))
+                    receiving.append({"seq": seq, "line": line, "item": item,
+                                      "reference": reference})
             else:
                 unprocessed.append((seq, {
                     "LINE": line["line"],

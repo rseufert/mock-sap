@@ -929,9 +929,20 @@ difference, or post the payment against an item that stays open - and they
 behave differently on the next statement. The mock does neither. A credit for
 anything but the receivable's exact amount clears nothing, makes no residual
 item, posts no partial payment, and is listed with both figures; an overpayment
-is treated the same. Deciding whether a short payment was a deduction or an
-instalment is the reader's job. Money arriving that quotes no open receivable at
-all is listed as applied to nothing, never dropped.
+is treated the same, and the reason says how far short or over it was. Deciding
+whether a short payment was a deduction or an instalment is the reader's job.
+Money arriving that quotes no open receivable at all is listed as applied to
+nothing, never dropped.
+
+**One credit can settle several invoices.** A customer paying three invoices
+with one transfer quotes each and sends the total, so a receipt clears the *set*
+of the receivables it quotes whose amounts come to exactly what arrived, with a
+`CLEARED` row and a receipt line per invoice, each for what that invoice was
+for. Only what the line quotes is considered: the customer's other open items
+might add up to the credit, and clearing them because they do would be deciding
+what the customer meant. If more than one set fits - invoices for 100, 200 and
+300 and a credit for 300 - none is cleared and the reason names each set. A line
+quoting more than 16 open receivables is not searched.
 
 **A supplier can be told what was paid.** Generating a `REMADV` from a payment
 document renders a `PEXR2002` naming every invoice that payment settled, each
