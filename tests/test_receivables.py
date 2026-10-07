@@ -21,6 +21,7 @@ from support import MockServerCase, finsta, invoic, line
 CUBE = ("/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV"
         "/A_OperationalAcctgDocItemCube")
 JOURNAL = "/sap/opu/odata/sap/API_JOURNALENTRY_SRV"
+ORDERS = "/sap/opu/odata/sap/API_SALES_ORDER_SRV"
 
 # billing document -> (accounting document, what is owed, who owes it)
 SMALL = ("0090000006", "0100000006", "8533.25", "1000006")
@@ -59,6 +60,28 @@ class ReceivableCase(MockServerCase):
     def receivable(self, accounting_document):
         return [row for row in self.items("D", open_only=False)
                 if row["AccountingDocument"] == accounting_document][0]
+
+    def billed(self, net, customer="1000001"):
+        """An order billed for `net` plus tax: (billing document, accounting
+        document, what is owed). The seed's amounts are what they are, and a
+        test about sums has to choose its own."""
+        _, _, order = self.request(
+            "POST", ORDERS + "/A_SalesOrder?$expand=to_Item",
+            headers=self.csrf_token(), body={
+                "SalesOrderType": "OR", "SalesOrganization": "1710",
+                "SoldToParty": customer, "DistributionChannel": "10",
+                "OrganizationDivision": "00", "TransactionCurrency": "EUR",
+                "to_Item": [{"Material": "TG11", "RequestedQuantity": "1",
+                             "RequestedQuantityUnit": "PC",
+                             "NetAmount": net}]})
+        status, _, generated = self.request(
+            "POST", "/sap/bc/idoc/generate",
+            body={"mestyp": "INVOIC", "SalesOrder": order["d"]["SalesOrder"]},
+            headers=self.csrf_token())
+        self.assertEqual(status, 201)
+        document = generated["accounting_document"]
+        owed = Decimal(self.receivable(document)["AmountInTransactionCurrency"])
+        return generated["billing_document"], document, "%.2f" % owed
 
     def entry(self, document):
         _, _, body = self.get(
@@ -327,6 +350,168 @@ class TestOneReceiptPerCustomer(ReceivableCase):
             lines = self.entry(document)["to_JournalEntryItem"]["results"]
             self.assertEqual({x["Customer"] for x in lines if x["Customer"]},
                              {customer})
+
+
+class TestOneCreditForSeveralInvoices(ReceivableCase):
+    """A customer pays three invoices with one transfer: the line quotes each
+    and carries the total (#178)."""
+
+    def test_a_credit_for_the_sum_of_what_it_quotes_clears_all_of_it(self):
+        total = "%.2f" % (Decimal(SMALL[2]) + Decimal(LARGE[2]))
+        before = self.open_receivables()
+
+        applied = self.post(
+            line("000001", total, note="%s %s" % (SMALL[0], LARGE[0]),
+                 action="RCV"), statement="00241")
+
+        self.assertEqual(applied["UNPROCESSED"], [])
+        self.assertEqual(sorted((row["LINE"], row["ACCOUNTINGDOCUMENT"],
+                                 Decimal(row["AMOUNT"]))
+                                for row in applied["CLEARED"]),
+                         sorted([("000001", SMALL[1], Decimal(SMALL[2])),
+                                 ("000001", LARGE[1], Decimal(LARGE[2]))]),
+                         "a row per invoice, each for what that invoice was")
+        self.assertEqual(sorted(self.open_receivables()),
+                         sorted(set(before) - {SMALL[1], LARGE[1]}))
+
+    def test_the_receipt_has_a_line_per_invoice_and_the_bank_gets_the_sum(self):
+        total = Decimal(SMALL[2]) + Decimal(LARGE[2])
+        applied = self.post(
+            line("000001", "%.2f" % total,
+                 note="%s %s" % (SMALL[0], LARGE[0]), action="RCV"),
+            statement="00242")
+
+        documents = {row["CLEARINGDOCUMENT"] for row in applied["CLEARED"]}
+        self.assertEqual(len(documents), 1)
+        lines = self.entry(documents.pop())["to_JournalEntryItem"]["results"]
+        self.assertEqual(sorted(Decimal(x["AmountInTransactionCurrency"])
+                                for x in lines if x["Customer"]),
+                         sorted([Decimal(SMALL[2]), Decimal(LARGE[2])]),
+                         "each invoice is credited what it was for, not the "
+                         "line's amount")
+        self.assertEqual([Decimal(x["AmountInTransactionCurrency"])
+                          for x in lines if not x["Customer"]], [total])
+        self.assertEqual(sorted(self.receivable(x[1])["ClearingItem"]
+                                for x in (SMALL, LARGE)), ["000001", "000002"])
+
+    def test_quoting_two_and_paying_for_one_clears_that_one(self):
+        applied = self.post(
+            line("000001", SMALL[2], note="%s %s" % (SMALL[0], LARGE[0]),
+                 action="RCV"), statement="00243")
+
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"]
+                          for row in applied["CLEARED"]], [SMALL[1]])
+        self.assertIn(LARGE[1], self.open_receivables())
+
+    def test_only_what_the_line_quotes_is_considered(self):
+        """The customer's other invoice would make up the sum, and the line
+        does not mention it."""
+        total = "%.2f" % (Decimal(SMALL[2]) + Decimal(LARGE[2]))
+        before = self.open_receivables()
+
+        applied = self.post(line("000001", total, reference=SMALL[0],
+                                 action="RCV"), statement="00244")
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertEqual(self.open_receivables(), before)
+        self.assertIn("%s EUR more than" % LARGE[2],
+                      applied["UNPROCESSED"][0]["REASON"])
+
+    def test_two_sets_that_both_fit_clear_neither_and_are_both_named(self):
+        """100, 200 and 300 net: the third, or the first two."""
+        one, two, three = (self.billed(net) for net in
+                           ("100.00", "200.00", "300.00"))
+        self.assertEqual(Decimal(one[2]) + Decimal(two[2]), Decimal(three[2]),
+                         "the test's own premise")
+        before = self.open_receivables()
+
+        applied = self.post(
+            line("000001", three[2],
+                 note=" ".join(x[0] for x in (one, two, three)), action="RCV"),
+            statement="00245")
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertEqual(self.open_receivables(), before)
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        for _, document, _ in (one, two, three):
+            self.assertIn(document, reason)
+        self.assertIn("nothing on the line says which", reason)
+
+    def test_the_sets_are_named_as_sets(self):
+        one, two, three = (self.billed(net) for net in
+                           ("100.00", "200.00", "300.00"))
+        reason = self.post(
+            line("000001", three[2],
+                 note=" ".join(x[0] for x in (one, two, three)), action="RCV"),
+            statement="00246")["UNPROCESSED"][0]["REASON"]
+
+        together, alone = reason.split(" or ")
+        if three[1] in together:
+            together, alone = alone, together
+        self.assertIn(one[1], together)
+        self.assertIn(two[1], together)
+        self.assertNotIn(three[1], together)
+        self.assertNotIn(one[1], alone)
+
+    def test_a_sum_no_set_comes_to_says_how_far_off_it_is(self):
+        total = Decimal(SMALL[2]) + Decimal(LARGE[2])
+        short = self.post(
+            line("000001", "%.2f" % (total - Decimal("100.00")),
+                 note="%s %s" % (SMALL[0], LARGE[0]), action="RCV"),
+            statement="00247")
+        over = self.post(
+            line("000001", "%.2f" % (total + Decimal("50.00")),
+                 note="%s %s" % (SMALL[0], LARGE[0]), action="RCV"),
+            statement="00248")
+
+        self.assertEqual((short["CLEARED"], over["CLEARED"]), ([], []))
+        self.assertIn("100.00 EUR short of", short["UNPROCESSED"][0]["REASON"])
+        self.assertIn("%.2f EUR together" % total,
+                      short["UNPROCESSED"][0]["REASON"])
+        self.assertIn("50.00 EUR more than", over["UNPROCESSED"][0]["REASON"])
+
+    def test_a_single_short_payment_says_how_short(self):
+        applied = self.post(line("000001", "8000.00", reference=SMALL[0],
+                                 action="RCV"), statement="00249")
+
+        self.assertIn("533.25 EUR short of",
+                      applied["UNPROCESSED"][0]["REASON"])
+
+    def test_more_invoices_than_it_will_search_are_refused_by_number(self):
+        """Seventeen invoices are 131,071 sets. It says so and stops, even
+        here, where all of them together are exactly what arrived."""
+        bills = [self.billed("10.00") for _ in range(17)]
+        total = "%.2f" % sum(Decimal(owed) for _, _, owed in bills)
+
+        applied = self.post(
+            line("000001", total, note=" ".join(b[0] for b in bills),
+                 action="RCV"), statement="00251")
+
+        self.assertEqual(applied["CLEARED"], [])
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        self.assertIn("17 open receivables", reason)
+        self.assertIn("16", reason)
+
+    def test_as_many_as_it_will_search_are_cleared(self):
+        bills = [self.billed("10.00") for _ in range(2)]
+        total = "%.2f" % sum(Decimal(owed) for _, _, owed in bills)
+
+        applied = self.post(
+            line("000001", total, note=" ".join(b[0] for b in bills),
+                 action="RCV"), statement="00252")
+
+        self.assertEqual(len(applied["CLEARED"]), 2)
+
+    def test_an_order_billed_and_paid_is_cleared(self):
+        """Order to cash, the half no test had driven: bill it, be paid."""
+        billing, document, owed = self.billed("400.00")
+
+        applied = self.post(line("000001", owed, reference=billing,
+                                 action="RCV"), statement="00250")
+
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"]
+                          for row in applied["CLEARED"]], [document])
+        self.assertNotIn(document, self.open_receivables())
 
 
 if __name__ == "__main__":
