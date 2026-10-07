@@ -19,7 +19,8 @@ from . import bapi, batch, clock as clocks, db, idoc, messages, metadata, oauth
 from .store import open_items as _open_items, set_open_item as _set_open_item
 from .odata import SapError, error_payload, whole_number
 from .schema import SERVICES, service_for_path
-from .service import JSON_CT, Context, Response, dispatch, parse_query
+from .service import (JSON_CT, UNSUPPORTED_STATUSES, Context, Response,
+                      dispatch, parse_query)
 
 SYSTEM_ID = "MCK"
 UNSAFE = {"POST", "PUT", "PATCH", "MERGE", "DELETE"}
@@ -58,6 +59,22 @@ class Config:
         self.quiet = kw.get("quiet", False)
         self.seed_value = kw.get("seed_value", 42)
         self.clock = kw.get("clock", "")  # "YYYY-MM-DDTHH:MM", or real time
+        # Two answers that are a matter of the client's conventions rather
+        # than of what SAP does (#170). Neither has a setting that brings
+        # back the behaviour it replaced: a rollback that follows a write
+        # never answers S, and a refused query option is never ignored.
+        self.rollback_type = str(kw.get("rollback_type") or "E").upper()
+        if self.rollback_type not in bapi.ROLLBACK_TYPES:
+            raise ValueError(
+                "rollback_type is %s, not %r"
+                % (" or ".join(bapi.ROLLBACK_TYPES), kw.get("rollback_type")))
+        # None keeps the split: 501 for $search, 400 for the other two.
+        self.unsupported_option_status = kw.get("unsupported_option_status")
+        if self.unsupported_option_status not in (None,) + UNSUPPORTED_STATUSES:
+            raise ValueError(
+                "unsupported_option_status is %s, not %r"
+                % (" or ".join(str(s) for s in UNSUPPORTED_STATUSES),
+                   self.unsupported_option_status))
 
 
 class Faults:
@@ -174,6 +191,8 @@ class MockSap:
         ctx = Context(self.conn, base_url, user or self.config.user, client,
                       require_if_match=self.config.require_if_match)
         ctx.unit_of_work = self.unit_of_work
+        ctx.rollback_type = self.config.rollback_type
+        ctx.unsupported_option_status = self.config.unsupported_option_status
         return ctx
 
     def close(self) -> None:
@@ -700,6 +719,8 @@ class Handler(BaseHTTPRequestHandler):
                 "database": mock.config.db_path,
                 "csrf": mock.config.csrf,
                 "requireIfMatch": mock.config.require_if_match,
+                "rollbackType": mock.config.rollback_type,
+                "unsupportedOptionStatus": mock.config.unsupported_option_status,
                 "auth": bool(mock.config.basic_auth),
                 "oauth": bool(mock.oauth),
                 "started": mock.started.replace(microsecond=0).isoformat() + "Z",

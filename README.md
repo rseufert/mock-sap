@@ -152,6 +152,9 @@ than accepted and dropped: `$search` (501, use `$filter`), a `$skiptoken` (the
 mock never pages, so it never issued one - use `$top` and `$skip`), and a
 `$format` other than JSON on entity data. The service document and `$metadata`
 are the resources served as XML.
+`--unsupported-option-status 400` (or `501`) gives all three the same status,
+for a client that maps one status to "unsupported option"; left unset,
+`$search` is the 501 and the other two are 400s.
 
 **An amount is a decimal all the way down.** `Edm.Decimal` is declared with a
 scale, stored at that scale and computed in `decimal.Decimal`, and a figure the
@@ -324,6 +327,9 @@ modules whose work is still in place, rather than claiming a rollback that did
 not happen. One that follows only reads, test runs, refused calls or a commit
 answers `S` as a real one would. `POST /_mock/reset` is how a test returns to a
 known state.
+`--rollback-type W` makes that answer a warning instead of an error, for a
+client whose error path calls the rollback and treats any `E` as a second
+failure. There is no setting that makes it `S`.
 
 `BAPI_SALESORDER_CHANGE` honours the X structures the way a real BAPI does: only
 fields flagged in `ORDER_HEADER_INX` / `ORDER_ITEM_INX` are changed, and a call
@@ -1139,6 +1145,7 @@ and left to fail the requests it matches.
 mock-sap [--host 127.0.0.1] [--port 8000] [--db :memory:|path.db] [--client 100]
          [--user MOCKUSER] [--auth USER:PASSWORD] [--no-csrf] [--seed 42]
          [--latency-ms 0] [--error-rate 0.0] [--slow-ms 3000] [--no-request-log]
+         [--rollback-type E|W] [--unsupported-option-status 400|501]
          [-q] [--version]
 ```
 
