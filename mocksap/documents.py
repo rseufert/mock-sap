@@ -8,6 +8,7 @@ creation lives here rather than in whichever layer needed it first.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -111,6 +112,28 @@ class Unbalanced(SapError):
     """The debits and credits a document would post do not come to zero."""
 
 
+_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:T.*)?$|(\d{4})(\d{2})(\d{2})$")
+
+
+def as_date(value) -> _dt.date:
+    """A date as a caller writes one: ``YYYY-MM-DD`` or SAP's ``YYYYMMDD``.
+
+    Both, on every Python. `date.fromisoformat` reads the second only from
+    3.11, so the same call posted on one interpreter and failed on another
+    (#94); the shapes are spelled out here so the answer is this mock's and
+    not the host's. Anything else is a `ValueError` that names what arrived.
+    """
+    match = _DATE.match(str(value).strip())
+    if not match:
+        raise ValueError("%r is not a date; write it as YYYYMMDD or YYYY-MM-DD"
+                         % (value,))
+    year, month, day = (int(part) for part in match.groups() if part is not None)
+    try:
+        return _dt.date(year, month, day)
+    except ValueError:
+        raise ValueError("%r is not a date in any calendar" % (value,))
+
+
 def net_due_date(baseline: str, terms: str = "", days=None) -> str:
     """When a line falls due: its baseline date plus the days its terms allow.
 
@@ -119,8 +142,7 @@ def net_due_date(baseline: str, terms: str = "", days=None) -> str:
     """
     allowed = int(days) if days not in (None, "") else PAYMENT_TERMS.get(
         (terms or "").strip().upper(), 0)
-    start = _dt.date.fromisoformat(str(baseline)[:10])
-    return (start + _dt.timedelta(days=allowed)).isoformat()
+    return (as_date(baseline) + _dt.timedelta(days=allowed)).isoformat()
 
 
 def post_journal_entry(ctx, header: Dict[str, Any],
@@ -133,6 +155,10 @@ def post_journal_entry(ctx, header: Dict[str, Any],
     company = str(header.get("CompanyCode") or "1710")
     posting = str(header.get("PostingDate") or _today())
     year = posting[:4]
+    # Everything a line can get wrong is worked out before the first write: a
+    # baseline date nobody can read used to be found on the line it belonged
+    # to, with the header and the lines before it already in the database.
+    states = [_open_item(line, posting) for line in lines]
     document = db.next_number(ctx.conn, "ACCOUNTINGDOCUMENT", 10)
 
     store.insert(ctx.conn, ENTITY_TYPES["A_JournalEntry"], {
@@ -168,7 +194,7 @@ def post_journal_entry(ctx, header: Dict[str, Any],
         store.update(ctx.conn, ENTITY_TYPES["A_OperationalAcctgDocItemCube"], {
             "AccountingDocument": document, "CompanyCode": company,
             "FiscalYear": year, "AccountingDocumentItem": str(index).zfill(6),
-        }, _open_item(line, posting), user=ctx.user)
+        }, states[index - 1], user=ctx.user)
     return document, company, year
 
 

@@ -86,6 +86,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_etag.py` | The read-modify-write cycle: ETags on entity and header, conditional reads, `If-Match` on update and delete, `If-Match: *`, a changeset rolled back by a failed precondition, and the strict mode that demands a validator. |
 | `test_batch.py` | A mixed batch of a GET and a changeset, and the rollback of a changeset whose second request fails. |
 | `test_rfc.py` | BAPI create over JSON, the error `RETURN` table, unknown function modules, and the same functions over SOAP including a fault. |
+| `test_posting_dates.py` | Dates into `BAPI_ACC_DOCUMENT_POST`: `YYYYMMDD` and `YYYY-MM-DD` read the same on every Python, an unreadable one is a `RETURN` row with nothing written, and an INVOIC dated on no day is status 51. |
 | `test_idoc.py` | ORDERS05 generation, posting it back in, reading it, setting a status, and a flat-file IDoc. |
 | `test_oauth.py` | The token endpoint and its failure modes, bearer validation across OData and RFC, the principal a SAML token carries into `CreatedByUser`, expiry and refresh-token rotation, revocation, and OAuth beside basic auth. |
 | `test_messages.py` | Warnings from the data and from injection: the header shape, several messages travelling together, the V4 `SAP__Messages` collection and its declaration in CSDL, and the line between a warning and a failure. |

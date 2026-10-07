@@ -85,6 +85,19 @@ def _sap_date(value) -> str:
     return text.split("T")[0]
 
 
+def _date_in(value) -> Optional[str]:
+    """A date a caller sent, as the ISO date the database keeps.
+
+    None for one left initial - blank, or ABAP's ``00000000`` - and a
+    `ValueError` for one that is not a date, which the caller owes a `RETURN`
+    row rather than a 500.
+    """
+    text = str(value or "").strip()
+    if not text or not text.strip("0-"):
+        return None
+    return documents.as_date(text).isoformat()
+
+
 def _num(value, default=0):
     """One ABAP numeric field, as a decimal.
 
@@ -427,6 +440,29 @@ def _acc_document_post(ctx, params):
         return {"OBJ_KEY": "", "RETURN": [ret(
             "E", "Enter at least one line item", "F5", "166", parameter="ACCOUNTGL")]}
 
+    # A date nobody can read is a business refusal like any other here: a
+    # RETURN row naming the field, and nothing posted. All of them at once,
+    # the way the real BAPI collects its messages, and before anything else
+    # is looked at so that no line is written under a date that was not one.
+    dates, unreadable = {}, []
+    asked = [("DOCUMENTHEADER", 0, header, "PSTNG_DATE"),
+             ("DOCUMENTHEADER", 0, header, "DOC_DATE")]
+    asked += [(table, index, row, "BLINE_DATE")
+              for table, rows in (("ACCOUNTPAYABLE", payables),
+                                  ("ACCOUNTRECEIVABLE", receivables))
+              for index, row in enumerate(rows, start=1)]
+    for table, index, row, name in asked:
+        given = field(row, name, "")
+        try:
+            dates[(table, index, name)] = _date_in(given)
+        except ValueError:
+            unreadable.append(ret(
+                "E", "%s '%s' is not a date; write it as YYYYMMDD or YYYY-MM-DD"
+                % (name, given), v1=name, v2=str(given), parameter=table,
+                row=index, fld=name))
+    if unreadable:
+        return {"OBJ_KEY": "", "RETURN": unreadable}
+
     lines, currency = [], "EUR"
     for index, account in enumerate(accounts, start=1):
         number = str(field(account, "ITEMNO_ACC", "")).strip()
@@ -447,7 +483,8 @@ def _acc_document_post(ctx, params):
                 "E", "No amount was supplied for item %s" % number, "F5", "167",
                 row=index, parameter="CURRENCYAMOUNT")]}
 
-    for who, rows in (("Supplier", payables), ("Customer", receivables)):
+    for who, table, rows in (("Supplier", "ACCOUNTPAYABLE", payables),
+                             ("Customer", "ACCOUNTRECEIVABLE", receivables)):
         for index, row in enumerate(rows, start=1):
             number = str(field(row, "ITEMNO_ACC", "")).strip()
             if number not in amounts:
@@ -463,7 +500,7 @@ def _acc_document_post(ctx, params):
                 who: str(field(row, "VENDOR_NO" if who == "Supplier" else "CUSTOMER", "")),
                 # what the line is due on, and what stops it being paid
                 "PaymentTerms": str(field(row, "PMNTTRMS", "")),
-                "DueCalculationBaseDate": str(field(row, "BLINE_DATE", "")) or None,
+                "DueCalculationBaseDate": dates[(table, index, "BLINE_DATE")],
                 "PaymentBlockingReason": str(field(row, "PMTBLOCK", "")),
                 "TransactionCurrency": currency,
             })
@@ -475,11 +512,11 @@ def _acc_document_post(ctx, params):
             "E", "Balance in transaction currency: %s %s" % (shown, currency),
             "F5", "702", v1=shown, v2=currency)]}
 
-    posting = str(field(header, "PSTNG_DATE", "")) or None
+    posting = dates[("DOCUMENTHEADER", 0, "PSTNG_DATE")]
     document, company_code, year = documents.post_journal_entry(ctx, {
         "CompanyCode": company,
         "AccountingDocumentType": str(field(header, "DOC_TYPE", "SA")) or "SA",
-        "DocumentDate": str(field(header, "DOC_DATE", "")) or None,
+        "DocumentDate": dates[("DOCUMENTHEADER", 0, "DOC_DATE")],
         "PostingDate": posting,
         "TransactionCurrency": currency,
         "HeaderText": str(field(header, "HEADER_TXT", "")),
