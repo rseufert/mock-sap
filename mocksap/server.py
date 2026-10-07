@@ -123,6 +123,7 @@ class MockSap:
         self.faults = Faults()
         self.idoc_posting = idoc.PostingRules()
         self.bapi_behaviour = bapi.BehaviourRules()
+        self.unit_of_work = bapi.UnitOfWork()
         # Installed as the process-wide clock, which is what every module
         # that computes a date reads. One mock per process holds one clock;
         # see `clock.py` on why it is an offset rather than a stored instant.
@@ -137,8 +138,10 @@ class MockSap:
         self.rnd = random.Random(config.seed_value)
 
     def context(self, base_url: str, client: str, user: Optional[str] = None) -> Context:
-        return Context(self.conn, base_url, user or self.config.user, client,
-                       require_if_match=self.config.require_if_match)
+        ctx = Context(self.conn, base_url, user or self.config.user, client,
+                      require_if_match=self.config.require_if_match)
+        ctx.unit_of_work = self.unit_of_work
+        return ctx
 
     def close(self) -> None:
         """Release the database connection; used when a test shuts a mock down.
@@ -681,6 +684,7 @@ class Handler(BaseHTTPRequestHandler):
             mock.faults.clear()
             mock.idoc_posting.clear()
             mock.bapi_behaviour.clear()
+            mock.unit_of_work.close()
             # Back to the pinned moment rather than to real time; see
             # `Clock.reset`. Without this, a suite that pins the clock and
             # resets between tests gets the pinned moment for its first test

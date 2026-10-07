@@ -308,6 +308,15 @@ Available: `BAPI_SALESORDER_CREATEFROMDAT2`, `BAPI_SALESORDER_CHANGE`,
 `BAPI_TRANSACTION_ROLLBACK`, `RFC_READ_TABLE`, `RFC_PING`, `STFC_CONNECTION`.
 `GET /_mock/services` lists them; `POST /sap/bc/rfc/` with no name does too.
 
+**There is no unit of work to roll back.** Every function call is committed as
+it runs, so `BAPI_TRANSACTION_COMMIT` has nothing left to do and
+`BAPI_TRANSACTION_ROLLBACK` has nothing it can undo. A rollback that follows a
+call which wrote something therefore answers `TYPE: "E"`, naming the function
+modules whose work is still in place, rather than claiming a rollback that did
+not happen. One that follows only reads, test runs, refused calls or a commit
+answers `S` as a real one would. `POST /_mock/reset` is how a test returns to a
+known state.
+
 `BAPI_SALESORDER_CHANGE` honours the X structures the way a real BAPI does: only
 fields flagged in `ORDER_HEADER_INX` / `ORDER_ITEM_INX` are changed, and a call
 that forgets them changes nothing and says so. `ORDER_ITEM_INX` takes `UPDATEFLAG`
