@@ -380,10 +380,27 @@ An invoice draws a billing document number and a delivery a delivery number, eac
 from its own number range.
 
 An inbound `DELVRY07` is not merely filed: its items name the order they came from
-in `VGBEL`/`VGPOS`, so posting one moves that order's `OverallDeliveryStatus` to
-`C` or `B` depending on whether the quantities cover it, and the receipt says what
-it did. If the delivery it announces is one the mock has never seen, the delivery
-is created too.
+in `VGBEL`/`VGPOS`, so posting one moves that order's `OverallDeliveryStatus`, and
+the receipt says what it did. If the delivery it announces is one the mock has
+never seen, the delivery is created too.
+
+**The status is what every delivery against the order adds up to**, not what the
+one in hand covers: `A` nothing delivered, `B` partly, `C` fully. An order for 10
+delivered as 5 and then 5 is `C` — it used to end at `B` and stay there, because
+each delivery was asked on its own whether it covered the order and neither 5 did
+([#95](https://github.com/rseufert/mock-sap/issues/95)). Three of the seeded orders
+are shipped half short for the same reason, so a split shipment is in the data
+rather than something you have to build.
+
+**Delivering more than was ordered is refused**, as SAP refuses past an item's
+over-delivery tolerance. The tolerance is the order item's own
+`OverdelivTolrtdLmtRatioInPct` — SAP's UEBTO, initial on a created item, so by
+default an order receives exactly what it asked for — and
+`UnlimitedOverdeliveryIsAllowed` (UEBTK) turns the check off. A generated
+`DELVRY07` ships what the order still has open, so asking twice sends the rest and
+then refuses rather than delivering the whole quantity again. The real system
+checks its tolerance per schedule line; this mock has no schedule lines and checks
+against the item's quantity.
 
 ### Accepted is not posted
 

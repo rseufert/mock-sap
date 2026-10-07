@@ -602,7 +602,11 @@ def seed(conn: sqlite3.Connection, seed_value: int = 42, orders: int = 25, pos: 
                 ShippingCondition="01", IncotermsClassification=rnd.choice(["EXW", "FOB", "CIF", "DAP"]),
                 CustomerPaymentTerms="0001",
                 OverallSDProcessStatus=rnd.choice(["A", "B", "C"]),
-                OverallDeliveryStatus=rnd.choice(["A", "B", "C"]),
+                # Nothing is delivered at this point, so this is A and
+                # `seed_documents` moves the ones it then delivers. Rolled
+                # at random, it contradicted the order's own deliveries -
+                # an order could claim C with nothing shipped against it.
+                OverallDeliveryStatus="A",
                 CreatedByUser="CB9980000001", CreationDate=_iso(doc_date),
                 LastChangeDate=_iso(doc_date + _dt.timedelta(days=1)),
             ),
@@ -736,10 +740,21 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
         shipped = doc_date + _dt.timedelta(days=rnd.randint(2, 10))
 
         # ---- delivery
+        #
+        # Most are shipped in full; every third one goes out half short, so
+        # the seeded data holds a genuine split shipment - an order at B
+        # with something still open - for anyone testing that flow, and all
+        # three of SAP's delivery statuses are represented truthfully.
         delivery = str(delivery_no).zfill(10)
         delivery_no += 1
-        weight = sum((money.of(item["RequestedQuantity"]) for item in items),
-                     Decimal(0))
+        part_shipped = index % 3 == 1
+        sent = {
+            item["SalesOrderItem"]: (
+                money.at(money.of(item["RequestedQuantity"]) / 2,
+                         documents.QUANTITY_SCALE) if part_shipped
+                else money.of(item["RequestedQuantity"]))
+            for item in items}
+        weight = sum(sent.values(), Decimal(0))
         ins("A_OutbDeliveryHeader", dict(
             DeliveryDocument=delivery, DeliveryDocumentType="LF", ShippingPoint="1710",
             SalesOrganization=order["SalesOrganization"], SoldToParty=order["SoldToParty"],
@@ -753,13 +768,21 @@ def seed_documents(conn: sqlite3.Connection, rnd: random.Random, today: _dt.date
                 DeliveryDocument=delivery, DeliveryDocumentItem=item["SalesOrderItem"],
                 Material=item["Material"],
                 DeliveryDocumentItemText=item["SalesOrderItemText"],
-                ActualDeliveredQtyInOrderQtyUnit=item["RequestedQuantity"],
+                ActualDeliveredQtyInOrderQtyUnit=sent[item["SalesOrderItem"]],
                 OrderQuantityUnit=item["RequestedQuantityUnit"], Plant=item["Plant"],
                 StorageLocation="171%d" % rnd.randint(0, 9),
                 ReferenceSDDocument=order["SalesOrder"],
                 ReferenceSDDocumentItem=item["SalesOrderItem"],
-                ItemGrossWeight=money.of(item["RequestedQuantity"]),
+                ItemGrossWeight=sent[item["SalesOrderItem"]],
                 ItemWeightUnit="KG"))
+
+        # The one rule decides it, so the order cannot disagree with the
+        # delivery just written. Updated rather than reinserted, because the
+        # seed's own historical change date is worth keeping.
+        cur.execute('UPDATE "A_SalesOrder" SET "OverallDeliveryStatus"=? '
+                    'WHERE "SalesOrder"=?',
+                    (documents.delivery_status(items, sent),
+                     order["SalesOrder"]))
 
         # only some of the deliveries have been invoiced
         if index % 3 == 2:

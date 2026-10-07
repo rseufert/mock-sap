@@ -110,17 +110,23 @@ def _statement_of(conn, docnum: str) -> Optional[List[dict]]:
 
 # --- a delivery (#116) ------------------------------------------------------
 
+# What each of SAP's delivery statuses means, spelled out once because the
+# receipt and a later read of it are built from the same words.
+_DELIVERY_STATUS = {"A": "not yet delivered", "B": "partly delivered",
+                    "C": "fully delivered"}
+
+
 def delivery_message(sales_order: str, status: str, delivery: str) -> str:
     """What posting a DELVRY did to one sales order.
 
     A blank status is an order the mock could not find, which is the one
     outcome that moved nothing: ``documents.apply_delivery_status`` answers
-    ``C`` or ``B`` and never blank.
+    one of SAP's three statuses and never blank.
     """
     if not status:
         return "Sales order %s does not exist" % sales_order
     moved = ("Delivery status set to %s (%s)"
-             % (status, "fully delivered" if status == "C" else "partly delivered"))
+             % (status, _DELIVERY_STATUS.get(status, status)))
     if delivery:
         return "Delivery %s created; %s" % (delivery, moved[0].lower() + moved[1:])
     return moved

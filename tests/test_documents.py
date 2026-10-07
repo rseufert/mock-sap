@@ -1,5 +1,7 @@
 """The documents a sales order turns into: delivery, invoice, journal entry."""
 import unittest
+from decimal import Decimal
+from urllib.parse import quote
 
 from support import MockServerCase, SRV
 
@@ -21,15 +23,35 @@ class DocumentCase(MockServerCase):
                 return row
         self.fail("the seed should contain an order with items")
 
-    def fresh_order(self, quantity="4"):
+    def fresh_order(self, quantity="4", **item_fields):
+        item = {"Material": "TG11", "RequestedQuantity": quantity,
+                "RequestedQuantityUnit": "PC", "NetAmount": "400.00"}
+        item.update(item_fields)
         _, _, created = self.request("POST", SRV + "/A_SalesOrder?$expand=to_Item",
                                      headers=self.csrf_token(), body={
             "SalesOrderType": "OR", "SalesOrganization": "1710", "SoldToParty": "1000001",
             "DistributionChannel": "10", "OrganizationDivision": "00",
-            "TransactionCurrency": "EUR",
-            "to_Item": [{"Material": "TG11", "RequestedQuantity": quantity,
-                         "RequestedQuantityUnit": "PC", "NetAmount": "400.00"}]})
+            "TransactionCurrency": "EUR", "to_Item": [item]})
         return created["d"]
+
+    def deliver(self, order, item, quantity):
+        return self.call("BAPI_OUTB_DELIVERY_CREATE_SLS", {
+            "SALES_ORDER_ITEMS": [{"REF_DOC": order["SalesOrder"],
+                                   "REF_ITEM": item["SalesOrderItem"],
+                                   "DLV_QTY": quantity}]})[2]
+
+    def delivery_status(self, order):
+        _, _, after = self.get(
+            SRV + "/A_SalesOrder('%s')?$format=json" % order["SalesOrder"])
+        return after["d"]["OverallDeliveryStatus"]
+
+    def delivered_total(self, order):
+        """What the order has had, read off the delivery items themselves."""
+        _, _, body = self.get(
+            DELIVERIES + "/A_OutbDeliveryItem?$format=json&$filter="
+            + quote("ReferenceSDDocument eq '%s'" % order["SalesOrder"]))
+        return sum((Decimal(row["ActualDeliveredQtyInOrderQtyUnit"])
+                    for row in body["d"]["results"]), Decimal(0))
 
 
 class TestSeededChain(DocumentCase):
@@ -127,6 +149,79 @@ class TestDeliveryCreation(DocumentCase):
         self.assertEqual(body["RETURN"][0]["TYPE"], "S")
         _, _, after = self.get(SRV + "/A_SalesOrder('%s')?$format=json" % order["SalesOrder"])
         self.assertEqual(after["d"]["OverallDeliveryStatus"], "B")
+
+    def test_two_part_shipments_complete_the_order(self):
+        """An order for 10 delivered as 5 and 5 is fully delivered (#95).
+
+        It used to end at B and stay there: each delivery was asked on its
+        own whether it covered the order, and neither 5 did.
+        """
+        order = self.fresh_order(quantity="10")
+        item = order["to_Item"]["results"][0]
+
+        self.assertEqual(self.delivery_status(order), "A")
+        self.assertEqual(self.deliver(order, item, "5")["RETURN"][0]["TYPE"], "S")
+        self.assertEqual(self.delivery_status(order), "B")
+        self.assertEqual(self.deliver(order, item, "5")["RETURN"][0]["TYPE"], "S")
+        self.assertEqual(self.delivery_status(order), "C")
+        # against the deliveries themselves, not against the status
+        self.assertEqual(self.delivered_total(order),
+                         Decimal(item["RequestedQuantity"]))
+
+    def test_delivering_more_than_was_ordered_is_refused(self):
+        """And refused across calls, which is how it used to get through.
+
+        Each call measured "open" against the order quantity, so delivering
+        all of it twice was accepted and the order silently received double.
+        """
+        order = self.fresh_order(quantity="10")
+        item = order["to_Item"]["results"][0]
+        self.assertEqual(self.deliver(order, item, "10")["RETURN"][0]["TYPE"], "S")
+
+        body = self.deliver(order, item, "10")
+        self.assertEqual(body["RETURN"][0]["TYPE"], "E")
+        self.assertIn("open", body["RETURN"][0]["MESSAGE"])
+        self.assertEqual(body["DELIVERY"], "")
+        self.assertEqual(self.delivered_total(order), Decimal("10.000"),
+                         "the refused delivery left nothing behind")
+
+    def test_a_line_with_no_quantity_takes_what_is_open(self):
+        order = self.fresh_order(quantity="10")
+        item = order["to_Item"]["results"][0]
+        self.assertEqual(self.deliver(order, item, "4")["RETURN"][0]["TYPE"], "S")
+
+        # no DLV_QTY: the remaining 6, not the 10 the order asked for
+        body = self.deliver(order, item, "")
+        self.assertEqual(body["RETURN"][0]["TYPE"], "S")
+        self.assertEqual(self.delivered_total(order), Decimal("10.000"))
+        self.assertEqual(self.delivery_status(order), "C")
+
+        # and now nothing is open, so there is nothing to take
+        body = self.deliver(order, item, "")
+        self.assertEqual(body["RETURN"][0]["TYPE"], "E")
+        self.assertIn("Nothing is open", body["RETURN"][0]["MESSAGE"])
+
+    def test_an_overdelivery_tolerance_is_honoured(self):
+        """SAP's UEBTO: 10% on an order for 10 allows 11 in all, not 12."""
+        order = self.fresh_order(quantity="10",
+                                 OverdelivTolrtdLmtRatioInPct="10.0")
+        item = order["to_Item"]["results"][0]
+        self.assertEqual(self.deliver(order, item, "11")["RETURN"][0]["TYPE"], "S")
+        self.assertEqual(self.delivered_total(order), Decimal("11.000"))
+
+        body = self.deliver(order, item, "1")
+        self.assertEqual(body["RETURN"][0]["TYPE"], "E")
+        self.assertIn("tolerance", body["RETURN"][0]["MESSAGE"])
+        self.assertEqual(self.delivered_total(order), Decimal("11.000"))
+
+    def test_unlimited_overdelivery_allows_anything(self):
+        """SAP's UEBTK, which is how a client turns the check off."""
+        order = self.fresh_order(quantity="10",
+                                 UnlimitedOverdeliveryIsAllowed=True)
+        item = order["to_Item"]["results"][0]
+        self.assertEqual(self.deliver(order, item, "100")["RETURN"][0]["TYPE"], "S")
+        self.assertEqual(self.delivered_total(order), Decimal("100.000"))
+        self.assertEqual(self.delivery_status(order), "C")
 
     def test_the_refusals(self):
         order = self.fresh_order()

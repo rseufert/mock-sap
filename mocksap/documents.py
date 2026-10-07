@@ -17,6 +17,12 @@ from .odata import SapError
 from .schema import ENTITY_TYPES
 
 
+# The places a quantity is carried to, taken from the scale the order item
+# declares for one rather than repeated here.
+QUANTITY_SCALE = money.scale_of(
+    ENTITY_TYPES["A_SalesOrderItem"].prop("RequestedQuantity"))
+
+
 def _today() -> str:
     return clock.now().replace(hour=0, minute=0, second=0,
                                microsecond=0).isoformat()
@@ -34,11 +40,87 @@ def order_items(ctx, order) -> List[Any]:
     return store.children(ctx.conn, order, so, so.nav("to_Item"))
 
 
+def delivered_so_far(ctx, order) -> Dict[str, Decimal]:
+    """How much of each item this order has had delivered, over every delivery.
+
+    This is the fact `apply_delivery_status` and the over-delivery check both
+    need, and it is a property of the *order* rather than of the delivery in
+    hand. Read from the delivery items that reference the order, because they
+    are the record: an order for 10 delivered as 5 and 5 has had 10, and
+    asking only the delivery being created can never see that.
+    """
+    rows = ctx.conn.execute(
+        'SELECT "ReferenceSDDocumentItem" position, '
+        '"ActualDeliveredQtyInOrderQtyUnit" quantity '
+        'FROM "A_OutbDeliveryItem" WHERE "ReferenceSDDocument" = ?',
+        (order["SalesOrder"],)).fetchall()
+    out: Dict[str, Decimal] = {}
+    # Summed here rather than with SQL SUM, for the reason #98 gives: a
+    # quantity is a decimal, and SQLite would add these up as doubles.
+    for row in rows:
+        position = str(row["position"] or "")
+        out[position] = out.get(position, Decimal(0)) + money.of(row["quantity"])
+    return out
+
+
+def open_quantity(item, delivered: Optional[Dict[str, Decimal]] = None) -> Decimal:
+    """What is still to be delivered on an item: ordered less delivered.
+
+    Never negative. An item already over-delivered has nothing open rather
+    than a negative amount open, because the question a caller is asking is
+    how much more it may send.
+    """
+    done = (delivered or {}).get(item["SalesOrderItem"], Decimal(0))
+    remaining = money.of(item["RequestedQuantity"]) - done
+    return remaining if remaining > 0 else Decimal(0)
+
+
+def over_delivery(item, delivered: Dict[str, Decimal], quantity) -> Optional[str]:
+    """Why `quantity` more of `item` is more than the order allows, or None.
+
+    SAP refuses past the item's over-delivery tolerance, so this mock does,
+    and the tolerance is initial on a created item - by default an order
+    receives what it asked for and no more. The sentence is returned rather
+    than raised because each transport says it differently: an OData write
+    gets a `SapError`, a BAPI a BAPIRET2 record, an inbound IDoc status 51.
+
+    Worded as SAP's VL 367 is, in terms of what is open, because that is
+    what a caller asked for and what it already read on the refusal before
+    there was a tolerance to mention. The tolerance is named only when there
+    is one, so saying "0.000 open" cannot look like a contradiction of an
+    order quantity the caller can see.
+    """
+    if item["UnlimitedOverdeliveryIsAllowed"]:
+        return None
+    ordered = money.of(item["RequestedQuantity"])
+    tolerance = money.of(item["OverdelivTolrtdLmtRatioInPct"])
+    allowed = money.at(ordered * (1 + tolerance / 100), QUANTITY_SCALE)
+    done = delivered.get(item["SalesOrderItem"], Decimal(0))
+    if done + money.of(quantity) <= allowed:
+        return None
+    still_open = allowed - done
+    refusal = ("Only %s %s are open for item %s"
+               % (money.text(still_open if still_open > 0 else Decimal(0),
+                             QUANTITY_SCALE),
+                  item["RequestedQuantityUnit"], item["SalesOrderItem"]))
+    if tolerance:
+        refusal += " (%s ordered, %s%% tolerance)" % (
+            money.text(ordered, QUANTITY_SCALE), money.text(tolerance, 1))
+    return refusal
+
+
 def create_delivery(ctx, order, lines: List[Tuple[Any, Any]]) -> str:
     """Create an outbound delivery for `lines`, each an order item and a quantity."""
-    delivery = db.next_number(ctx.conn, "DELIVERY", 10)
     today = _today()
     lines = [(item, money.of(quantity)) for item, quantity in lines]
+    already = delivered_so_far(ctx, order)
+    for item, quantity in lines:
+        refusal = over_delivery(item, already, quantity)
+        if refusal:
+            raise SapError(refusal, 400, target="ActualDeliveredQtyInOrderQtyUnit")
+    # Only now: a number range that has handed out a number cannot take it
+    # back, and a refused delivery should not consume one.
+    delivery = db.next_number(ctx.conn, "DELIVERY", 10)
     weight = sum((quantity for _item, quantity in lines), Decimal(0))
     store.insert(ctx.conn, ENTITY_TYPES["A_OutbDeliveryHeader"], {
         "DeliveryDocument": delivery, "DeliveryDocumentType": "LF",
@@ -63,26 +145,42 @@ def create_delivery(ctx, order, lines: List[Tuple[Any, Any]]) -> str:
             "ItemGrossWeight": quantity, "ItemWeightUnit": "KG",
         }, user=ctx.user)
 
-    apply_delivery_status(ctx, order,
-                          {item["SalesOrderItem"]: quantity for item, quantity in lines})
+    apply_delivery_status(ctx, order)
     return delivery
 
 
-def apply_delivery_status(ctx, order, delivered: Dict[str, Any]) -> str:
-    """Move the order's delivery status to fully or partly delivered.
+def delivery_status(items, delivered: Dict[str, Decimal]) -> str:
+    """An order's `OverallDeliveryStatus`, given what it has had delivered.
+
+    SAP's three values: `A` nothing yet, `B` partly, `C` fully.  The rule
+    lives here rather than in whoever writes the column, because two writers
+    deciding it separately is how an order comes to claim a status its own
+    deliveries contradict - which the seeded data used to do.
 
     Quantities are compared exactly, because both sides are decimals: an
     order for 0.3 delivered in full is complete without the tolerance this
     used to carry, which was there because neither 0.3 was quite 0.3.
     """
-    items = order_items(ctx, order)
-    complete = bool(items)
+    complete, anything = bool(items), False
     for item in items:
-        wanted = money.of(item["RequestedQuantity"])
-        if money.of(delivered.get(item["SalesOrderItem"])) < wanted:
+        done = delivered.get(item["SalesOrderItem"], Decimal(0))
+        if done > 0:
+            anything = True
+        if done < money.of(item["RequestedQuantity"]):
             complete = False
-            break
-    status = "C" if complete else "B"
+    return "C" if complete else ("B" if anything else "A")
+
+
+def apply_delivery_status(ctx, order) -> str:
+    """Move the order's delivery status to what its deliveries add up to.
+
+    Read from every delivery against the order rather than from the one
+    being created. An order for 10 delivered as 5 and 5 is complete; asking
+    only the delivery in hand, neither 5 covered it and the order never left
+    `B`.
+    """
+    status = delivery_status(order_items(ctx, order),
+                             delivered_so_far(ctx, order))
     store.update(ctx.conn, ENTITY_TYPES["A_SalesOrder"],
                  {"SalesOrder": order["SalesOrder"]},
                  {"OverallDeliveryStatus": status}, user=ctx.user)

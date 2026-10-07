@@ -205,10 +205,21 @@ def _apply_delivery(ctx, body: bytes, docnum: str = "") -> List[dict]:
         if not known:
             lines = [(items[position], quantity)
                      for position, quantity in positions.items() if position in items]
+            # Refused before anything is written, and as a whole: a DELVRY
+            # that would take an item past its tolerance posts nothing and
+            # is reported as 51, rather than delivering the lines that fit
+            # and leaving the sender to work out which did.
+            already = documents.delivered_so_far(ctx, row)
+            for item, quantity in lines:
+                refusal = documents.over_delivery(item, already, quantity)
+                if refusal:
+                    raise NotPosted(
+                        "This DELVRY delivers more than order %s is open for. %s"
+                        % (row["SalesOrder"], refusal))
             if lines:
                 created = documents.create_delivery(ctx, row, lines)
 
-        status = documents.apply_delivery_status(ctx, row, positions)
+        status = documents.apply_delivery_status(ctx, row)
         entry = {
             "SALESORDER": row["SalesOrder"], "STATUS": status,
             "MESSAGE": outcome.delivery_message(row["SalesOrder"], status, created),
@@ -683,15 +694,25 @@ def generate_invoic02(ctx, sales_order: str) -> dict:
 
 
 def generate_delvry07(ctx, sales_order: str) -> dict:
-    """Render a delivery for a stored sales order as an outbound DELVRY07."""
+    """Render a delivery for a stored sales order as an outbound DELVRY07.
+
+    It ships what the order still has open, not what it originally asked
+    for, so generating one twice against the same order sends the rest and
+    then refuses - where it used to send the whole quantity again and the
+    order quietly received double.
+    """
     row, items, partner, address = _sales_order_context(ctx, sales_order)
+    already = documents.delivered_so_far(ctx, row)
+    lines = [(item, documents.open_quantity(item, already)) for item in items]
+    lines = [(item, quantity) for item, quantity in lines if quantity > 0]
+    if not lines:
+        raise SapError(
+            "Sales order %s has nothing open to deliver" % row["SalesOrder"], 400)
     # likewise the delivery: it is created, and the IDoc describes it
-    delivery = documents.create_delivery(
-        ctx, row, [(item, money.of(item["RequestedQuantity"])) for item in items])
+    delivery = documents.create_delivery(ctx, row, lines)
     docnum = db.next_number(ctx.conn, "IDOC", 16)
     today = clock.now().strftime("%Y%m%d")
-    weight = sum((money.of(item["RequestedQuantity"]) for item in items),
-                 Decimal(0))
+    weight = sum((quantity for _item, quantity in lines), Decimal(0))
 
     children = "".join([
         _seg("E1EDL21", {"LFART": "LF", "VSTEL": "1710", "VKORG": row["SalesOrganization"],
@@ -707,8 +728,7 @@ def generate_delvry07(ctx, sales_order: str) -> dict:
                          "COUNTRY1": address["Country"] if address else ""}),
     ])
     item_segments = []
-    for item in items:
-        quantity = money.of(item["RequestedQuantity"])
+    for item, quantity in lines:
         item_segments.append(_seg("E1EDL24", {
             "POSNR": item["SalesOrderItem"], "MATNR": item["Material"],
             "WERKS": item["Plant"], "LFIMG": money.text(quantity, 3),
@@ -724,7 +744,7 @@ def generate_delvry07(ctx, sales_order: str) -> dict:
         _seg("E1EDL20", {"VBELN": delivery, "VSTEL": "1710", "VKORG": row["SalesOrganization"],
                          "LFART": "LF", "KUNNR": row["SoldToParty"],
                          "BTGEW": money.text(weight, 3), "GEWEI": "KGM",
-                         "ANZPK": str(len(items)).zfill(5)},
+                         "ANZPK": str(len(lines)).zfill(5)},
              children + "".join(item_segments)),
     ]
     xml = ('<?xml version="1.0" encoding="utf-8"?><DELVRY07><IDOC BEGIN="1">%s'

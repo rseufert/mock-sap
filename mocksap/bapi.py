@@ -389,6 +389,10 @@ def _delivery_create(ctx, params):
             "E", "Sales order %s does not exist" % number, "V1", "555", v1=number)]}
 
     items = {item["SalesOrderItem"]: item for item in documents.order_items(ctx, order)}
+    # What is open is what the order has not had yet, over every delivery
+    # against it - so a BAPI cannot deliver 10 twice against an order for 10
+    # by asking twice, which it could while "open" meant the order quantity.
+    already = documents.delivered_so_far(ctx, order)
     selected, messages = [], []
     for index, (position, quantity) in enumerate(quantities.items(), start=1):
         item = items.get(position) or items.get(position.zfill(6))
@@ -396,17 +400,21 @@ def _delivery_create(ctx, params):
             messages.append(ret("E", "Item %s does not exist in order %s"
                                 % (position, number), "V1", "555", row=index))
             continue
-        open_quantity = money.of(item["RequestedQuantity"])
-        quantity = quantity or open_quantity
-        # Compared exactly: both sides are decimals, so asking for all of a
-        # quantity cannot overshoot it by a fraction the way it could when
-        # this had a tolerance and both sides were floats.
-        if quantity > open_quantity:
+        # A line that names no quantity takes what is open, which is nothing
+        # once the item has had everything it ordered.
+        quantity = quantity or documents.open_quantity(item, already)
+        if not quantity:
             messages.append(ret(
-                "E", "Only %s %s are open for item %s"
-                % (money.text(open_quantity, 3),
-                   item["RequestedQuantityUnit"], item["SalesOrderItem"]),
-                "VL", "367", row=index, fld="DLV_QTY"))
+                "E", "Nothing is open for item %s of order %s"
+                % (item["SalesOrderItem"], number), "VL", "367",
+                row=index, fld="DLV_QTY"))
+            continue
+        refusal = documents.over_delivery(item, already, quantity)
+        if refusal:
+            # `documents` has already said why in a sentence; saying it a
+            # second way here is how the two would come to disagree.
+            messages.append(ret("E", refusal, "VL", "367",
+                                row=index, fld="DLV_QTY"))
             continue
         selected.append((item, quantity))
 
