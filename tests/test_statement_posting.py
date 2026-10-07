@@ -735,7 +735,8 @@ class TestWhenMoneyArrivesQuotingAPaidInvoice(StatementCase):
                       applied["UNPROCESSED"][0]["REASON"])
 
     def test_a_debits_action_is_not_consulted(self):
-        """Money out has one reading, so nothing on it has to say so.
+        """Money out is a payment of ours unless it says it is a receipt
+        going back (#181), so nothing on a payment has to say so.
 
         A writer that puts `LINACTION` on every line, debits included, still
         gets its payments cleared.

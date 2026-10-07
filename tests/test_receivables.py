@@ -514,5 +514,186 @@ class TestOneCreditForSeveralInvoices(ReceivableCase):
         self.assertNotIn(document, self.open_receivables())
 
 
+class TestACustomersPaymentGoingBack(ReceivableCase):
+    """Money out that says it is a receipt going back reopens the receivable
+    (#181): `LINACTION` `RET` on a debit, the mirror of it on a credit."""
+
+    def paid(self, statement, *bills):
+        for number, (billing, _, owed, _) in enumerate(bills, start=1):
+            self.post(line("%06d" % number, owed, reference=billing,
+                           action="RCV"), statement=statement)
+
+    def test_it_reopens_the_receivable_it_had_cleared(self):
+        billing, document, owed, _ = SMALL
+        before = self.open_receivables()
+        self.paid("00261", SMALL)
+
+        applied = self.post(line("000001", owed + "-", reference=billing,
+                                 action="RET"), statement="00262")
+
+        self.assertEqual((applied["CLEARED"], applied["UNPROCESSED"]), ([], []))
+        self.assertEqual([(row["REFERENCE"], row["ACCOUNTINGDOCUMENT"],
+                           Decimal(row["AMOUNT"]))
+                          for row in applied["REOPENED"]],
+                         [(billing, document, Decimal(owed))])
+        self.assertEqual(sorted(self.open_receivables()), sorted(before),
+                         "owed again, and the reversal left no open line of "
+                         "its own")
+
+    def test_paid_and_returned_is_told_from_never_paid(self):
+        billing, document, owed, _ = SMALL
+        self.paid("00263", SMALL)
+        self.post(line("000001", owed + "-", reference=billing, action="RET"),
+                  statement="00264")
+
+        item = self.receivable(document)
+
+        self.assertEqual(item["ClearingAccountingDocument"], "")
+        self.assertIsNone(item["ClearingDate"])
+        self.assertIsNone(item["ClearingCreationDate"])
+        self.assertTrue(item["ClearingIsReversed"])
+
+    def test_the_bank_loses_the_money_and_the_customer_owes_it_again(self):
+        billing, _, owed, customer = SMALL
+        self.paid("00265", SMALL)
+        applied = self.post(line("000001", owed + "-", reference=billing,
+                                 action="RET"), statement="00266")
+
+        entry = self.entry(applied["REOPENED"][0]["REVERSALDOCUMENT"])
+        lines = entry["to_JournalEntryItem"]["results"]
+        owing = [x for x in lines if x["Customer"]]
+        bank = [x for x in lines if not x["Customer"]]
+
+        self.assertEqual(entry["AccountingDocumentType"], "DZ")
+        self.assertEqual([(x["Customer"], x["DebitCreditCode"],
+                           Decimal(x["AmountInTransactionCurrency"]))
+                          for x in owing], [(customer, "S", Decimal(owed))])
+        self.assertEqual([(x["DebitCreditCode"],
+                           Decimal(x["AmountInTransactionCurrency"]))
+                          for x in bank], [("H", Decimal(owed))])
+        self.assertFalse(any(x["Supplier"] for x in lines))
+
+    def test_a_transfer_that_settled_two_invoices_reopens_both(self):
+        total = "%.2f" % (Decimal(SMALL[2]) + Decimal(LARGE[2]))
+        before = self.open_receivables()
+        self.post(line("000001", total, note="%s %s" % (SMALL[0], LARGE[0]),
+                       action="RCV"), statement="00267")
+
+        applied = self.post(
+            line("000001", total + "-", note="%s %s" % (SMALL[0], LARGE[0]),
+                 action="RET"), statement="00268")
+
+        self.assertEqual(sorted((row["ACCOUNTINGDOCUMENT"],
+                                 Decimal(row["AMOUNT"]))
+                                for row in applied["REOPENED"]),
+                         sorted([(SMALL[1], Decimal(SMALL[2])),
+                                 (LARGE[1], Decimal(LARGE[2]))]),
+                         "each for what that invoice was, not the line's sum")
+        self.assertEqual(sorted(self.open_receivables()), sorted(before))
+
+    def test_two_sets_that_both_fit_reopen_neither(self):
+        """Three paid invoices, and what went back is the third or the first
+        two. Reopening either is telling a customer they owe what they paid."""
+        bills = [self.billed(net) for net in ("100.00", "200.00", "300.00")]
+        for number, (billing, _, owed) in enumerate(bills, start=1):
+            self.post(line("%06d" % number, owed, reference=billing,
+                           action="RCV"), statement="0028%d" % number)
+
+        applied = self.post(
+            line("000001", bills[2][2] + "-",
+                 note=" ".join(b[0] for b in bills), action="RET"),
+            statement="00284")
+
+        self.assertEqual(applied["REOPENED"], [])
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        for _, document, _ in bills:
+            self.assertIn(document, reason)
+            self.assertNotIn(document, self.open_receivables())
+
+    def test_the_wrong_amount_reopens_nothing_and_names_both(self):
+        billing, document, _, _ = SMALL
+        self.paid("00269", SMALL)
+
+        applied = self.post(line("000001", "8000.00-", reference=billing,
+                                 action="RET"), statement="00270")
+
+        self.assertEqual(applied["REOPENED"], [])
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        self.assertIn("8533.25 EUR", reason)
+        self.assertIn("8000.00 EUR", reason)
+        self.assertNotIn(document, self.open_receivables())
+
+    def test_one_that_quotes_nothing_cleared_reopens_nothing(self):
+        billing, document, owed, _ = SMALL
+        applied = self.post(line("000001", owed + "-", reference=billing,
+                                 action="RET"), statement="00271")
+
+        self.assertEqual((applied["CLEARED"], applied["REOPENED"]), ([], []))
+        self.assertIn("reopens nothing", applied["UNPROCESSED"][0]["REASON"])
+        self.assertFalse(self.receivable(document)["ClearingIsReversed"])
+
+    def test_it_is_not_a_payment_of_ours(self):
+        """It quotes an open payable for the same money and still pays
+        nothing: the line said what it was."""
+        bill = self.send(invoic("BACK-1", "1190.00", "1000.00", "190.00",
+                                "1000009", "EUR"))["APPLIED"][0]
+
+        applied = self.post(line("000001", "1190.00-", reference="BACK-1",
+                                 action="RET"), statement="00272")
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertIn(bill["ACCOUNTINGDOCUMENT"],
+                      [row["AccountingDocument"] for row in self.items("K")])
+
+    def test_it_reopens_no_payable(self):
+        bill = self.send(invoic("BACK-2", "1190.00", "1000.00", "190.00",
+                                "1000009", "EUR"))["APPLIED"][0]
+        self.post(line("000001", "1190.00-", reference="BACK-2"),
+                  statement="00273")
+
+        applied = self.post(line("000001", "1190.00-", reference="BACK-2",
+                                 action="RET"), statement="00274")
+
+        self.assertEqual(applied["REOPENED"], [])
+        self.assertNotIn(bill["ACCOUNTINGDOCUMENT"],
+                         [row["AccountingDocument"] for row in self.items("K")])
+
+    def test_received_and_given_back_in_one_statement_in_either_order(self):
+        billing, document, owed, _ = SMALL
+        coming = line("000001", owed, reference=billing, action="RCV")
+        going = line("000002", owed + "-", reference=billing, action="RET")
+        for statement, lines in (("00275", (coming, going)),
+                                 ("00276", (going, coming))):
+            applied = self.post(*lines, statement=statement)
+
+            self.assertEqual((len(applied["CLEARED"]), len(applied["REOPENED"]),
+                              applied["UNPROCESSED"]), (1, 1, []), statement)
+            self.assertIn(document, self.open_receivables())
+
+    def test_a_reopened_receivable_can_be_paid_again(self):
+        billing, document, owed, _ = SMALL
+        self.paid("00277", SMALL)
+        self.post(line("000001", owed + "-", reference=billing, action="RET"),
+                  statement="00278")
+
+        applied = self.post(line("000001", owed, reference=billing,
+                                 action="RCV"), statement="00279")
+
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"]
+                          for row in applied["CLEARED"]], [document])
+        self.assertNotIn(document, self.open_receivables())
+
+    def test_a_debit_saying_anything_else_is_still_a_payment_of_ours(self):
+        bill = self.send(invoic("BACK-3", "1190.00", "1000.00", "190.00",
+                                "1000009", "EUR"))["APPLIED"][0]
+
+        applied = self.post(line("000001", "1190.00-", reference="BACK-3",
+                                 action="RCV"), statement="00280")
+
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"]
+                          for row in applied["CLEARED"]],
+                         [bill["ACCOUNTINGDOCUMENT"]])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -51,8 +51,17 @@ They are letters rather than digits on purpose, so that nothing here is
 mistaken for the EDIFACT 1229 code list SAP declined to pin.  ``kind`` is
 ``return`` or ``receipt`` accordingly, and ``None`` for a credit that says
 neither - which is **not** the same as a credit that says ``RCV``, and is read
-as nothing at all rather than as either one.  ``LINACTION`` on a debit is not
-consulted: money out has one reading.
+as nothing at all rather than as either one.
+
+Money out has two readings as well, now that a customer's payment can clear a
+receivable (#181): a payment of ours, or money we received going back.  A
+debit carrying ``RET`` is the second, and its ``kind`` is ``return``.  A debit
+carrying anything else, or nothing, has no kind and is a payment of ours -
+which is what every debit was before, so a writer that puts ``LINACTION`` on
+every line still gets its payments cleared.  The default is not the credit's
+because the faults are not symmetrical: an undeclared credit read as a return
+pays an invoice twice, while a return read as a payment clears nothing unless
+it happens to quote an open payable for the same money.
 
 ``E1IDLB1``/``E1IDLB2`` and everything under them are lockbox - message type
 ``LOCKBX`` on the same basic type - and are skipped.  A ``LOCKBX`` IDoc is
@@ -121,17 +130,22 @@ def _side(amount: Optional[Decimal]) -> Optional[str]:
 
 
 def _kind(side: Optional[str], action: str) -> Optional[str]:
-    """What a credit says it is, by this mock's convention (#89).
+    """Which kind of line this is: a return, a receipt, or not saying.
 
-    Only money in has two readings - a payment of ours coming back, or money
-    arriving - so only a credit has a kind.  ``None`` is a credit that says
-    neither, and a reader has to treat that as *undeclared* rather than as
-    either one: reopening an invoice that was never returned is how it gets
-    paid a second time, and refusing to reopen a real return hides it.
+    A credit is a payment of ours coming back or money arriving, and ``None``
+    is a credit that says neither - deliberately not defaulted to either one:
+    reopening an invoice that was never returned is how it gets paid a second
+    time, and refusing to reopen a real return hides it.
+
+    A debit is a ``return`` only when it says so - money we received going
+    back (#181).  Otherwise it has no kind and is a payment of ours, which is
+    not a refusal: it is what a debit has always been here.
     """
-    if side != "credit":
-        return None
-    return {RETURNED: "return", RECEIVED: "receipt"}.get(action)
+    if side == "credit":
+        return {RETURNED: "return", RECEIVED: "receipt"}.get(action)
+    if side == "debit" and action == RETURNED:
+        return "return"
+    return None
 
 
 def _qualified_amounts(line) -> List[dict]:

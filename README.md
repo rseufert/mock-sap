@@ -806,14 +806,16 @@ domain pins no fixed values and is free to carry two of the mock's own:
 
 | `LINACTION` | the line is |
 |---|---|
-| `RET` | a payment of ours coming back |
-| `RCV` | money arriving |
+| `RET` on a credit | a payment of ours coming back |
+| `RCV` on a credit | money arriving |
+| `RET` on a debit | money we received going back |
 
 They are letters rather than digits so that nothing here is mistaken for the
 EDIFACT 1229 code list SAP declined to pin. The code is read whatever case it
 arrives in. A credit saying **neither** is undeclared, which is not the same as
-one saying `RCV`: it is read as nothing at all rather than as either. On a
-debit `LINACTION` is not consulted, because money out has one reading.
+one saying `RCV`: it is read as nothing at all rather than as either. A debit
+saying anything but `RET`, or nothing, is a payment of ours, so a writer that
+stamps `LINACTION` on every line still has its payments cleared.
 
 **Lockbox is not supported.** `FINSTA01` also carries message type `LOCKBX`,
 and the `E1IDLB1`/`E1IDLB2` subtree belongs to it. The mock reads bank
@@ -943,6 +945,18 @@ might add up to the credit, and clearing them because they do would be deciding
 what the customer meant. If more than one set fits - invoices for 100, 200 and
 300 and a credit for 300 - none is cleared and the reason names each set. A line
 quoting more than 16 open receivables is not searched.
+
+**A customer's payment that goes back reopens the receivable.** Money out has
+two readings as well: a payment of ours, or money we received going back - a
+recalled transfer, a returned direct debit. A **debit** carrying `RET` is the
+second. It reopens the cleared receivables it quotes, on the receipt's own rule
+read backwards: the set of them that comes to exactly what went back, so a
+transfer that settled two invoices leaves both owed again. The reversal is a
+`DZ` document, customer debited and bank credited, and `ClearingIsReversed`
+stays set as it does for a payable. It is never a payment of ours, even where
+it quotes an open payable for the same money. A debit carrying anything else,
+or nothing, is a payment of ours as it always was: unlike a credit, an
+undeclared debit is not refused.
 
 **A supplier can be told what was paid.** Generating a `REMADV` from a payment
 document renders a `PEXR2002` naming every invoice that payment settled, each
