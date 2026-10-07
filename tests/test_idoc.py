@@ -303,6 +303,36 @@ class TestInvoiceAndDelivery(MockServerCase):
             "?$format=json")[2]["d"]["results"]
         self.assertEqual(len(deliveries_after), len(deliveries_before))
 
+    def test_a_field_too_long_for_sap_is_status_51_not_a_400(self):
+        """The IDoc surface answers in status records, including for this (#101).
+
+        A 17-character reference used to come back as HTTP 400 with a Gateway
+        error envelope - from the one surface whose contract is that a posting
+        failure arrives as a status record on a 201. So the failure most
+        likely to hit a client in production was the case that never
+        exercised its status-record handling.
+        """
+        reference = "REF-1234567890123"
+        self.assertEqual(len(reference), 17)
+        status, _, receipt = self.request(
+            "POST", "/sap/bc/idoc", body=invoic(reference),
+            headers=dict(self.csrf_token(), **{"Content-Type": "application/xml",
+                                               "Accept": "application/json"}))
+        self.assertEqual(status, 201, "the IDoc was received and filed")
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("ReferenceDocument", receipt["STATUS_TEXT"])
+        self.assertIn("16", receipt["STATUS_TEXT"], "the limit, not just the field")
+        self.assertRegex(receipt["DOCNUM"], r"^\d{16}$", "a docnum was issued")
+
+        # and the same value over OData is still a 400, where it belongs
+        status, _, body = self.request(
+            "POST", SRV + "/A_SalesOrder", headers=self.csrf_token(),
+            body={"SalesOrderType": "OR", "SalesOrganization": "1710",
+                  "SoldToParty": "1000001", "DistributionChannel": "10",
+                  "OrganizationDivision": "00", "TransactionCurrency": "EUR",
+                  "PurchaseOrderByCustomer": "x" * 40})
+        self.assertEqual(status, 400)
+
     def test_a_delvry_that_delivers_nothing_is_not_posted(self):
         """A DELVRY naming no order line is 51, not 53.
 
