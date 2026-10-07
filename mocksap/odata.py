@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from . import clock, money
-from .schema import COMPLEX_TYPES, EntityType, Prop, Service, set_for_type
+from .schema import (COMPLEX_TYPES, ENTITY_TYPES, EntityType, Prop, Service,
+                     set_for_type)
 
 EPOCH = _dt.datetime(1970, 1, 1)
 
@@ -165,6 +166,76 @@ def to_db_value(prop: Prop, value: Any) -> Any:
             400, target=prop.name,
         )
     return s
+
+
+# --------------------------------------------------------------------------
+# What a client may write
+# --------------------------------------------------------------------------
+
+
+def check_writable(et: EntityType, payload: Any, creating: bool) -> None:
+    """Refuse a payload that writes a property `$metadata` declares read-only.
+
+    `Prop.creatable` and `Prop.updatable` are what `metadata.py` renders as
+    `sap:creatable="false"` and `sap:updatable="false"`, so the check and the
+    advertisement come from the same declaration and cannot drift. Shipping
+    `$metadata` so a client can generate its model from it, and then not
+    enforcing what it says, tells that client a constraint it will discover is
+    real only in production (#97).
+
+    This lives on the OData surface rather than in `store`, because the
+    annotation is this surface's promise. The application behind it writes the
+    fields it owns - `apply_delivery_status` sets `OverallDeliveryStatus`,
+    which is read-only to a client precisely because the application decides
+    it - and those writes go through `store` without passing here.
+
+    A key declared non-creatable is a key the server will assign, not one a
+    client may not send: SAP lets a caller number its own sales order item,
+    and a deep insert here does the same. So keys are left to `store`, which
+    assigns the ones that arrive empty and refuses a change to one that does
+    not.
+    """
+    if not isinstance(payload, dict):
+        return
+    for name, value in payload.items():
+        if name in ("__metadata", "__count", "__deferred"):
+            continue
+        nav = et.nav(name)
+        if nav is not None:
+            children = value
+            if isinstance(children, dict) and "results" in children:
+                children = children["results"]
+            if isinstance(children, dict):
+                children = [children]
+            if isinstance(children, list):
+                for child in children:
+                    check_writable(ENTITY_TYPES[nav.target], child, creating)
+            continue
+        prop = et.prop(name)
+        if prop is None:
+            continue            # `store.split_payload` names it better
+        if prop.complex_type:
+            if not isinstance(value, dict):
+                continue        # `store._flatten_complex` says so better
+            ct = COMPLEX_TYPES[prop.complex_type]
+            for sub_name in value:
+                sub = ct.prop(sub_name)
+                if sub is not None:
+                    _refuse_read_only(sub, creating, "%s/%s" % (name, sub_name))
+            continue
+        if prop.key:
+            continue
+        _refuse_read_only(prop, creating, name)
+
+
+def _refuse_read_only(prop: Prop, creating: bool, target: str) -> None:
+    allowed, facet = ((prop.creatable, "sap:creatable")
+                      if creating else (prop.updatable, "sap:updatable"))
+    if allowed:
+        return
+    raise SapError(
+        "Property '%s' is read-only: $metadata declares it %s=\"false\""
+        % (target, facet), 400, target=target)
 
 
 # --------------------------------------------------------------------------

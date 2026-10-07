@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import unittest
+from xml.etree import ElementTree as ET
 
 from support import BP_SRV, MockServerCase, SRV
+
+EDM = "{http://schemas.microsoft.com/ado/2008/09/edm}"
 
 
 class TestWrite(MockServerCase):
@@ -63,6 +66,98 @@ class TestWrite(MockServerCase):
             body={"BusinessPartner": "1000001"}, headers=headers)
         self.assertEqual(status, 400)
         self.assertIn("AddressID", body["error"]["message"]["value"])
+
+    def test_a_read_only_property_cannot_be_written(self):
+        """`$metadata` says `sap:creatable="false"`; the mock now means it (#97).
+
+        It stored whatever arrived, so a POST could set `CreatedByUser` to
+        anything - a constraint a client generating its model from
+        `$metadata` was told about and would have discovered was fiction
+        only against the real system.
+        """
+        headers = self.csrf_token()
+        status, _, body = self.request(
+            "POST", SRV + "/A_SalesOrder", headers=headers,
+            body=dict(self.an_order_payload(), CreatedByUser="IMPOSTOR"))
+        self.assertEqual(status, 400)
+        message = body["error"]["message"]["value"]
+        self.assertIn("CreatedByUser", message)
+        self.assertIn("sap:creatable", message)
+
+        # and the same property on a PATCH, which is the updatable facet
+        _, _, existing = self.get(SRV + "/A_SalesOrder?$top=1&$format=json")
+        order = existing["d"]["results"][0]
+        status, _, body = self.request(
+            "PATCH", SRV + "/A_SalesOrder('%s')" % order["SalesOrder"],
+            body={"TotalNetAmount": "999999.000"},
+            headers=dict(headers, **{"If-Match": "*"}))
+        self.assertEqual(status, 400)
+        self.assertIn("sap:updatable", body["error"]["message"]["value"])
+
+        _, _, after = self.get(
+            SRV + "/A_SalesOrder('%s')?$format=json" % order["SalesOrder"])
+        self.assertEqual(after["d"]["TotalNetAmount"], order["TotalNetAmount"],
+                         "the refused PATCH changed nothing")
+
+    def test_every_property_metadata_calls_read_only_is_refused(self):
+        """Read off `$metadata`, not from a list here, which is the point.
+
+        The check and the advertisement come from one declaration; this
+        asserts that by taking the properties from the document the client
+        would have read.
+        """
+        status, _, raw = self.get(SRV + "/$metadata", raw=True)
+        self.assertEqual(status, 200)
+        root = ET.fromstring(raw)
+        sap = "{http://www.sap.com/Protocols/SAPData}"
+        entity = [e for e in root.iter(EDM + "EntityType")
+                  if e.get("Name") == "A_SalesOrderType"][0]
+        read_only = [p.get("Name") for p in entity.iter(EDM + "Property")
+                     if p.get(sap + "creatable") == "false"
+                     and p.get("Name") not in ("SalesOrder",)]
+        self.assertTrue(read_only, "the type should advertise some read-only fields")
+
+        headers = self.csrf_token()
+        for name in read_only:
+            status, _, body = self.request(
+                "POST", SRV + "/A_SalesOrder", headers=headers,
+                body=dict(self.an_order_payload(), **{name: "x"}))
+            self.assertEqual(status, 400, "POST %s should be refused" % name)
+            self.assertIn(name, body["error"]["message"]["value"])
+
+    def test_a_read_only_property_in_a_deep_insert_child_is_refused(self):
+        """And refused before anything is written, children included."""
+        headers = self.csrf_token()
+        _, _, before = self.get(SRV + "/A_SalesOrder/$count", raw=True)
+        status, _, body = self.request(
+            "POST", SRV + "/A_SalesOrder", headers=headers,
+            body=dict(self.an_order_payload(), to_Partner=[{
+                "PartnerFunction": "AG", "Customer": "1000001",
+                "PartnerFunctionInternalCode": "0001"}]))
+        self.assertEqual(status, 400)
+        self.assertIn("PartnerFunctionInternalCode", body["error"]["message"]["value"])
+
+        _, _, after = self.get(SRV + "/A_SalesOrder/$count", raw=True)
+        self.assertEqual(after, before, "nothing was created")
+
+    def test_a_server_assigned_key_may_still_be_supplied(self):
+        """`creatable=False` on a key means the server will assign it, not
+        that a client may not send one: SAP lets a caller number its own
+        item, and the BAPI layer passes ITM_NUMBER straight through."""
+        headers = self.csrf_token()
+        status, _, body = self.request(
+            "POST", SRV + "/A_SalesOrder?$expand=to_Item", headers=headers,
+            body=dict(self.an_order_payload(), to_Item=[{
+                "SalesOrderItem": "000070", "Material": "TG11",
+                "RequestedQuantity": "1", "RequestedQuantityUnit": "PC"}]))
+        self.assertEqual(status, 201)
+        self.assertEqual(body["d"]["to_Item"]["results"][0]["SalesOrderItem"],
+                         "000070")
+
+    def an_order_payload(self):
+        return {"SalesOrderType": "OR", "SalesOrganization": "1710",
+                "SoldToParty": "1000001", "DistributionChannel": "10",
+                "OrganizationDivision": "00", "TransactionCurrency": "EUR"}
 
     def test_post_to_navigation(self):
         headers = self.csrf_token()
