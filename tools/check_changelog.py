@@ -42,6 +42,13 @@ directly with no arguments and you get the structural checks.
 And cutting a release assembles the fragments into a dated section:
 
     python3 tools/check_changelog.py --release 0.6.0
+
+A section assembled that way opens with a table of the projects that install
+this one and whether the release was run against them, built from `CONSUMERS`.
+Like the intro paragraph it is written as a placeholder the checks refuse, so
+the answer is typed rather than left out: 0.20.0 knew that mock-acme would take
+it the day it published and had been run against nothing, said so in prose
+nobody downstream read, and shipped.
 """
 from __future__ import annotations
 
@@ -74,6 +81,27 @@ INTRO_PLACEHOLDER = (
     "> %s - say why anyone should upgrade, and name anything that changes\n"
     "> behaviour. Delete these two lines; the changelog check fails while they\n"
     "> are here." % INTRO_TODO)
+
+# The projects that install this one, and how each takes a new release. The
+# table `--release` writes is built from this, so a consumer is one line here
+# rather than a paragraph in a release body somebody has to remember to write -
+# which is how 0.20.0 came to state mock-acme's exposure to it in prose, four
+# paragraphs down, and reach nobody. Who to tell, and where to look for what
+# they were last green against, is in CONTRIBUTING.md's Releasing section.
+CONSUMERS = (
+    ("mock-acme",
+     "`test` extra floors on a minor, and a nightly job installs `main`"),
+    ("mock-films",
+     "pins an exact version, compares captured wire output byte for byte"),
+)
+
+# The other thing `--release` cannot know: whether anything downstream was run
+# against the release. It writes this in the last column and the checks below
+# refuse a file that still has it, for the same reason as INTRO_TODO. A release
+# that says nothing about its consumers reads exactly like one that was checked
+# against them, and that silence is what 0.20.0 shipped on. `no` is an answer;
+# having to type it is the point.
+RAN_TODO = "RELEASE-RAN-TODO"
 # `<number>.<kind>.md`, with an optional word between them: one issue can
 # produce two entries of the same kind - #125 was three people's work and left
 # two `added` entries in 0.5.0 - and they must not collide on a file name.
@@ -256,6 +284,12 @@ def check_structure(text: str, pyproject: str):
             "paragraph saying why anyone should upgrade, and delete the two "
             "lines holding it" % INTRO_TODO)
 
+    if RAN_TODO in text:
+        problems.append(
+            "a release section still has its %s placeholder: say for each "
+            "consumer in its table whether this release was run against it - "
+            "`no` is an answer, and is the usual one" % RAN_TODO)
+
     missing = undefined_references(text)
     if missing:
         problems.append(
@@ -333,6 +367,22 @@ def _short(entry: str, width: int = 70) -> str:
     return entry if len(entry) <= width else entry[:width - 1] + "…"
 
 
+def consumer_table() -> str:
+    """The table a release section opens with: who installs this mock, and
+    whether this release was run against them.
+
+    Every row's last column is `RAN_TODO`, because nothing here can answer it.
+    The rows come from `CONSUMERS` rather than from the prose in
+    CONTRIBUTING.md, so the two cannot drift into disagreeing about who is
+    downstream.
+    """
+    rows = ["| Consumer | How it takes a release | Run against this release |",
+            "| --- | --- | --- |"]
+    for name, takes in CONSUMERS:
+        rows.append("| %s | %s | %s |" % (name, takes, RAN_TODO))
+    return "\n".join(rows)
+
+
 def assemble(text: str, version: str, waiting: Dict[str, str],
              today: str = "") -> str:
     """`CHANGELOG.md` with the waiting entries as a dated release section.
@@ -350,6 +400,7 @@ def assemble(text: str, version: str, waiting: Dict[str, str],
         by_kind[found.group("kind")].append(waiting[name].strip("\n"))
 
     parts = ["## [%s] - %s" % (version, today or db_today()), "",
+             consumer_table(), "",
              INTRO_PLACEHOLDER, ""]
     for kind in KINDS:
         if not by_kind[kind]:
@@ -490,11 +541,13 @@ def release(version: str) -> int:
 
     print("[%s] assembled from %d fragment(s), which are now deleted.\n"
           % (version, len(waiting)))
-    print("Two things left, both by hand:")
+    print("Three things left, all by hand:")
     print("  1. Replace the %s placeholder with the paragraph saying why\n"
           "     anyone should upgrade. The changelog check fails until you do."
           % INTRO_TODO)
-    print("  2. Bump the version in %s to match." % PYPROJECT)
+    print("  2. Answer the %s column for each consumer in the table.\n"
+          "     Same check, same failure; `no` is an answer." % RAN_TODO)
+    print("  3. Bump the version in %s to match." % PYPROJECT)
     return 0
 
 
