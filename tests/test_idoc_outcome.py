@@ -150,7 +150,8 @@ class TestAnInvoiceRemembersWhatItPosted(OutcomeCase):
 
     def test_the_sentence_still_names_the_money_after_a_read(self):
         """Which is only possible because the amount was kept, not the sentence."""
-        receipt = self.send(invoic("OWN-C1", gross="2380.00"))
+        receipt = self.send(invoic("OWN-C1", gross="2380.00", net="2000.00",
+                                   tax="380.00"))
 
         read = self.idoc(receipt["DOCNUM"])["APPLIED"][0]
         self.assertIn("EUR 2380.00 payable to 1000009", read["MESSAGE"])

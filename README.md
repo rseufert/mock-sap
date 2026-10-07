@@ -417,6 +417,15 @@ was missing, because reporting `53` for an IDoc that posted nothing is the very
 mistake this section exists to help you catch. An `ORDERS05`, which is filed and
 nothing else, has no application step to decline and still posts `53`.
 
+An `INVOIC` that does not add up is declined the same way. Its total (`E1EDS01`
+`SUMID` `010`) must be its net (`011`) plus its tax (`205`), and when every
+`E1EDP01` states a `NETWR` the items must come to the net; otherwise the status
+is `51` and the text gives the figures and what is left over. FI writes no
+document whose debits and credits differ, so there is nothing a `53` could
+honestly point at. A sum the IDoc leaves out is worked out from the other two
+rather than held against it: a total alone is an invoice with no tax, and a
+total with a tax has the difference as its net.
+
 Two things about this are the point. **The HTTP status stays `201`**: the IDoc
 *was* received, a docnum *was* issued, and the failure is in the status record
 where a client has to go looking for it. And **a failed posting does nothing** -
@@ -559,6 +568,8 @@ Three things it deliberately does not do:
   payer's job, and mock-acme's
   [`invoice_check.py`](https://github.com/rseufert/mock-acme/blob/main/mockacme/invoice_check.py) does it. A mock that silently refused a mismatched invoice would hide the bug its
   user is looking for.
+  An invoice that disagrees with *itself* is different: one whose total is not
+  its net plus its tax is status `51`, as [above](#idoc).
 - **It does not deduplicate.** The same invoice sent twice creates two, because
   SAP's duplicate check is configuration and inventing one here would hide the
   commonest way companies pay twice.

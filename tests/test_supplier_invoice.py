@@ -7,6 +7,7 @@ payable is what a payment run selects, pays and clears.
 from __future__ import annotations
 
 import unittest
+from decimal import Decimal
 
 from support import MockServerCase
 
@@ -190,6 +191,103 @@ class TestWhatDoesNotPost(SupplierInvoiceCase):
         self.assertEqual(receipt["STATUS"], "51")
         self.assertIn("SUMID 010", receipt["STATUS_TEXT"], receipt["STATUS_TEXT"])
         self.assertEqual(len(self.invoices()), before)
+
+    def documents_posted(self):
+        status, _, count = self.get(
+            "/sap/opu/odata/sap/API_JOURNALENTRY_SRV/A_JournalEntry/$count",
+            raw=True)
+        self.assertEqual(status, 200)
+        return int(count)
+
+    def lines_of(self, document):
+        _, _, body = self.get(
+            CUBE + "?$filter=AccountingDocument%%20eq%%20'%s'&$format=json"
+            % document)
+        return body["d"]["results"]
+
+    def invoiced_as(self, reference):
+        return [row for row in self.invoices()
+                if row["SupplierInvoiceIDByInvcgParty"] == reference]
+
+    def test_a_total_that_is_not_net_plus_tax_is_not_posted(self):
+        """51, and nothing written: an unbalanced document is not a document.
+
+        1000.00 net and 190.00 tax are 1190.00. An INVOIC that says 1200.00
+        would credit the supplier ten more than it debits anything, and FI
+        refuses that before it refuses anything else (#93).
+        """
+        invoices, documents = len(self.invoices()), self.documents_posted()
+        receipt = self.send(reference="SUP-OFF-BY-TEN", gross="1200.00")
+
+        self.assertEqual(receipt["STATUS"], "51", receipt)
+        self.assertNotIn("APPLIED", receipt)
+        for said in ("1200.00", "1000.00", "190.00", "10.00", "SUMID 010"):
+            self.assertIn(said, receipt["STATUS_TEXT"])
+        self.assertEqual(len(self.invoices()), invoices)
+        self.assertEqual(self.documents_posted(), documents,
+                         "no half of an accounting document was left behind")
+        self.assertEqual(self.invoiced_as("SUP-OFF-BY-TEN"), [])
+
+    def test_items_that_do_not_add_up_to_the_net_are_not_posted(self):
+        """The header agrees with itself and the items disagree with it."""
+        invoices, documents = len(self.invoices()), self.documents_posted()
+        body = invoic(reference="SUP-ITEMS-SHORT").replace(
+            "<NETWR>1000.00</NETWR>", "<NETWR>900.00</NETWR>")
+        receipt = self.send(body=body)
+
+        self.assertEqual(receipt["STATUS"], "51", receipt)
+        for said in ("900.00", "1000.00", "100.00", "NETWR"):
+            self.assertIn(said, receipt["STATUS_TEXT"])
+        self.assertEqual(len(self.invoices()), invoices)
+        self.assertEqual(self.documents_posted(), documents)
+
+    def test_the_unbalanced_idoc_is_filed_as_51(self):
+        receipt = self.send(reference="SUP-FILED-51", tax="19.00")
+
+        _, _, listing = self.get("/sap/bc/idoc?mestyp=INVOIC")
+        [filed] = [row for row in listing["results"]
+                   if row["docnum"] == receipt["DOCNUM"]]
+        self.assertEqual(filed["status"], "51")
+        self.assertIn("Balance not zero", filed["status_text"])
+
+    def test_a_total_and_a_tax_with_no_net_still_balance(self):
+        """What the IDoc leaves out is worked out, not assumed.
+
+        With no SUMID 011 the net used to be taken for the gross, so 1190.00
+        with 190.00 of tax debited 1380.00 against a credit of 1190.00.
+        """
+        body = invoic(reference="SUP-NO-NET").replace(
+            '<E1EDS01 SEGMENT="1"><SUMID>011</SUMID><SUMME>1000.00</SUMME>'
+            "</E1EDS01>", "")
+        receipt = self.send(body=body)
+
+        self.assertEqual(receipt["STATUS"], "53", receipt)
+        document = receipt["APPLIED"][0]["ACCOUNTINGDOCUMENT"]
+        booked = sorted((line["DebitCreditCode"],
+                         Decimal(line["AmountInTransactionCurrency"]))
+                        for line in self.lines_of(document))
+        self.assertEqual(booked, [("H", Decimal("1190.00")),
+                                  ("S", Decimal("190.00")),
+                                  ("S", Decimal("1000.00"))])
+
+    def test_a_total_alone_posts_as_it_always_did(self):
+        """Only SUMID 010, and items that say nothing: no claim to check."""
+        body = (invoic(reference="SUP-TOTAL-ONLY")
+                .replace('<E1EDS01 SEGMENT="1"><SUMID>011</SUMID>'
+                         "<SUMME>1000.00</SUMME></E1EDS01>", "")
+                .replace('<E1EDS01 SEGMENT="1"><SUMID>205</SUMID>'
+                         "<SUMME>190.00</SUMME></E1EDS01>", "")
+                .replace("<NETWR>1000.00</NETWR>", ""))
+        self.assertNotIn("011", body)
+        receipt = self.send(body=body)
+
+        self.assertEqual(receipt["STATUS"], "53", receipt)
+        booked = sorted((line["DebitCreditCode"],
+                         Decimal(line["AmountInTransactionCurrency"]))
+                        for line in self.lines_of(
+                            receipt["APPLIED"][0]["ACCOUNTINGDOCUMENT"]))
+        self.assertEqual(booked, [("H", Decimal("1190.00")),
+                                  ("S", Decimal("1190.00"))])
 
     def test_a_well_formed_invoice_still_posts(self):
         """The regression that matters: none of the above changed the good path."""

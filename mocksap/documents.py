@@ -107,6 +107,10 @@ ITEM_TYPE_CUSTOMER = store.ITEM_TYPE_CUSTOMER
 ITEM_TYPE_SUPPLIER = store.ITEM_TYPE_SUPPLIER
 
 
+class Unbalanced(SapError):
+    """The debits and credits a document would post do not come to zero."""
+
+
 def net_due_date(baseline: str, terms: str = "", days=None) -> str:
     """When a line falls due: its baseline date plus the days its terms allow.
 
@@ -223,11 +227,16 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
     invoice becomes an accounting document and money owed *by* us, and that
     payable is what a payment run later selects, pays and clears.
 
-    The invoice is recorded whatever it says; the open item is what makes it
-    payable. Nothing here checks the invoice against a purchase order - that
-    is the payer's job, and mock-acme's `invoice_check.py` does it. A mock that
-    silently refused a mismatched invoice would hide the bug its user is
-    looking for.
+    The invoice is recorded whatever it says about the purchase order; the
+    open item is what makes it payable. Nothing here checks the invoice
+    against a purchase order - that is the payer's job, and mock-acme's
+    `invoice_check.py` does it. A mock that silently refused a mismatched
+    invoice would hide the bug its user is looking for.
+
+    What it says about itself is another matter. An invoice whose gross is not
+    its net plus its tax, or whose items do not add up to its net, would post
+    an accounting document that does not balance, and that is the one thing FI
+    will not write: `Unbalanced`, before anything is written.
     """
     supplier = str(invoice.get("supplier") or "")
     if not supplier:
@@ -238,9 +247,15 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
     currency = str(invoice.get("currency") or "EUR")
     cents = money.CURRENCY_SCALE
     gross = money.at(invoice.get("gross"), cents)
-    net = money.at(invoice.get("net") or gross, cents)
-    tax = money.at(invoice.get("tax") if invoice.get("tax") is not None
-                   else gross - net, cents)
+    # Whichever of net and tax the invoice left out is what the other leaves
+    # of the gross. Both stated is a claim, and it is checked below.
+    stated_net, stated_tax = invoice.get("net"), invoice.get("tax")
+    if stated_net in (None, ""):
+        net = gross - money.at(stated_tax, cents)
+    else:
+        net = money.at(stated_net, cents)
+    tax = (gross - net if stated_tax in (None, "")
+           else money.at(stated_tax, cents))
     terms = str(invoice.get("terms") or "")
     baseline = str(invoice.get("baseline_date") or posting)[:10]
 
@@ -263,6 +278,24 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
     if tax:
         lines.append({"GLAccount": "0000154000", "Amount": tax,
                       "Text": "Input tax", "TransactionCurrency": currency})
+
+    balance = balance_of(lines)
+    if balance:
+        raise Unbalanced(
+            "Balance not zero: the total of %s %s is not the net of %s plus "
+            "the tax of %s, which leaves %s" % (gross, currency, net, tax,
+                                                -balance))
+    # The items are what the net is made of. One that states no amount claims
+    # nothing, so only an invoice whose items all say what they bill is held
+    # to their sum.
+    amounts = [item.get("amount") for item in invoice.get("items") or []]
+    if amounts and all(amount not in (None, "") for amount in amounts):
+        billed = sum((money.at(amount, cents) for amount in amounts), Decimal(0))
+        if billed != net:
+            raise Unbalanced(
+                "Balance not zero: the items come to %s %s and the invoice "
+                "states a net of %s, which leaves %s" % (billed, currency, net,
+                                                         net - billed))
 
     document, company, fiscal = post_journal_entry(ctx, {
         "CompanyCode": invoice.get("company_code") or "1710",
