@@ -317,8 +317,120 @@ class TestWhatDoesNotPost(SupplierInvoiceCase):
                          "two invoices, both quoting one supplier number")
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+
+class TestPostingOneThroughOData(SupplierInvoiceCase):
+    """A POST posts the invoice, as an inbound INVOIC does (#97, #154).
+
+    It used to land a row and nothing else: no accounting document, no open
+    item, nothing to say it was not posted, and a 201. An invoice that exists
+    and can never be paid.
+    """
+
+    def post(self, **fields):
+        body = dict({"CompanyCode": "1710", "InvoicingParty": "1000009",
+                     "SupplierInvoiceIDByInvcgParty": "ODATA-1",
+                     "InvoiceGrossAmount": "1190.00",
+                     "DocumentCurrency": "EUR", "PaymentTerms": "NT30"},
+                    **fields)
+        return self.request("POST", SRV + "/A_SupplierInvoice?$format=json",
+                            headers=self.csrf_token(), body=body)
+
+    def test_it_posts_an_accounting_document_and_an_open_payable(self):
+        status, _, created = self.post()
+        self.assertEqual(status, 201)
+        invoice = created["d"]
+        self.assertEqual(invoice["SupplierInvoiceStatus"], "5", "posted")
+        self.assertTrue(invoice["AccountingDocument"],
+                        "and it names the document it posted")
+
+        # checked against the cube, not against the invoice's own say-so
+        _, _, body = self.get(
+            CUBE + "?$filter=AccountingDocument%%20eq%%20'%s'&$format=json"
+            % invoice["AccountingDocument"])
+        payables = [r for r in body["d"]["results"]
+                    if r["AccountingDocumentItemType"] == "K"]
+        self.assertEqual(len(payables), 1)
+        payable = payables[0]
+        self.assertEqual(payable["Supplier"], "1000009")
+        self.assertEqual(Decimal(payable["AmountInTransactionCurrency"]),
+                         Decimal("1190.00"))
+        self.assertEqual(payable["DebitCreditCode"], "H", "we owe it")
+        self.assertEqual(payable["ClearingAccountingDocument"], "",
+                         "open until something pays it")
+        self.assertTrue(payable["NetDueDate"], "and it falls due")
+
+    def test_the_number_comes_from_the_range_so_the_next_invoic_still_posts(self):
+        """#154: the POST used to take the number the range would give next.
+
+        It numbered from `MAX(existing) + 1`, so the following inbound INVOIC
+        drew a number that was already there and could not post.
+        """
+        first = self.send(reference="SUP-BEFORE")["APPLIED"][0]["SUPPLIERINVOICE"]
+        status, _, created = self.post(SupplierInvoiceIDByInvcgParty="ODATA-2")
+        self.assertEqual(status, 201)
+        through_odata = created["d"]["SupplierInvoice"]
+        self.assertNotEqual(through_odata, first)
+
+        receipt = self.send(reference="SUP-AFTER")
+        self.assertEqual(receipt["STATUS"], "53",
+                         receipt.get("STATUS_TEXT", ""))
+        third = receipt["APPLIED"][0]["SUPPLIERINVOICE"]
+        self.assertEqual(len({first, through_odata, third}), 3,
+                         "three invoices, three numbers")
+
+    def test_the_items_it_bills_against_are_recorded(self):
+        status, _, created = self.post(
+            SupplierInvoiceIDByInvcgParty="ODATA-3",
+            to_SuplrInvcItemPurOrdRef=[{
+                "PurchaseOrder": "4500000100", "PurchaseOrderItem": "00010",
+                "SupplierInvoiceItemAmount": "1190.00",
+                "QuantityInPurchaseOrderUnit": "10",
+                "PurchaseOrderQuantityUnit": "PC",
+                "SupplierInvoiceItemText": "Widgets"}])
+        self.assertEqual(status, 201)
+        invoice = created["d"]
+        _, _, body = self.get(
+            SRV + "/A_SupplierInvoice(SupplierInvoice='%s',FiscalYear='%s')"
+            "/to_SuplrInvcItemPurOrdRef?$format=json"
+            % (invoice["SupplierInvoice"], invoice["FiscalYear"]))
+        items = body["d"]["results"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["PurchaseOrder"], "4500000100")
+        self.assertEqual(Decimal(items[0]["SupplierInvoiceItemAmount"]),
+                         Decimal("1190.00"))
+
+    def test_items_that_do_not_come_to_the_total_are_not_posted(self):
+        """`post_supplier_invoice`'s own rule, inherited rather than repeated."""
+        before = len(self.invoices())
+        status, _, body = self.post(
+            SupplierInvoiceIDByInvcgParty="ODATA-4",
+            to_SuplrInvcItemPurOrdRef=[{
+                "PurchaseOrder": "4500000100", "PurchaseOrderItem": "00010",
+                "SupplierInvoiceItemAmount": "900.00"}])
+        self.assertEqual(status, 400)
+        self.assertIn("items come to", body["error"]["message"]["value"])
+        self.assertEqual(len(self.invoices()), before, "nothing was written")
+
+    def test_what_it_refuses(self):
+        before = len(self.invoices())
+
+        # the document number is the range's to give, not the client's
+        status, _, body = self.post(SupplierInvoice="5100009999")
+        self.assertEqual(status, 400)
+        self.assertIn("SupplierInvoice", body["error"]["message"]["value"])
+
+        # and a field this route does not act on is named, not dropped
+        status, _, body = self.post(AccountingDocument="0100000001")
+        self.assertEqual(status, 400)
+        message = body["error"]["message"]["value"]
+        self.assertIn("AccountingDocument", message)
+        self.assertIn("InvoicingParty", message, "and it says what it does take")
+
+        status, _, body = self.post(InvoicingParty="")
+        self.assertEqual(status, 400)
+
+        self.assertEqual(len(self.invoices()), before, "none of them wrote")
 
 
 class TestBlockingAnInvoice(SupplierInvoiceCase):
@@ -518,3 +630,7 @@ class TestClaimingAnInvoiceForAPaymentRun(SupplierInvoiceCase):
         self.assertEqual(status, 400, body)
         self.assertEqual(self.payable_of(applied["ACCOUNTINGDOCUMENT"])
                          ["PaymentRunID"], "", "and nothing was claimed")
+
+
+if __name__ == "__main__":
+    unittest.main()
