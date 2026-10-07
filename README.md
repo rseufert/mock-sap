@@ -868,6 +868,16 @@ pay again, and - with one payment document per supplier - credited the wrong
 party too. Two items of the same supplier sharing a number are a duplicate
 invoice, not this, and are still settled once.
 
+**Unless a payment run's claim says which.** A client that writes
+`PaymentRunID` on an item before it sends the payment has put on the item the
+one thing the line leaves out. So where two suppliers' items fit a line equally
+and exactly one of them carries a claim, that item is the one paid: it is
+cleared, its claim is released, and the other supplier is still owed. No claim
+decides nothing, and neither does more than one - the line is refused as above,
+and with several the reason names the items and the runs that claimed them.
+Without this, the first supplier's item stayed open and claimed for good, and a
+run that will not send two items with one reference never paid the second.
+
 **One payment document per supplier, not per line.** A payment run pays a
 supplier, so every item one statement settles for them is cleared by a single
 document: one supplier line per invoice, one credit to the bank for the total,

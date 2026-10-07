@@ -1204,5 +1204,157 @@ class TestWhenAPaymentRunHasClaimedAnItem(StatementCase):
         self.assertEqual(self.invoice_of(billed)["PaymentRunID"], "")
 
 
+
+class TestWhenAClaimSaysWhichOfTwoWasPaid(TestWhenAPaymentRunHasClaimedAnItem):
+    """#173: where the party cannot decide, the payment run's claim can.
+
+    Two suppliers each number an invoice the same and bill the same amount, so
+    a statement line fits both and #87 clears neither. But the run that paid
+    one of them wrote its claim on that item before the file went, and the
+    other carries none. That is the one fact the line leaves out.
+    """
+
+    # only what is new here; the claim's own behaviour is proved above
+    test_a_claimed_item_is_still_cleared_by_the_statement = None
+    test_clearing_releases_the_claim_on_both_rows = None
+    test_a_returned_payment_releases_the_claim = None
+
+    def two_alike(self, reference):
+        return (self.bill(reference, "1190.00", supplier="1000009"),
+                self.bill(reference, "1190.00", supplier="1000010"))
+
+    def still_open(self):
+        return {row["AccountingDocument"] for row in self.open_payables()}
+
+    def test_the_claimed_one_is_cleared_and_the_other_is_still_owed(self):
+        paid, waiting = self.two_alike("TIE-1")
+        self.claim(paid, run="R1")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="TIE-1"),
+            statement="00120"))["APPLIED"][0]
+
+        self.assertEqual(applied["UNPROCESSED"], [])
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"] for row in applied["CLEARED"]],
+                         [paid["ACCOUNTINGDOCUMENT"]])
+        self.assertNotIn(paid["ACCOUNTINGDOCUMENT"], self.still_open())
+        self.assertIn(waiting["ACCOUNTINGDOCUMENT"], self.still_open())
+
+    def test_it_is_the_claim_that_decides_not_which_was_billed_first(self):
+        """The same two, with the claim on the other one."""
+        waiting, paid = self.two_alike("TIE-2")
+        self.claim(paid, run="R1")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="TIE-2"),
+            statement="00121"))["APPLIED"][0]
+
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"] for row in applied["CLEARED"]],
+                         [paid["ACCOUNTINGDOCUMENT"]])
+        self.assertIn(waiting["ACCOUNTINGDOCUMENT"], self.still_open())
+
+    def test_the_payment_credits_the_supplier_whose_item_was_claimed(self):
+        _, paid = self.two_alike("TIE-3")
+        self.claim(paid, run="R1")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="TIE-3"),
+            statement="00122"))["APPLIED"][0]
+
+        payment = self.item_of(applied["CLEARED"][0]["CLEARINGDOCUMENT"])
+        self.assertEqual(payment["Supplier"], "1000010")
+
+    def test_the_claim_is_released_so_the_run_has_finished_with_it(self):
+        paid, _ = self.two_alike("TIE-4")
+        self.claim(paid, run="R1")
+
+        self.send(finsta(line("000001", "1190.00-", reference="TIE-4"),
+                         statement="00123"))
+
+        self.assertEqual(self.item_of(paid["ACCOUNTINGDOCUMENT"])["PaymentRunID"], "")
+        self.assertEqual(self.invoice_of(paid)["PaymentRunID"], "")
+
+    def test_the_second_supplier_is_then_paid_by_the_next_statement(self):
+        """The week in the issue: the first clears, so the second is not stuck."""
+        first, second = self.two_alike("TIE-5")
+        self.claim(first, run="R1")
+        self.send(finsta(line("000001", "1190.00-", reference="TIE-5"),
+                         statement="00124"))
+
+        self.claim(second, run="R2")
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="TIE-5"),
+            statement="00125"))["APPLIED"][0]
+
+        self.assertEqual([row["ACCOUNTINGDOCUMENT"] for row in applied["CLEARED"]],
+                         [second["ACCOUNTINGDOCUMENT"]])
+        self.assertFalse({first["ACCOUNTINGDOCUMENT"],
+                          second["ACCOUNTINGDOCUMENT"]} & self.still_open())
+
+    def test_with_no_claim_neither_is_cleared_as_before(self):
+        first, second = self.two_alike("TIE-6")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="TIE-6"),
+            statement="00126"))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        self.assertTrue(reason.endswith("nothing else on the line says which "
+                                        "was paid"), reason)
+        self.assertTrue({first["ACCOUNTINGDOCUMENT"],
+                         second["ACCOUNTINGDOCUMENT"]} <= self.still_open())
+
+    def test_with_both_claimed_neither_is_cleared_and_the_reason_says_so(self):
+        first, second = self.two_alike("TIE-7")
+        self.claim(first, run="R1")
+        self.claim(second, run="R2")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="TIE-7"),
+            statement="00127"))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        reason = applied["UNPROCESSED"][0]["REASON"]
+        self.assertIn("nothing else on the line says which was paid", reason)
+        self.assertIn("nor does a payment run's claim", reason)
+        for named in ("R1", "R2"):
+            self.assertIn(named, reason)
+        self.assertEqual(self.item_of(first["ACCOUNTINGDOCUMENT"])["PaymentRunID"],
+                         "R1", "a refused line releases nobody's claim")
+
+    def test_a_claim_on_an_item_the_line_does_not_fit_decides_nothing(self):
+        """Only a claim among the items that tie counts."""
+        first, second = self.two_alike("TIE-8")
+        other = self.bill("TIE-8", "500.00", supplier="1000011")
+        self.claim(other, run="R1")
+
+        applied = self.send(finsta(
+            line("000001", "1190.00-", reference="TIE-8"),
+            statement="00128"))["APPLIED"][0]
+
+        self.assertEqual(applied["CLEARED"], [])
+        self.assertTrue({first["ACCOUNTINGDOCUMENT"], second["ACCOUNTINGDOCUMENT"],
+                         other["ACCOUNTINGDOCUMENT"]} <= self.still_open())
+
+    def test_a_return_that_fits_two_is_still_refused(self):
+        """A cleared item carries no claim, so nothing decides which came back."""
+        first, second = self.two_alike("TIE-9")
+        self.claim(first, run="R1")
+        self.send(finsta(line("000001", "1190.00-", reference="TIE-9"),
+                         statement="00129"))
+        self.claim(second, run="R2")
+        self.send(finsta(line("000001", "1190.00-", reference="TIE-9"),
+                         statement="00130"))
+
+        applied = self.send(finsta(
+            line("000001", "1190.00", reference="TIE-9", action="RET"),
+            statement="00131"))["APPLIED"][0]
+
+        self.assertEqual(applied["REOPENED"], [])
+        self.assertIn("nothing else on the line says which was paid",
+                      applied["UNPROCESSED"][0]["REASON"])
+
+
 if __name__ == "__main__":
     unittest.main()

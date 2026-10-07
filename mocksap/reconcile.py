@@ -219,6 +219,11 @@ def _item_price(item: dict) -> str:
     return _priced(item["AmountInTransactionCurrency"], _currency_of(item))
 
 
+def _claimed_by(item: dict) -> str:
+    """The payment run that has this item in flight, or "" if none has."""
+    return (item.get("PaymentRunID") or "").strip()
+
+
 def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
     """The item this line pays, or why it pays none of them.
 
@@ -235,6 +240,16 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
     takes from the file is the one being reconciled, not the payee's.  So
     where two parties' items fit the line equally well, neither is cleared
     and the reason names both (#87).
+
+    Unless one of them says so itself.  A payment run writes its claim on an
+    item before it sends the payment (#90), which is the run's own word that
+    this is the item it paid - exactly what the line leaves out.  So where
+    the parties tie and exactly one of the fitting items carries a claim,
+    that item is the one paid (#173).  No claim, or more than one, decides
+    nothing, and the line is refused as before.  Without this, one invoice
+    number shared by two suppliers left the first supplier's paid item open
+    and claimed for good, and a payment run that will not send two items
+    with one reference never paid the second supplier at all.
 
     Taking the first instead cleared one supplier's invoice with another's
     money and left an item open for the next payment run to pay a second
@@ -273,11 +288,27 @@ def _match(conn, line: dict, candidates: List[dict]) -> Dict[str, Any]:
     paying = [(item, reference) for item, reference in equal
               if _currency_of(item) == paid_in]
     if len({_party_of(item) for item, _ in paying}) > 1:
-        return {"item": None, "reason":
-                "this line's reference is %s, each for %s, and nothing else "
-                "on the line says which was paid"
-                % (_in_words([_named(item) for item, _ in paying]),
-                   _priced(amount, paid_in))}
+        # The line cannot say which party was paid, but an item can: the one
+        # a payment run sent to the bank carries that run's claim, written
+        # before the file went (#90). Exactly one claimed item among those
+        # that fit is therefore the one this line paid (#173).
+        claimed = [(item, reference) for item, reference in paying
+                   if _claimed_by(item)]
+        if len(claimed) == 1:
+            item, reference = claimed[0]
+            return {"item": item, "reference": reference}
+        reason = ("this line's reference is %s, each for %s, and nothing else "
+                  "on the line says which was paid"
+                  % (_in_words([_named(item) for item, _ in paying]),
+                     _priced(amount, paid_in)))
+        if claimed:
+            # More than one claim is no better than none, and worth saying:
+            # it is a different thing to go and look for.
+            reason += (", nor does a payment run's claim: %s carry one"
+                       % _in_words(["item %s (%s)" % (item["AccountingDocument"],
+                                                      _claimed_by(item))
+                                    for item, _ in claimed]))
+        return {"item": None, "reason": reason}
     if paying:
         item, reference = paying[0]
         return {"item": item, "reference": reference}
