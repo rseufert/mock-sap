@@ -364,25 +364,38 @@ table with a real message number and a 200 status, because that is how BAPIs fai
 
 ### One connection, many threads
 
-`ThreadingHTTPServer` handles requests concurrently against a single SQLite
-connection opened with `check_same_thread=False`. **That is not safe, and this
-section used to say it was.** `check_same_thread=False` switches off Python's
-*check* that a connection is used from the thread that made it; it does not add
-any synchronisation of its own.
+`ThreadingHTTPServer` takes each request on a thread of its own, and there is one
+SQLite connection, opened with `check_same_thread=False`. That flag switches off
+Python's *check* that a connection is used from the thread that made it; it adds
+no synchronisation. SQLite serialises individual statements and nothing more, and
+almost everything here is a sequence of them: read the row, decide, write it
+back. For a long time nothing kept two requests from interleaving, and this
+section said that was safe. It was not: eight clients posting orders at once had
+most of them fail with 409s and 500s, and left rows behind from requests that
+had failed (#91).
 
-SQLite serialises individual statements, which is what makes the mock survive
-ordinary use. It does not serialise a *sequence* of them, and almost everything
-here is a sequence: read the row, decide, write it back. Two requests doing that
-at once can interleave between the read and the write. The only lock in
-`db.py` guards number-range allocation, so document numbers are not handed out
-twice; nothing guards anything else.
+So the mock holds one lock, `MockSap.lock`, and a request takes it for the part
+that touches the database. **Requests are answered one at a time.** That is the
+whole design, chosen over a connection per thread because the things built on
+the single connection - a changeset's snapshot and restore of the entire
+database, a deep insert's savepoint, a number drawn from a range - are only
+correct if nothing else is using it meanwhile, and a lock makes that true by
+construction rather than by a second mechanism per feature.
 
-So concurrent writers can produce errors neither request deserved, and can leave
-behind rows from a request that failed. Do not use this mock to load-test a
-client's concurrency and conclude anything about SAP from the result - the
-failures you get will be the mock's own. One request at a time is the supported
-shape today. Issue #91 tracks the fix, which is a connection per thread or one
-writer lock around the mutating paths; it is not done.
+Two details of where the lock sits:
+
+- It is taken *after* the delays - a fault rule's `delay_ms`, the `slow` and
+  `timeout` scenarios, `--latency`. Those are one client waiting, and they must
+  not become every client waiting.
+- `/_mock/*` and the request log take it too. They read and write the same
+  connection.
+
+What this buys is that concurrent clients each get the answer they would have
+got alone. What it does not buy is a model of SAP's concurrency: there is no
+lock table, no enqueue, and no two requests ever genuinely overlap, so a race in
+a client that needs real overlap on the server to show itself will not show
+itself here. Optimistic locking through ETags is modelled and does work across
+clients.
 
 In-memory databases use a *uniquely named* shared-cache URI, so several mocks in one
 process - which is exactly what the test suite does - stay isolated from each other
