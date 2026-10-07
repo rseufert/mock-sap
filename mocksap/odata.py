@@ -30,6 +30,21 @@ class SapError(Exception):
         self.target = target
 
 
+def whole_number(value, name: str) -> int:
+    """A whole number that is not negative, or a 400 naming what was sent."""
+    number = -1
+    if not isinstance(value, bool):
+        try:
+            number = int(value)
+            if isinstance(value, float) and value != number:
+                number = -1
+        except (TypeError, ValueError):
+            pass
+    if number < 0:
+        raise SapError("%s is a whole number, not %r" % (name, value), 400)
+    return number
+
+
 def _default_code(status: int) -> str:
     return {
         400: "/IWBEP/CX_MGW_BUSI_EXCEPTION",

@@ -14,7 +14,7 @@ from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
 from . import clock, db, documents, money, outcome, reconcile, store
-from .odata import SapError
+from .odata import SapError, whole_number
 from .schema import ENTITY_TYPES
 
 STATUS_TEXT = {
@@ -90,7 +90,7 @@ class PostingRules:
                 "idoctyp": str(rule.get("idoctyp") or "").upper(),
                 "status": status,
                 "message": str(rule.get("message") or rule.get("text") or ""),
-                "count": int(rule.get("count") or 0),   # 0 = until cleared
+                "count": whole_number(rule.get("count") or 0, "count"),   # 0 = until cleared
                 "hits": 0,
             }
             self._next_id += 1

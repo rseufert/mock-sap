@@ -1106,7 +1106,15 @@ with a marker in place of the value, because a client debugging an auth failure
 needs to know the header was sent, which an absent key cannot tell it from one
 that was never set.
 
-`POST /_mock/reset` restores a known dataset between test cases.
+`POST /_mock/reset` restores a known dataset between test cases. It also
+empties the request log and the function-call log and starts their ids again at
+1, so what a test reads from `/_mock/requests` after a reset is its own.
+
+Input the control plane cannot use is a 400 that names the field - a `limit`
+that is not a whole number, a body that is JSON but not an object. A fault rule
+is checked when it is posted: one with a status that is not an HTTP status, or
+a `match` that is not a regular expression, is refused there rather than stored
+and left to fail the requests it matches.
 
 ## Command line
 
