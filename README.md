@@ -946,6 +946,23 @@ what the customer meant. If more than one set fits - invoices for 100, 200 and
 300 and a credit for 300 - none is cleared and the reason names each set. A line
 quoting more than 16 open receivables is not searched.
 
+**Paid net of a cash discount, the invoice clears; an unearned discount stays
+open.** The one exception to the part-payment rule is a shortfall of exactly
+the discount the receivable's terms offer - `0002` is 2% 10 net 30 - worked out
+by `documents.discount_on` from the item's `PaymentTerms`, its
+`DueCalculationBaseDate` and the statement's date. Paid within the discount
+days, the invoice clears and the discount is posted to the cash-discount
+account `0048000000`. Paid later, the invoice still clears, and the discount
+goes back on the customer's account as a new line of the receipt document
+**which is left open**: they still owe it. The statement's `FINDINGS` then name
+the invoice, the amount, the terms, the last day the discount could be taken
+and where the open item is. `CLEARED` carries the money that arrived. Nearly
+the discount is a part payment like any other, and where a line can be read two
+ways - either of two invoices paid net - neither is taken. Clearing the open
+discount from a later statement, and reopening a discounted receipt that goes
+back, are not built: the first has no document of ours for the customer to
+quote, and the second is reported like any amount that does not match.
+
 **A customer's payment that goes back reopens the receivable.** Money out has
 two readings as well: a payment of ours, or money we received going back - a
 recalled transfer, a returned direct debit. A **debit** carrying `RET` is the
