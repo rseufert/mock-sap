@@ -285,5 +285,67 @@ class TestSalesOrderWriteShapes(MockServerCase):
         self.assertIn("BusinessPartnerName1", body["error"]["message"]["value"])
 
 
+
+class TestADeleteGoesAllTheWayDown(MockServerCase):
+    """A row whose parent is gone is still served, and still counted (#163)."""
+
+    GW = "/sap/opu/odata/IWBEP/GWSAMPLE_BASIC"
+
+    def count(self, path, **where):
+        clause = " and ".join("%s eq '%s'" % pair for pair in where.items())
+        _, _, body = self.get("%s/$count?$filter=%s" % (path, clause), raw=True)
+        return int(body)
+
+    def an_order(self):
+        status, _, body = self.request(
+            "POST", SRV + "/A_SalesOrder", headers=self.csrf_token(),
+            body=TestSalesOrderWriteShapes._order(self))   # three levels deep
+        self.assertEqual(status, 201)
+        return body["d"]["SalesOrder"]
+
+    def remove(self, path):
+        status, _, _ = self.request(
+            "DELETE", path, headers=dict(self.csrf_token(), **{"If-Match": "*"}))
+        self.assertEqual(status, 204)
+
+    def test_an_order_takes_what_hangs_off_its_items_and_partners(self):
+        order = self.an_order()
+        beneath = ("A_SalesOrderItem", "A_SalesOrderHeaderPartner", "A_SalesOrderText",
+                   "A_SalesOrderItemPrElement", "A_SalesOrderPartnerAddress")
+        for name in beneath:
+            self.assertEqual(self.count(SRV + "/" + name, SalesOrder=order), 1, name)
+
+        self.remove(SRV + "/A_SalesOrder('%s')" % order)
+
+        for name in beneath:
+            with self.subTest(entity_set=name):
+                self.assertEqual(self.count(SRV + "/" + name, SalesOrder=order), 0)
+
+    def test_it_takes_nothing_from_the_order_beside_it(self):
+        gone, kept = self.an_order(), self.an_order()
+
+        self.remove(SRV + "/A_SalesOrder('%s')" % gone)
+
+        for name in ("A_SalesOrderItem", "A_SalesOrderItemPrElement",
+                     "A_SalesOrderPartnerAddress"):
+            with self.subTest(entity_set=name):
+                self.assertEqual(self.count(SRV + "/" + name, SalesOrder=kept), 1)
+
+    def test_a_partner_takes_its_orders_and_their_line_items(self):
+        _, _, body = self.get(
+            self.GW + "/SalesOrderSet?$top=1&$expand=ToLineItems&$format=json")
+        order = body["d"]["results"][0]
+        self.assertTrue(order["ToLineItems"]["results"], "something two levels down")
+        number, customer = order["SalesOrderID"], order["CustomerID"]
+
+        self.remove(self.GW + "/BusinessPartnerSet('%s')" % customer)
+
+        self.assertEqual(
+            self.count(self.GW + "/SalesOrderSet", CustomerID=customer), 0)
+        self.assertEqual(
+            self.count(self.GW + "/SalesOrderLineItemSet", SalesOrderID=number), 0,
+            "line items of an order that no longer exists")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -140,7 +140,16 @@ ADMIN_DEFAULTS = {
     "LastChangedByUser": lambda ctx: ctx.get("user", "MOCKUSER"),
     "CreationDate": lambda ctx: ctx["now"],
     "LastChangeDate": lambda ctx: ctx["now"],
+    # GWSAMPLE_BASIC's spelling of the same two fields
+    "CreatedAt": lambda ctx: ctx["now"],
+    "ChangedAt": lambda ctx: ctx["now"],
 }
+
+# The timestamp a write moves, under each name a service gives it. It is what
+# the ETag is rendered from and what a delta read compares, so a type whose
+# stamp stands still has an ETag that never changes and a delta that never
+# reports it (#163).
+CHANGE_STAMPS = ("LastChangeDate", "ChangedAt")
 
 
 def initial_value(prop):
@@ -509,8 +518,9 @@ def update(conn, et: EntityType, keys: Dict[str, Any], payload: dict,
         for name, p in et.columns():
             if not p.key and name not in values and p.updatable:
                 values[name] = initial_value(p)
-    if et.prop("LastChangeDate") is not None:
-        values["LastChangeDate"] = _advance(existing["LastChangeDate"], ctx["now"])
+    for stamp in CHANGE_STAMPS:
+        if et.prop(stamp) is not None:
+            values[stamp] = _advance(existing[stamp], ctx["now"])
     if et.prop("LastChangedByUser") is not None:
         values["LastChangedByUser"] = ctx["user"]
     if not values:
@@ -547,6 +557,29 @@ def record_deletion(conn, et: EntityType, row) -> None:
         (et.name, json.dumps(keys, sort_keys=True), _context("")["now"]))
 
 
+def _delete_children(conn, et: EntityType, row) -> None:
+    """Cascade along to-many navigations, as deleting a document does in SAP.
+
+    All the way down. It used to stop after one level, so deleting a sales
+    order took its items and left their pricing elements, and its partners
+    and left their addresses: rows whose parent is gone, still served by their
+    own entity set and counted by `/_mock/state`, and never reported to a
+    delta read as deleted (#163).
+    """
+    for nav in et.navs:
+        if nav.multiplicity != "*":
+            continue
+        target = ENTITY_TYPES[nav.target]
+        clause = " AND ".join("%s = ?" % _quote(remote) for _l, remote in nav.join)
+        params = [row[local] for local, _r in nav.join]
+        children = conn.execute(
+            'SELECT * FROM "%s" WHERE %s' % (target.table, clause), params).fetchall()
+        conn.execute('DELETE FROM "%s" WHERE %s' % (target.table, clause), params)
+        for child in children:
+            record_deletion(conn, target, child)
+            _delete_children(conn, target, child)
+
+
 def delete(conn, et: EntityType, keys: Dict[str, Any]) -> None:
     existing = get(conn, et, keys)
     if existing is None:
@@ -554,16 +587,6 @@ def delete(conn, et: EntityType, keys: Dict[str, Any]) -> None:
     record_deletion(conn, et, existing)
     clause, params = where_keys(et, keys)
     conn.execute('DELETE FROM "%s" WHERE %s' % (et.table, clause), params)
-    # cascade along to-many navigations, as deleting a document does in SAP
-    for nav in et.navs:
-        if nav.multiplicity != "*":
-            continue
-        target = ENTITY_TYPES[nav.target]
-        cclause = " AND ".join("%s = ?" % _quote(remote) for _l, remote in nav.join)
-        cparams = [existing[local] for local, _r in nav.join]
-        for child in conn.execute(
-                'SELECT * FROM "%s" WHERE %s' % (target.table, cclause), cparams).fetchall():
-            record_deletion(conn, target, child)
-        conn.execute('DELETE FROM "%s" WHERE %s' % (target.table, cclause), cparams)
+    _delete_children(conn, et, existing)
     conn.commit()
     _recalculate_totals(conn, et, dict(existing))
