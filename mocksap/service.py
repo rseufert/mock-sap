@@ -79,6 +79,9 @@ class Context:
         # Newer Gateway services refuse to modify a concurrency-controlled
         # entity that arrives without a validator; classic ones do not.
         self.require_if_match = require_if_match
+        # What function modules have written since the last commit, which a
+        # running mock shares across requests; see `bapi.UnitOfWork`.
+        self.unit_of_work = None
 
 
 # --------------------------------------------------------------------------

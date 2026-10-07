@@ -598,15 +598,63 @@ def _bp_detail(ctx, params):
     }
 
 
+class UnitOfWork:
+    """Which function modules have written since the last commit or rollback.
+
+    A real system holds what a BAPI wrote until BAPI_TRANSACTION_COMMIT and
+    discards it on BAPI_TRANSACTION_ROLLBACK. This mock commits each call as
+    it runs: a unit of work belongs to a session, an HTTP call here has none,
+    and a transaction left open on the one shared connection would be
+    committed by whichever OData request came next. So a rollback cannot undo
+    anything - and used to answer "Changes were rolled back" all the same,
+    which let a test pass while asserting something that had not happened
+    (#167). This remembers what there was to undo, so the rollback can say.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.pending: List[str] = []
+
+    def wrote(self, function_name: str) -> None:
+        with self._lock:
+            self.pending.append(function_name)
+
+    def close(self) -> List[str]:
+        """End the unit of work, returning what was written during it."""
+        with self._lock:
+            pending, self.pending = self.pending, []
+            return pending
+
+
+def _unit_of_work(ctx) -> UnitOfWork:
+    # A context built outside a running mock has none; an empty one answers
+    # as if nothing had been written, which is true of what it knows.
+    return getattr(ctx, "unit_of_work", None) or UnitOfWork()
+
+
 @function("BAPI_TRANSACTION_COMMIT", "TransactionCommit")
 def _commit(ctx, params):
     ctx.conn.commit()
+    _unit_of_work(ctx).close()
     return {"RETURN": ret("S", "Changes were committed", "00", "344")}
 
 
 @function("BAPI_TRANSACTION_ROLLBACK", "TransactionRollback")
 def _rollback(ctx, params):
-    return {"RETURN": ret("S", "Changes were rolled back", "00", "344")}
+    pending = _unit_of_work(ctx).close()
+    if not pending:
+        # Nothing was written, so there is nothing a real system would have
+        # discarded either, and the usual answer is true.
+        return {"RETURN": ret("S", "Changes were rolled back", "00", "344")}
+    names = []
+    for name in pending:
+        if name not in names:
+            names.append(name)
+    return {"RETURN": ret(
+        "E", "Nothing was rolled back: this mock commits each function call "
+             "as it runs, so what %s wrote is still there. Use POST "
+             "/_mock/reset to return to a known state" % ", ".join(names),
+        "MOCK", "001")}
 
 
 # --------------------------------------------------------------------------
@@ -1115,7 +1163,13 @@ def call(ctx, name: str, params: dict, protocol: str = "json",
         result = {"RETURN": [ret(rule["type"], rule["message"],
                                 rule["msg_id"], rule["number"])]}
     else:
+        before = ctx.conn.total_changes
         result = FUNCTIONS[resolved]["handler"](ctx, params or {})
+        if ctx.conn.total_changes > before:
+            # It wrote rows, so a real system would now be holding them for
+            # a commit. Counted from the connection rather than judged from
+            # the function's name: a test run and a refused call write none.
+            _unit_of_work(ctx).wrote(resolved)
         if rule:
             result.setdefault("RETURN", []).append(
                 ret(rule["type"], rule["message"], rule["msg_id"], rule["number"]))

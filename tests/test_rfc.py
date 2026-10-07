@@ -246,6 +246,118 @@ class TestBapiBusinessErrors(MockServerCase):
         self.assertEqual(body["RETURN"][0]["TYPE"], "S")
 
 
+class TestARollbackSaysWhatItDid(MockServerCase):
+    """It cannot undo anything, and used to say that it had (#167).
+
+    Every call is committed as it runs, so by the time a rollback is asked
+    for there is nothing left to roll back *with*. What it can do is tell the
+    truth: `S` when nothing had been written, `E` naming what is still there
+    when something had.
+    """
+
+    ORDER = TestBapiBusinessErrors.ORDER
+
+    def setUp(self):
+        self.request("POST", "/_mock/reset")
+
+    def call(self, name, params=None):
+        status, _, body = self.request("POST", "/sap/bc/rfc/" + name,
+                                       headers=self.csrf_token(),
+                                       body=params or {})
+        self.assertEqual(status, 200, body)
+        return body
+
+    def rollback(self):
+        return self.call("BAPI_TRANSACTION_ROLLBACK")["RETURN"]
+
+    def orders(self):
+        return self.get("/_mock/state")[2]["A_SalesOrder"]
+
+    def test_with_nothing_written_it_answers_as_it_always_did(self):
+        answer = self.rollback()
+
+        self.assertEqual((answer["TYPE"], answer["MESSAGE"]),
+                         ("S", "Changes were rolled back"))
+
+    def test_after_a_create_it_says_the_order_is_still_there(self):
+        before = self.orders()
+        created = self.call("BAPI_SALESORDER_CREATEFROMDAT2", self.ORDER)
+        self.assertTrue(created["SALESDOCUMENT"])
+
+        answer = self.rollback()
+
+        self.assertEqual(self.orders(), before + 1,
+                         "which is the thing it has to be honest about")
+        self.assertEqual(answer["TYPE"], "E")
+        self.assertIn("Nothing was rolled back", answer["MESSAGE"])
+        self.assertIn("BAPI_SALESORDER_CREATEFROMDAT2", answer["MESSAGE"])
+
+    def test_it_names_each_function_once_in_the_order_they_wrote(self):
+        self.call("BAPI_SALESORDER_CREATEFROMDAT2", self.ORDER)
+        self.call("BAPI_SALESORDER_CREATEFROMDAT2", self.ORDER)
+        self.call("BAPI_PO_CREATE1", {
+            "POHEADER": {"COMP_CODE": "1710", "DOC_TYPE": "NB",
+                         "VENDOR": "1000009", "PURCH_ORG": "1710",
+                         "PUR_GROUP": "001", "CURRENCY": "EUR"},
+            "POITEM": [{"PO_ITEM": "00010", "MATERIAL": "TG11", "PLANT": "1710",
+                        "QUANTITY": "5", "NET_PRICE": "10.00"}]})
+
+        message = self.rollback()["MESSAGE"]
+
+        self.assertIn("what BAPI_SALESORDER_CREATEFROMDAT2, BAPI_PO_CREATE1 wrote",
+                      message)
+
+    def test_a_read_is_nothing_to_roll_back(self):
+        self.call("BAPI_MATERIAL_GETLIST", {"MAXROWS": 3})
+        self.call("BAPI_CUSTOMER_GETLIST", {"MAXROWS": 3})
+
+        self.assertEqual(self.rollback()["TYPE"], "S")
+
+    def test_neither_is_a_test_run_or_a_call_that_was_refused(self):
+        self.call("BAPI_SALESORDER_CREATEFROMDAT2", dict(self.ORDER, TESTRUN="X"))
+        refused = self.call("BAPI_SALESORDER_CREATEFROMDAT2", dict(
+            self.ORDER, ORDER_ITEMS_IN=[{"ITM_NUMBER": "000010",
+                                         "MATERIAL": "NO-SUCH", "REQ_QTY": "1"}]))
+        self.assertIn("E", [row["TYPE"] for row in refused["RETURN"]])
+
+        self.assertEqual(self.rollback()["TYPE"], "S")
+
+    def test_a_commit_closes_the_unit_of_work(self):
+        self.call("BAPI_SALESORDER_CREATEFROMDAT2", self.ORDER)
+        self.call("BAPI_TRANSACTION_COMMIT")
+
+        self.assertEqual(self.rollback()["TYPE"], "S",
+                         "committed work is not a rollback's to undo anywhere")
+
+    def test_it_says_so_once(self):
+        self.call("BAPI_SALESORDER_CREATEFROMDAT2", self.ORDER)
+        self.assertEqual(self.rollback()["TYPE"], "E")
+
+        self.assertEqual(self.rollback()["TYPE"], "S",
+                         "the second rollback follows nothing")
+
+    def test_a_reset_forgets_what_was_pending(self):
+        self.call("BAPI_SALESORDER_CREATEFROMDAT2", self.ORDER)
+        self.request("POST", "/_mock/reset")
+
+        self.assertEqual(self.rollback()["TYPE"], "S")
+
+    def test_over_soap_it_is_the_same_answer(self):
+        self.call("BAPI_SALESORDER_CREATEFROMDAT2", self.ORDER)
+        envelope = (
+            '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">'
+            "<soapenv:Body>"
+            '<urn:TransactionRollback xmlns:urn="urn:sap-com:document:sap:soap:functions:mc-style"/>'
+            "</soapenv:Body></soapenv:Envelope>")
+
+        status, _, body = self.request(
+            "POST", "/sap/bc/srt/rfc/sap/BAPI_TRANSACTION_ROLLBACK", body=envelope,
+            headers=dict(self.csrf_token(), **{"Content-Type": "text/xml"}), raw=True)
+
+        self.assertEqual(status, 200, body)
+        self.assertIn(b"Nothing was rolled back", body)
+
+
 class TestMasterDataReads(MockServerCase):
     def call(self, name, params):
         return self.request("POST", "/sap/bc/rfc/" + name, body=params,
