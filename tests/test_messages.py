@@ -8,8 +8,17 @@ from support import BP_SRV, MockServerCase, SRV
 V4 = "/sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/api_salesorder/0001"
 PRODUCTS = "/sap/opu/odata/sap/API_PRODUCT_SRV"
 
+# A delivery date draws a warning when it is before today, so "today" is part
+# of every test here that sends one. It is pinned, and the dates below are
+# written against it: a hardcoded future date is only a future date until it
+# arrives, and the one this module used to send arrived in 2030 (#102).
+TODAY = "2026-10-02"
+NEXT_MONTH = "2026-11-02T00:00:00"
+
 
 class MessageCase(MockServerCase):
+    config_kwargs = {"clock": TODAY + "T16:00"}
+
     def order_payload(self, **extra):
         payload = {
             "SalesOrderType": "OR", "SalesOrganization": "1710",
@@ -117,7 +126,7 @@ class TestWarningsFromData(MessageCase):
         headers = self.csrf_token()
         status, resp_headers, _ = self.request(
             "POST", SRV + "/A_SalesOrder", headers=headers,
-            body=self.order_payload(RequestedDeliveryDate="2030-01-01T00:00:00"))
+            body=self.order_payload(RequestedDeliveryDate=NEXT_MONTH))
         self.assertEqual(status, 201)
         self.assertIsNone(resp_headers.get("sap-message"))
 
