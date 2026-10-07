@@ -104,6 +104,12 @@ class MockSap:
 
     def __init__(self, config: Config):
         self.config = config
+        # One connection, and one request on it at a time. Every handler is a
+        # sequence - read the row, decide, write it back - and two of those
+        # interleaving on a shared connection gave errors neither request
+        # deserved and rows from requests that failed (#91). Re-entrant
+        # because a $batch holds it and dispatches its members under it.
+        self.lock = threading.RLock()
         self.conn = db.open_database(config.db_path)
         db.init_schema(self.conn)
         if db.counts(self.conn)["A_BusinessPartner"] == 0:
@@ -240,12 +246,13 @@ class Handler(BaseHTTPRequestHandler):
         duration = (time.time() - started) * 1000
         if self.mock.config.log_requests and not path.startswith("/_mock"):
             try:
-                db.log_request(
-                    self.mock.conn,
-                    ts=clocks.stamp(), method=method, path=path,
-                    query=query, headers=json.dumps(headers),
-                    body=body[:8000].decode("utf-8", "replace"),
-                    status=response.status, duration_ms=round(duration, 2))
+                with self.mock.lock:
+                    db.log_request(
+                        self.mock.conn,
+                        ts=clocks.stamp(), method=method, path=path,
+                        query=query, headers=json.dumps(headers),
+                        body=body[:8000].decode("utf-8", "replace"),
+                        status=response.status, duration_ms=round(duration, 2))
             except Exception:
                 pass
         self._send(response, head_only=(method == "HEAD"))
@@ -275,7 +282,8 @@ class Handler(BaseHTTPRequestHandler):
         opts = parse_query(query)
 
         if path.startswith("/_mock"):
-            return self._mock_api(method, path, opts, body)
+            with self.mock.lock:
+                return self._mock_api(method, path, opts, body)
 
         injected = self._inject_faults(method, path, headers, opts)
         if injected is not None:
@@ -304,6 +312,14 @@ class Handler(BaseHTTPRequestHandler):
                 "Internal Server Error (injected by --error-rate)", 500,
                 code="/IWBEP/CX_MGW_TECH_EXCEPTION")
 
+        # Taken here and not sooner: the delays above - a fault rule's, the
+        # slow and timeout scenarios, --latency - are a request waiting, and
+        # one request waiting must not be every request waiting.
+        with self.mock.lock:
+            return self._serve(method, path, query, headers, body, opts, client)
+
+    def _serve(self, method, path, query, headers, body, opts, client) -> Response:
+        """The part of a request that touches the database, one at a time."""
         csrf = self._check_csrf(method, path, headers)
         if csrf is not None:
             return csrf
@@ -862,6 +878,10 @@ code{background:#f3f4f6;padding:.1rem .3rem;border-radius:3px}</style>
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
+    # socketserver's default of five is fewer than a modest client pool:
+    # eight threads opening connections at once had one refused in most
+    # runs on macOS, before any request of theirs was read (#91).
+    request_queue_size = 128
 
     def server_bind(self):
         # HTTPServer.server_bind sets `server_name` from socket.getfqdn(host),

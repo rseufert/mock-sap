@@ -92,6 +92,7 @@ with `python3 -m unittest discover -s tests -v`, or a single surface with
 | `test_oauth.py` | The token endpoint and its failure modes, bearer validation across OData and RFC, the principal a SAML token carries into `CreatedByUser`, expiry and refresh-token rotation, revocation, and OAuth beside basic auth. |
 | `test_messages.py` | Warnings from the data and from injection: the header shape, several messages travelling together, the V4 `SAP__Messages` collection and its declaration in CSDL, and the line between a warning and a failure. |
 | `test_operations.py` | Failure scenarios, fault rules and their `count`, `sap-client` rejection, the `/_mock` endpoints, and reset. |
+| `test_concurrency.py` | Many clients at once: every concurrent write acknowledged and counted exactly, changesets and `/_mock` alongside, a delayed request not holding the others, and the listen queue. |
 | `test_auth.py` | Basic authentication, against a server started with `--auth` and CSRF disabled. |
 | `test_startup.py` | Starting up: the bind never reverse-resolves its own address, so a slow resolver cannot delay the port opening, and `server_name`/`server_port` are still set. |
 | `test_banner.py` | The startup banner: every URL it prints carries the port the socket actually bound rather than the one asked for, so `--port 0` advertises a reachable server and not eighteen URLs ending `:0`, each line answers when a client follows it, and the host stays the one that was typed. |
