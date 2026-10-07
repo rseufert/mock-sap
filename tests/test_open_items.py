@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import datetime
 import unittest
+from decimal import Decimal
 
 from support import MockServerCase
+
+from mocksap import documents  # noqa: E402 - support puts the checkout on the path
 
 CUBE = ("/sap/opu/odata/sap/API_OPLACCTGDOCITEMCUBE_SRV"
         "/A_OperationalAcctgDocItemCube")
@@ -256,6 +259,117 @@ class TestTheCubeIsReadOnly(OpenItemCase):
         document, _, _ = self.post(terms="NT30")
         line = self.supplier_line(document)
         self.assertEqual(line["Supplier"], "1000001")
+
+
+class TestTermsThatCarryADiscount(OpenItemCase):
+    """A terms key that offers a cash discount, and what a payment earns of it.
+
+    The net half is on the wire, so it is read back off the cube. The discount
+    half is not: nothing serves a document's discount terms today, and until
+    `reconcile.py` judges a short payment by them (#65) the only client is
+    Python. So these go at the figures directly, and the figures are spelled
+    out rather than computed the way the mock computes them - a test that
+    multiplied by 2% would agree with the code whatever the code did.
+    """
+
+    def test_a_discount_key_is_an_ordinary_terms_key_on_the_wire(self):
+        document, _, _ = self.post(terms="0002")
+        line = self.supplier_line(document)
+        milliseconds = int(line["NetDueDate"].strip("/").replace("Date(", "").replace(")", ""))
+        due = datetime.datetime(1970, 1, 1) + datetime.timedelta(milliseconds=milliseconds)
+        self.assertEqual(due.date().isoformat(), day(30),
+                         "2% 10 net 30 falls due in 30 days like any net-30 key")
+        self.assertEqual(line["PaymentTerms"], "0002",
+                         "the key is carried as it arrived, four characters of it")
+
+    def test_the_keys_that_existed_before_answer_as_they_did(self):
+        self.assertEqual(documents.net_due_date("20260930", ""), "2026-09-30")
+        self.assertEqual(documents.net_due_date("20260930", "0001"), "2026-09-30")
+        self.assertEqual(documents.net_due_date("20260930", "NT30"), "2026-10-30")
+        self.assertEqual(documents.net_due_date("20260930", "NT45"), "2026-11-14")
+        self.assertEqual(documents.net_due_date("20260930", "NT60"), "2026-11-29")
+        self.assertEqual(documents.net_due_date("20260930", "ZZZZ"), "2026-09-30",
+                         "a key nobody configured is due at once, not refused")
+        self.assertEqual(documents.net_due_date("20260930", "NT30", days=7),
+                         "2026-10-07", "the document's own days still win")
+        for key in ("", "0001", "NT30", "NT45", "NT60"):
+            terms = documents.terms_of(key)
+            self.assertEqual(terms.discount_days, 0, key)
+            self.assertEqual(terms.discount_percent, Decimal("0"),
+                             "%s never offered a discount" % key)
+
+    def test_a_payment_inside_the_window_earns_the_discount(self):
+        # 2% 10 net 30 on 1,250, paid on the tenth day
+        earned, available = documents.discount_on(
+            "0002", "2026-09-30", "2026-10-10", "1250.00")
+        self.assertEqual(earned, Decimal("25.00"))
+        self.assertEqual(available, Decimal("25.00"))
+
+    def test_a_day_late_earns_nothing_and_still_says_what_was_offered(self):
+        earned, available = documents.discount_on(
+            "0002", "2026-09-30", "2026-10-11", "1250.00")
+        self.assertEqual(earned, Decimal("0.00"), "the window closed yesterday")
+        self.assertEqual(available, Decimal("25.00"))
+        self.assertEqual(available - earned, Decimal("25.00"),
+                         "what stays open when the invoice itself clears")
+
+    def test_paying_early_is_paying_in_time(self):
+        discount = documents.discount_on(
+            "0002", "2026-09-30", "2026-09-01", "1250.00")
+        self.assertEqual(discount.earned, Decimal("25.00"))
+
+    def test_terms_with_no_discount_offer_nothing_to_earn(self):
+        self.assertEqual(
+            documents.discount_on("NT30", "2026-09-30", "2026-10-01", "1250.00"),
+            (Decimal("0.00"), Decimal("0.00")))
+        self.assertEqual(
+            documents.discount_on("", "2026-09-30", "2026-09-30", "1250.00"),
+            (Decimal("0.00"), Decimal("0.00")))
+        self.assertEqual(
+            documents.discount_on("0002", "2026-09-30", "2026-10-01", "1250.00",
+                                  percent="0"),
+            (Decimal("0.00"), Decimal("0.00")),
+            "a window on nothing is not a discount")
+
+    def test_the_discount_is_rounded_up_at_a_half_cent(self):
+        # 2% of 1.25 is 0.025 exactly: half up is 0.03, and the rounding
+        # Python's own round() would do is 0.02
+        discount = documents.discount_on(
+            "0002", "2026-09-30", "2026-10-01", "1.25")
+        self.assertEqual(discount.available, Decimal("0.03"))
+        self.assertEqual(str(discount.available), "0.03", "two places, kept")
+
+    def test_a_scale_the_caller_asks_for_is_the_scale_it_gets(self):
+        discount = documents.discount_on(
+            "0002", "2026-09-30", "2026-10-01", "1250.00", scale=3)
+        self.assertEqual(str(discount.available), "25.000",
+                         "the open-item cube declares three places")
+
+    def test_a_document_s_own_figures_win_over_its_terms(self):
+        earned, available = documents.discount_on(
+            "NT30", "2026-09-30", "2026-10-03", "1000.00",
+            days=5, percent="2.5")
+        self.assertEqual(available, Decimal("25.00"))
+        self.assertEqual(earned, Decimal("25.00"))
+        self.assertEqual(
+            documents.discount_on("NT30", "2026-09-30", "2026-10-06", "1000.00",
+                                  days=5, percent="2.5").earned,
+            Decimal("0.00"), "five days from the baseline, not thirty")
+
+    def test_the_sign_is_the_caller_s(self):
+        discount = documents.discount_on(
+            "0002", "2026-09-30", "2026-10-01", "-1250.00")
+        self.assertEqual(discount.available, Decimal("-25.00"),
+                         "which way the money goes is not this function's question")
+
+    def test_the_last_day_of_the_discount_is_a_date_or_nothing(self):
+        self.assertEqual(documents.discount_due_date("2026-09-30", "0002"),
+                         "2026-10-10")
+        self.assertEqual(documents.discount_due_date("2026-09-30", "0003"),
+                         "2026-10-14")
+        self.assertIsNone(documents.discount_due_date("2026-09-30", "NT30"),
+                          "no discount is None, not the baseline date")
+        self.assertIsNone(documents.discount_due_date("2026-09-30", "ZZZZ"))
 
 
 if __name__ == "__main__":
