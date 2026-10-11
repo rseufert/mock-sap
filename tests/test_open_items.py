@@ -20,7 +20,16 @@ JOURNAL = "/sap/opu/odata/sap/API_JOURNALENTRY_SRV"
 
 
 def day(offset: int) -> str:
-    return (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
+    """An offset from the date the mock would post, not from the local one.
+
+    `mocksap.clock` is naive UTC and says so, so `date.today()` here made
+    these assertions fail for every hour between UTC rolling over and local
+    midnight - seven of them in the timezone this was found in, and none at
+    all on a UTC CI runner, which is why the suite was green there and red
+    on a laptop in the evening (#198).
+    """
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    return (today + datetime.timedelta(days=offset)).isoformat()
 
 
 def on_the_wire(value):
