@@ -146,20 +146,18 @@ reads it back from the installed package metadata.
 
 ### Before you tag
 
-Two projects install this one, and neither of them learns from here that a
-release happened.
+Projects install this one, and none of them learns from here that a release
+happened. Who they are, and how each takes a new release, is `CONSUMERS` in
+[`tools/check_changelog.py`](tools/check_changelog.py) - the same declaration
+that writes the table at the head of every assembled release section, so this
+page and what a release says cannot drift apart. Adding a consumer is one line
+there.
 
-- **mock-acme** drives this mock in its own tests. Its `test` extra floors on a
-  minor version, so it takes a new minor the day it is published, and its
-  nightly job installs from `main` before that. What it was last green against
-  is on its Actions page, not here.
-- **mock-films** pins an exact version and captures wire output to compare byte
-  for byte. A new served property, or a figure a cent different, is a
-  re-capture for it even when no behaviour changed.
+What that declaration cannot hold is what to do about them.
 
 **When the assembled section carries a list of things that answer differently,
-tell both of them before you tag.** 0.20.0 is why this step exists. Its own
-release notes worked out that mock-acme's floor would take the release
+tell every one of them before you tag.** 0.20.0 is why this step exists. Its
+own release notes worked out that mock-acme's floor would take the release
 immediately, that its last green nightly ran eight hours before the cent-level
 change merged, and that several of its tests assert exact `Decimal` amounts -
 and then it shipped, with all of that in the second-to-last section of an
@@ -167,6 +165,11 @@ and then it shipped, with all of that in the second-to-last section of an
 right and reached nobody who could act on it. **A release body is not a
 notification**, and writing a risk down is not the same as telling the person
 it lands on.
+
+**What a consumer was last green against is in its own repository's CI, not
+here.** For one that installs `main` on a schedule, that is the fact which
+decides whether to wait a day, and no amount of keeping `CONSUMERS` current
+answers it.
 
 **One release a day, at most.** 0.20.0 and 0.21.0 both went out on 2026-10-07,
 each with a list like that, which is more than a project downstream can read -
