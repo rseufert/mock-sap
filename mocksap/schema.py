@@ -873,6 +873,84 @@ _register(
 # the purchase order each line refers to, so a three-way match can be done
 # over OData rather than only inside an example.
 # --------------------------------------------------------------------------
+# Entity types - the goods receipt an invoice can quote
+#
+# API_MATERIAL_DOCUMENT_SRV.  A goods receipt posts a material document, and
+# under goods-receipt-based invoice verification that document is what an
+# invoice item points at: SAP reads the supplier's delivery note off the
+# INVOIC (``E1EDP02`` ``QUALF`` ``016``), finds the goods receipt by it, and
+# keeps the material document on the item - ``RSEG-LFBNR``/``LFGJA``/``LFPOS``,
+# served as ``ReferenceDocument`` and friends.  The delivery note number itself
+# belongs here, on the material document's header, which is ``MKPF-XBLNR``
+# (#193).
+#
+# Only the properties this mock can honestly fill are declared.  The real
+# service has many more - ``QuantityInBaseUnit``, ``StorageLocation``,
+# ``GoodsMovementRefDocType``, a ``GoodsMovementCode`` this project could not
+# find published - and a property declared and left empty is worse than one
+# absent, because a client generates its model from ``$metadata``.
+#
+# **This mock's goods receipt posts no accounting document.**  A real one
+# debits stock and credits GR/IR clearing; there is no stock concept here and
+# neither account exists.  So a goods receipt here records that a shipment
+# arrived and nothing else, which is what an invoice needs to quote one.
+# --------------------------------------------------------------------------
+
+_register(
+    EntityType(
+        "A_MaterialDocumentHeader",
+        label="Material Document",
+        props=[
+            S("MaterialDocument", key=True, nullable=False, max_length=10,
+              label="Material Document", creatable=False),
+            S("MaterialDocumentYear", key=True, nullable=False, max_length=4,
+              label="Material Doc. Year", creatable=False),
+            DT("DocumentDate", label="Document Date"),
+            DT("PostingDate", label="Posting Date"),
+            # The supplier's delivery note, MKPF-XBLNR. This is the number an
+            # inbound INVOIC quotes to find this receipt, and the only place
+            # it is kept.
+            S("ReferenceDocument", max_length=16, label="Delivery Note"),
+        ],
+        navs=[
+            Nav("to_MaterialDocumentItem", "A_MaterialDocumentItem", "*",
+                [("MaterialDocument", "MaterialDocument"),
+                 ("MaterialDocumentYear", "MaterialDocumentYear")]),
+        ],
+    )
+)
+
+_register(
+    EntityType(
+        "A_MaterialDocumentItem",
+        label="Material Document Item",
+        props=[
+            S("MaterialDocument", key=True, nullable=False, max_length=10,
+              creatable=False),
+            S("MaterialDocumentYear", key=True, nullable=False, max_length=4,
+              creatable=False),
+            S("MaterialDocumentItem", key=True, nullable=False, max_length=4,
+              creatable=False),
+            S("Material", max_length=40, label="Material"),
+            S("Plant", max_length=4, label="Plant"),
+            S("PurchaseOrder", max_length=10, label="Purchase Order"),
+            S("PurchaseOrderItem", max_length=5, label="Purchase Order Item"),
+            # 101 is a receipt against a purchase order. Nothing here acts on
+            # it; it is what a reader needs to tell a receipt from a return.
+            S("GoodsMovementType", max_length=3, label="Movement Type"),
+            DEC("QuantityInEntryUnit", precision=13, scale=3, label="Quantity"),
+            S("EntryUnit", max_length=3, label="Unit"),
+        ],
+        navs=[
+            Nav("to_MaterialDocumentHeader", "A_MaterialDocumentHeader", "1",
+                [("MaterialDocument", "MaterialDocument"),
+                 ("MaterialDocumentYear", "MaterialDocumentYear")]),
+        ],
+    )
+)
+
+
+# --------------------------------------------------------------------------
 
 _register(
     EntityType(
@@ -943,6 +1021,15 @@ _register(
                 label="Quantity"),
             S("PurchaseOrderQuantityUnit", max_length=3, label="Unit"),
             S("SupplierInvoiceItemText", max_length=50, label="Item Text"),
+            # The goods receipt this item billed: RSEG-LFBNR, LFGJA and
+            # LFPOS. Written only when the invoice quoted a delivery note
+            # that found one, so a blank means the item named no receipt -
+            # not that the receipt is unknown (#193).
+            S("ReferenceDocument", max_length=10, label="Reference Document"),
+            S("ReferenceDocumentFiscalYear", max_length=4,
+              label="Reference Doc. Year"),
+            S("ReferenceDocumentItem", max_length=4,
+              label="Reference Doc. Item"),
         ],
     )
 )
@@ -1561,6 +1648,15 @@ for _svc in [
         {
             "A_SupplierInvoice": "A_SupplierInvoice",
             "A_SuplrInvcItemPurOrdRef": "A_SuplrInvcItemPurOrdRef",
+        },
+    ),
+    Service(
+        "API_MATERIAL_DOCUMENT_SRV",
+        "API_MATERIAL_DOCUMENT_SRV",
+        "Material Document (goods movements)",
+        {
+            "A_MaterialDocumentHeader": "A_MaterialDocumentHeader",
+            "A_MaterialDocumentItem": "A_MaterialDocumentItem",
         },
     ),
     Service(
