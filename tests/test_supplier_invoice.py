@@ -632,5 +632,55 @@ class TestClaimingAnInvoiceForAPaymentRun(SupplierInvoiceCase):
                          ["PaymentRunID"], "", "and nothing was claimed")
 
 
+class TestADatePostedThroughTheRoute(SupplierInvoiceCase):
+    """#200: the POST took a date and answered 500 saying it was not one.
+
+    `_posting_fields` converted every value on to its V2 json form, so an
+    `Edm.DateTime` arrived as `/Date(1790380800000)/` whatever the client
+    sent, and `post_supplier_invoice`'s `[:10]` made `'/Date(1790'` of it.
+    The route's own tests posted no dates and every other way in reads its
+    dates off an IDoc, so nothing exercised the pair.
+    """
+
+    def post_invoice(self, **fields):
+        import json
+        headers = dict(self.csrf_token(),
+                       **{"Content-Type": "application/json",
+                          "Accept": "application/json"})
+        payload = {"InvoicingParty": "1000009",
+                   "InvoiceGrossAmount": "100.00",
+                   "DocumentCurrency": "EUR"}
+        payload.update(fields)
+        return self.request("POST", SRV + "/A_SupplierInvoice",
+                            body=json.dumps(payload), headers=headers)
+
+    def posted_on(self, reference):
+        _, _, body = self.get(
+            SRV + "/A_SupplierInvoice?$format=json&$filter="
+            "SupplierInvoiceIDByInvcgParty eq '%s'" % reference)
+        [row] = body["d"]["results"]
+        return row["PostingDate"]
+
+    def test_an_iso_date_posts_the_invoice_on_that_date(self):
+        status, _, body = self.post_invoice(
+            SupplierInvoiceIDByInvcgParty="DATE-ISO",
+            PostingDate="2026-09-26T00:00:00")
+        self.assertEqual(status, 201, body)
+        self.assertEqual(self.posted_on("DATE-ISO"), "/Date(1790380800000)/")
+
+    def test_a_v2_date_posts_the_same_day(self):
+        status, _, body = self.post_invoice(
+            SupplierInvoiceIDByInvcgParty="DATE-V2",
+            PostingDate="/Date(1790380800000)/")
+        self.assertEqual(status, 201, body)
+        self.assertEqual(self.posted_on("DATE-V2"), "/Date(1790380800000)/")
+
+    def test_an_invoice_with_no_date_still_posts(self):
+        status, _, body = self.post_invoice(
+            SupplierInvoiceIDByInvcgParty="DATE-NONE")
+        self.assertEqual(status, 201, body)
+        self.assertTrue(self.posted_on("DATE-NONE").startswith("/Date("))
+
+
 if __name__ == "__main__":
     unittest.main()
