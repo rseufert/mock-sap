@@ -635,6 +635,70 @@ Three things it deliberately does not do:
 - **An IDoc that does not post owes nobody anything.** Under a `51` posting rule
   there is no invoice and no payable, which the tests assert by counting.
 
+## A goods receipt, and the invoice that quotes one
+
+Under goods-receipt-based invoice verification an invoice does not point at
+the purchase order alone. It names the **delivery note** of the shipment it
+bills, SAP finds the goods receipt by that note, and what it keeps on the
+invoice item is the material document that receipt posted.
+
+Post a receipt to `API_MATERIAL_DOCUMENT_SRV`:
+
+```bash
+curl -s -X POST http://localhost:8080/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentHeader \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" -b cookies -d '{
+    "ReferenceDocument": "DN-55012",
+    "PostingDate": "2026-09-26T00:00:00",
+    "to_MaterialDocumentItem": [
+      {"PurchaseOrder": "4500000100", "PurchaseOrderItem": "00010",
+       "Material": "M-1", "Plant": "1710",
+       "QuantityInEntryUnit": "10.000", "EntryUnit": "PC"}]}'
+```
+
+The delivery note is the header's `ReferenceDocument` - `MKPF-XBLNR`, and the
+only place a real system keeps it. Items get movement type `101`, a receipt
+against a purchase order.
+
+Then an inbound `INVOIC` whose item quotes that note in `E1EDP02` with
+`QUALF` `016`:
+
+```xml
+<E1EDP01 SEGMENT="1"><POSEX>000010</POSEX><VGBEL>4500000100</VGBEL>
+  <VGPOS>00010</VGPOS>
+  <E1EDP02 SEGMENT="1"><QUALF>016</QUALF><BELNR>DN-55012</BELNR></E1EDP02>
+</E1EDP01>
+```
+
+posts an invoice item carrying `ReferenceDocument`,
+`ReferenceDocumentFiscalYear` and `ReferenceDocumentItem` - `RSEG-LFBNR`,
+`LFGJA` and `LFPOS`. So **what has been billed against one goods receipt is a
+`$filter` away**, which is what a middleware needs to stop one shipment being
+invoiced twice under two invoice numbers, and to still know it after a
+restart:
+
+```
+GET /sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV/A_SuplrInvcItemPurOrdRef?$filter=ReferenceDocument eq '4900000001'
+```
+
+**An `INVOIC` quoting a delivery note no goods receipt carries is status
+`51`**, naming the note and the line, and posts neither an invoice nor a
+payable. An invoice that quotes only a purchase order is unchanged, and its
+reference is blank - which is not an omission, it is an invoice that named no
+receipt.
+
+Two things this deliberately does not do:
+
+- **A goods receipt posts no accounting document.** A real one debits stock
+  and credits GR/IR clearing; there is no stock concept here and neither
+  account exists, so a receipt records that a shipment arrived and stops.
+  Nothing downstream reads a GR/IR account, and inventing the posting would
+  mean inventing two accounts and a valuation.
+- **Nothing is judged.** No quantity is compared with what was ordered or
+  with what was received, and the invoice is still not checked against the
+  purchase order. That is the payer's job, as
+  [above](#a-suppliers-invoice-and-what-it-owes) - this mock holds and
+  resolves references, and the payer's own checks stay with the payer.
+
 ## Open items: what is still owed
 
 A payment run does not read journal entries. It asks a narrower question - what

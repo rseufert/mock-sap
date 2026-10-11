@@ -985,7 +985,7 @@ def _posting_fields(et, payload, allowed, what="a supplier invoice",
     document and silently does not is worse than one that says it cannot.
 
     Values go out as the **database** value, which for `Edm.DateTime` is the
-    ISO date-time `post_supplier_invoice` reads, whether the client sent ISO
+    ISO date-time the posting functions read, whether the client sent ISO
     or V2's `/Date(ms)/`. It used to make the round trip on to the json
     value, which is V2 wire form either way: `[:10]` of
     `/Date(1790380800000)/` is `'/Date(1790'`, and a POST carrying a posting
@@ -1005,10 +1005,10 @@ def _posting_fields(et, payload, allowed, what="a supplier invoice",
         if name in allowed:
             out[allowed[name]] = to_db_value(prop, value)
         elif prop.key:
-            # The document number comes from the SUPPLIERINVOICE range and
-            # the fiscal year from the posting date, as they do for an
-            # invoice posted from an inbound INVOIC. Honouring a number the
-            # client chose is what let a POST take the range's next value.
+            # The document number comes from its own number range and the
+            # year from the posting date, as they do for a document posted
+            # any other way. Honouring a number the client chose is what let
+            # a POST take the range's next value (#154).
             raise SapError(
                 "Key property '%s' is assigned when %s and "
                 "cannot be supplied" % (name, when), 400, target=name)

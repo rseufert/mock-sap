@@ -101,6 +101,13 @@ class GoodsReceiptCase(MockServerCase):
             "SupplierInvoice eq '%s'" % reference)
         return body["d"]["results"]
 
+    def counts(self):
+        """How many supplier invoices and open payables exist right now."""
+        _, _, invoices = self.get(SRV + "/A_SupplierInvoice?$format=json")
+        _, _, items = self.get(
+            CUBE + "?$format=json&$filter=AccountingDocumentItemType eq 'K'")
+        return (len(invoices["d"]["results"]), len(items["d"]["results"]))
+
     def invoice_numbered(self, reference):
         _, _, body = self.get(
             SRV + "/A_SupplierInvoice?$format=json&$filter="
@@ -196,17 +203,21 @@ class TestAnInvoiceThatQuotesAReceipt(GoodsReceiptCase):
 
     def test_a_delivery_note_no_receipt_carries_is_status_51(self):
         receipt = self.send(reference="INV-GR-3", delivery_note="DN-NOBODY")
-        [applied] = receipt["APPLIED"]
-        self.assertEqual(applied["STATUS"], "51")
-        self.assertIn("DN-NOBODY", applied["STATUS_TEXT"])
-        self.assertIn("016", applied["STATUS_TEXT"])
+        # A refused INVOIC has no APPLIED list: there is nothing it was
+        # applied to, and the status is the receipt's own.
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertNotIn("APPLIED", receipt)
+        self.assertIn("DN-NOBODY", receipt["STATUS_TEXT"])
+        self.assertIn("016", receipt["STATUS_TEXT"])
+        self.assertIn("4500000100", receipt["STATUS_TEXT"])
 
     def test_and_posts_nothing_at_all(self):
+        """Not merely no invoice: no payable either. A refusal that left an
+        open item behind would be owed to somebody."""
+        invoices, payables = self.counts()
         self.send(reference="INV-GR-4", delivery_note="DN-NOBODY")
         self.assertEqual(self.invoice_numbered("INV-GR-4"), [])
-        _, _, body = self.get(
-            CUBE + "?$format=json&$filter=DocumentItemText eq 'INV-GR-4'")
-        self.assertEqual(body["d"]["results"], [])
+        self.assertEqual(self.counts(), (invoices, payables))
 
     def test_a_receipt_that_received_nothing_against_this_line_is_refused(self):
         """The note finds a receipt; the receipt has no item for this
@@ -215,9 +226,9 @@ class TestAnInvoiceThatQuotesAReceipt(GoodsReceiptCase):
         self.receive(delivery_note="DN-OTHERLINE", position="00010")
         receipt = self.send(reference="INV-GR-5",
                             delivery_note="DN-OTHERLINE", position="00090")
-        [applied] = receipt["APPLIED"]
-        self.assertEqual(applied["STATUS"], "51")
-        self.assertIn("00090", applied["STATUS_TEXT"])
+        self.assertEqual(receipt["STATUS"], "51")
+        self.assertIn("00090", receipt["STATUS_TEXT"])
+        self.assertIn("DN-OTHERLINE", receipt["STATUS_TEXT"])
 
     def test_leading_zeros_on_the_position_do_not_matter(self):
         document, _ = self.receive(delivery_note="DN-ZEROS", position="00010")
@@ -226,6 +237,24 @@ class TestAnInvoiceThatQuotesAReceipt(GoodsReceiptCase):
         [item] = self.items_of(self.invoice_numbered("INV-GR-6")[0]
                                ["SupplierInvoice"])
         self.assertEqual(item["ReferenceDocument"], document)
+
+    def test_one_delivery_note_against_two_orders_resolves_to_the_right_one(self):
+        """A delivery note is the supplier's own number for a shipment, so it
+        means nothing across purchase orders - the same lesson #87 taught
+        about invoice numbers across suppliers. Two receipts under one note
+        must not be told apart by the note alone.
+        """
+        first, _ = self.receive(delivery_note="DN-SHARED",
+                                purchase_order="4500000100", position="00010")
+        second, _ = self.receive(delivery_note="DN-SHARED",
+                                 purchase_order="4500000101", position="00010")
+        self.assertNotEqual(first, second)
+        self.send(reference="INV-GR-10", delivery_note="DN-SHARED",
+                  purchase_order="4500000101")
+        [item] = self.items_of(self.invoice_numbered("INV-GR-10")[0]
+                               ["SupplierInvoice"])
+        self.assertEqual(item["ReferenceDocument"], second)
+        self.assertEqual(item["PurchaseOrder"], "4500000101")
 
     def test_what_was_billed_against_one_receipt_is_filterable(self):
         document, _ = self.receive(delivery_note="DN-SUM")
