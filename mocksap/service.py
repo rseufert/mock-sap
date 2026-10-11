@@ -984,8 +984,14 @@ def _posting_fields(et, payload, allowed, what="a supplier invoice",
     says what it does take: a POST that appears to set the accounting
     document and silently does not is worse than one that says it cannot.
 
-    Values go out through the EDM conversions, so a `/Date(...)/` a V2 client
-    sent arrives as the ISO date `post_supplier_invoice` reads.
+    Values go out as the **database** value, which for `Edm.DateTime` is the
+    ISO date-time `post_supplier_invoice` reads, whether the client sent ISO
+    or V2's `/Date(ms)/`. It used to make the round trip on to the json
+    value, which is V2 wire form either way: `[:10]` of
+    `/Date(1790380800000)/` is `'/Date(1790'`, and a POST carrying a posting
+    date answered 500 saying a valid date was not one (#200). The json form
+    was doing nothing else - for a string it is the identity, and a decimal
+    is the same text in both.
     """
     out = {}
     for name, value in payload.items():
@@ -997,7 +1003,7 @@ def _posting_fields(et, payload, allowed, what="a supplier invoice",
                 "Property '%s' does not exist in type '%s'" % (name, et.name),
                 400, target=name)
         if name in allowed:
-            out[allowed[name]] = to_json_value(prop, to_db_value(prop, value))
+            out[allowed[name]] = to_db_value(prop, value)
         elif prop.key:
             # The document number comes from the SUPPLIERINVOICE range and
             # the fiscal year from the posting date, as they do for an
