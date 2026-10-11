@@ -594,11 +594,124 @@ def post_supplier_invoice(ctx, invoice: Dict[str, Any]) -> Dict[str, Any]:
             "QuantityInPurchaseOrderUnit": money.of(item.get("quantity")),
             "PurchaseOrderQuantityUnit": str(item.get("unit") or ""),
             "SupplierInvoiceItemText": str(item.get("text") or "")[:50],
+            # The goods receipt this item billed, when the INVOIC quoted a
+            # delivery note that found one. Blank means the item named no
+            # receipt, which is every invoice that quotes only a purchase
+            # order - the common case and not an omission (#193).
+            "ReferenceDocument": str(item.get("reference_document") or ""),
+            "ReferenceDocumentFiscalYear": str(item.get("reference_year") or ""),
+            "ReferenceDocumentItem": str(item.get("reference_item") or ""),
         }, user=ctx.user)
 
     return {"supplier_invoice": number, "fiscal_year": fiscal,
             "accounting_document": document, "company_code": company,
             "gross": gross, "currency": currency}
+
+
+# MSEG-BWART for a receipt against a purchase order. Nothing here acts on it:
+# it is what a reader needs to tell a receipt from a return.
+GOODS_RECEIPT = "101"
+
+
+def post_goods_receipt(ctx, receipt: Dict[str, Any]) -> Dict[str, Any]:
+    """Record that a shipment arrived, as a material document.
+
+    This is the document an invoice quotes under goods-receipt-based invoice
+    verification.  SAP reads the supplier's delivery note off the inbound
+    `INVOIC` (`E1EDP02` `QUALF` `016`), finds the receipt by it, and keeps
+    *this* document's number on the invoice item - so the delivery note is
+    held here, on the header, and nowhere on the invoice (#193).
+
+    **It posts no accounting document.**  A real goods receipt debits stock
+    and credits GR/IR clearing; there is no stock concept here and neither
+    account exists, so this records the arrival and stops.  A goods receipt
+    that posts nothing is smaller than the real thing and still honest;
+    inventing the posting would mean inventing two accounts and a valuation.
+
+    **It does not judge the receipt.**  No quantity is compared with what the
+    purchase order ordered, and receiving more than was ordered is accepted.
+    That is the division this mock keeps everywhere: it holds and resolves
+    references, and the payer's own checks stay with the payer.
+    """
+    items = list(receipt.get("items") or [])
+    if not items:
+        raise SapError("A goods receipt with no items receives nothing", 400)
+    for item in items:
+        if not str(item.get("purchase_order") or "").strip():
+            raise SapError(
+                "A goods receipt item that names no purchase order is one "
+                "nothing can quote later, so it is refused rather than "
+                "stored", 400)
+
+    posting = str(receipt.get("posting_date") or _today())[:10]
+    document = db.next_number(ctx.conn, "MATERIALDOCUMENT", 10)
+    year = posting[:4]
+
+    store.insert(ctx.conn, ENTITY_TYPES["A_MaterialDocumentHeader"], {
+        "MaterialDocument": document,
+        "MaterialDocumentYear": year,
+        "DocumentDate": str(receipt.get("document_date") or posting)[:10],
+        "PostingDate": posting,
+        # MKPF-XBLNR, the supplier's delivery note. The one place it is kept.
+        "ReferenceDocument": str(receipt.get("delivery_note") or "")[:16],
+    }, user=ctx.user)
+
+    for index, item in enumerate(items, start=1):
+        store.insert(ctx.conn, ENTITY_TYPES["A_MaterialDocumentItem"], {
+            "MaterialDocument": document,
+            "MaterialDocumentYear": year,
+            "MaterialDocumentItem": str(index).zfill(4),
+            "Material": str(item.get("material") or ""),
+            "Plant": str(item.get("plant") or ""),
+            "PurchaseOrder": str(item.get("purchase_order") or ""),
+            "PurchaseOrderItem": str(item.get("purchase_order_item") or ""),
+            "GoodsMovementType": str(item.get("movement_type")
+                                     or GOODS_RECEIPT),
+            "QuantityInEntryUnit": money.of(item.get("quantity")),
+            "EntryUnit": str(item.get("unit") or ""),
+        }, user=ctx.user)
+
+    return {"material_document": document, "material_document_year": year,
+            "delivery_note": str(receipt.get("delivery_note") or "")[:16],
+            "items": len(items)}
+
+
+def receipt_for(conn, delivery_note: str,
+                purchase_order: str = "",
+                purchase_order_item: str = "") -> Optional[Dict[str, str]]:
+    """The material document item a delivery note names, or `None`.
+
+    A delivery note is the supplier's own number for a shipment, so this
+    looks it up on the material document header - `ReferenceDocument` - and
+    then picks the item for the purchase order item being billed.  Both
+    halves have to match: a receipt that exists but received nothing against
+    this purchase order item is not the receipt for this invoice line, and
+    answering with the header alone would set a reference whose item number
+    was a guess.
+
+    Returns the three values an invoice item keeps: `RSEG-LFBNR`, `LFGJA`
+    and `LFPOS`.
+    """
+    note = (delivery_note or "").strip()
+    if not note:
+        return None
+    header = ENTITY_TYPES["A_MaterialDocumentHeader"]
+    item = ENTITY_TYPES["A_MaterialDocumentItem"]
+    for row in store.query(conn, header, '"ReferenceDocument" = ?', (note,)):
+        for line in store.query(
+                conn, item,
+                '"MaterialDocument" = ? AND "MaterialDocumentYear" = ?',
+                (row["MaterialDocument"], row["MaterialDocumentYear"])):
+            if purchase_order and str(line["PurchaseOrder"]) != str(purchase_order):
+                continue
+            if (purchase_order_item
+                    and str(line["PurchaseOrderItem"]).lstrip("0")
+                    != str(purchase_order_item).lstrip("0")):
+                continue
+            return {"document": row["MaterialDocument"],
+                    "year": row["MaterialDocumentYear"],
+                    "item": line["MaterialDocumentItem"]}
+    return None
 
 
 def balance_of(lines: List[Dict[str, Any]]) -> Decimal:

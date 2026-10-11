@@ -976,15 +976,16 @@ _SUPPLIER_INVOICE_ITEM = {
 }
 
 
-def _invoice_fields(et, payload, allowed):
-    """`payload` in `post_supplier_invoice`'s vocabulary, or a refusal.
+def _posting_fields(et, payload, allowed, what="a supplier invoice",
+                    when="the invoice posts"):
+    """`payload` in a posting function's own vocabulary, or a refusal.
 
     Anything this route does not act on is refused by name, and the message
     says what it does take: a POST that appears to set the accounting
     document and silently does not is worse than one that says it cannot.
 
     Values go out as the **database** value, which for `Edm.DateTime` is the
-    ISO date-time `post_supplier_invoice` reads, whether the client sent ISO
+    ISO date-time the posting functions read, whether the client sent ISO
     or V2's `/Date(ms)/`. It used to make the round trip on to the json
     value, which is V2 wire form either way: `[:10]` of
     `/Date(1790380800000)/` is `'/Date(1790'`, and a POST carrying a posting
@@ -1004,17 +1005,17 @@ def _invoice_fields(et, payload, allowed):
         if name in allowed:
             out[allowed[name]] = to_db_value(prop, value)
         elif prop.key:
-            # The document number comes from the SUPPLIERINVOICE range and
-            # the fiscal year from the posting date, as they do for an
-            # invoice posted from an inbound INVOIC. Honouring a number the
-            # client chose is what let a POST take the range's next value.
+            # The document number comes from its own number range and the
+            # year from the posting date, as they do for a document posted
+            # any other way. Honouring a number the client chose is what let
+            # a POST take the range's next value (#154).
             raise SapError(
-                "Key property '%s' is assigned when the invoice posts and "
-                "cannot be supplied" % name, 400, target=name)
+                "Key property '%s' is assigned when %s and "
+                "cannot be supplied" % (name, when), 400, target=name)
         else:
             raise SapError(
-                "Property '%s' is not set when posting a supplier invoice; "
-                "this route takes %s" % (name, ", ".join(sorted(allowed))),
+                "Property '%s' is not set when posting %s; "
+                "this route takes %s" % (name, what, ", ".join(sorted(allowed))),
                 400, target=name)
     return out
 
@@ -1038,17 +1039,66 @@ def _post_supplier_invoice(ctx, et, payload):
     they all state an amount they have to come to that net - which is
     `post_supplier_invoice`'s own rule, not a second one here.
     """
-    invoice = _invoice_fields(et, payload, _SUPPLIER_INVOICE)
+    invoice = _posting_fields(et, payload, _SUPPLIER_INVOICE)
     children = payload.get("to_SuplrInvcItemPurOrdRef") or []
     if isinstance(children, dict):
         children = children.get("results", [children])
-    items = [_invoice_fields(ENTITY_TYPES["A_SuplrInvcItemPurOrdRef"], child,
+    items = [_posting_fields(ENTITY_TYPES["A_SuplrInvcItemPurOrdRef"], child,
                              _SUPPLIER_INVOICE_ITEM) for child in children]
     if items:
         invoice["items"] = items
     posted = documents.post_supplier_invoice(ctx, invoice)
     return {"SupplierInvoice": posted["supplier_invoice"],
             "FiscalYear": posted["fiscal_year"]}
+
+
+# How `A_MaterialDocumentHeader` and its items spell what
+# `documents.post_goods_receipt` asks for. Beside the two above so a reader
+# can check the three against each other.
+_MATERIAL_DOCUMENT = {
+    "ReferenceDocument": "delivery_note",
+    "DocumentDate": "document_date",
+    "PostingDate": "posting_date",
+}
+
+_MATERIAL_DOCUMENT_ITEM = {
+    "Material": "material",
+    "Plant": "plant",
+    "PurchaseOrder": "purchase_order",
+    "PurchaseOrderItem": "purchase_order_item",
+    "GoodsMovementType": "movement_type",
+    "QuantityInEntryUnit": "quantity",
+    "EntryUnit": "unit",
+}
+
+
+def _post_goods_receipt(ctx, et, payload):
+    """A POST to `A_MaterialDocumentHeader` posts the receipt.
+
+    The same rule as the supplier invoice: `documents` is where a document is
+    made, so a receipt posted over OData is the same thing as one posted any
+    other way - the number comes from the `MATERIALDOCUMENT` range and the
+    items are numbered in the order they arrive.
+
+    Items are not optional here, unlike an invoice's. A material document
+    with no items records that nothing arrived, and the whole point of this
+    document is to be quotable by an invoice line.
+    """
+    receipt = _posting_fields(et, payload, _MATERIAL_DOCUMENT,
+                              what="a goods receipt",
+                              when="the receipt posts")
+    children = payload.get("to_MaterialDocumentItem") or []
+    if isinstance(children, dict):
+        children = children.get("results", [children])
+    receipt["items"] = [
+        _posting_fields(ENTITY_TYPES["A_MaterialDocumentItem"], child,
+                        _MATERIAL_DOCUMENT_ITEM,
+                        what="a goods receipt item",
+                        when="the receipt posts")
+        for child in children]
+    posted = documents.post_goods_receipt(ctx, receipt)
+    return {"MaterialDocument": posted["material_document"],
+            "MaterialDocumentYear": posted["material_document_year"]}
 
 
 def _create(ctx, svc, et, set_name, opts, body, parent_keys=None) -> Response:
@@ -1058,6 +1108,8 @@ def _create(ctx, svc, et, set_name, opts, body, parent_keys=None) -> Response:
     check_writable(et, payload, creating=True)
     if et.name == "A_SupplierInvoice" and not parent_keys:
         keys = _post_supplier_invoice(ctx, et, payload)
+    elif et.name == "A_MaterialDocumentHeader" and not parent_keys:
+        keys = _post_goods_receipt(ctx, et, payload)
     else:
         keys = store.insert(ctx.conn, et, payload, user=ctx.user,
                             parent_keys=parent_keys)

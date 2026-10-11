@@ -34,6 +34,14 @@ STATUS_TEXT = {
 # outbound IDoc on its way to a port, which is not an outcome of posting one.
 INBOUND_STATUSES = ("53", "51", "56", "68")
 
+# `E1EDP02` `QUALF` for the supplier's delivery note on an invoice item. SAP's
+# own documentation of the field reads "use this delivery note number to find
+# the goods receipt", and what it keeps is the material document that receipt
+# posted - `RSEG-LFBNR`, `LFGJA`, `LFPOS` - not the note (#193). `001` on the
+# same segment is the purchase order, which this mock reads from `E1EDP01`'s
+# `VGBEL` instead.
+DELIVERY_NOTE = "016"
+
 
 class NotPosted(Exception):
     """The IDoc arrived and the application declined to post it.
@@ -307,6 +315,14 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
             for child in element:
                 if _local(child.tag) == "E1EDP19":
                     item.setdefault("IDTNR", "")
+                # The item's own references. QUALF 016 is the supplier's
+                # delivery note, and SAP's word for the field is "use this
+                # delivery note number to find the goods receipt" (#193).
+                elif _local(child.tag) == "E1EDP02":
+                    fields = {_local(g.tag): (g.text or "").strip()
+                              for g in child}
+                    if fields.get("QUALF") == DELIVERY_NOTE:
+                        item["_delivery_note"] = fields.get("BELNR", "")
             items.append(item)
 
     vendor = partners.get("LF") or partners.get("RS") or {}
@@ -343,6 +359,28 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
                         "is not a date, so there is no day this INVOIC falls "
                         "due from" % dates["026"]["DATUM"])
 
+    # Resolved before the invoice is built, so an INVOIC quoting a goods
+    # receipt that does not exist posts nothing at all rather than a payable
+    # with a reference missing from it.
+    receipts = {}
+    for position, item in enumerate(items, start=1):
+        note = (item.get("_delivery_note") or "").strip()
+        if not note:
+            continue
+        found = documents.receipt_for(ctx.conn, note,
+                                     item.get("VGBEL", ""),
+                                     item.get("VGPOS", ""))
+        if found is None:
+            raise NotPosted(
+                "E1EDP02 QUALF %s on item %d gives the delivery note %s, and "
+                "no goods receipt of this company received anything against "
+                "purchase order %s item %s under it, so there is nothing for "
+                "this invoice to bill" % (
+                    DELIVERY_NOTE, position, note,
+                    item.get("VGBEL", "") or "(none)",
+                    item.get("VGPOS", "") or "(none)"))
+        receipts[position] = found
+
     invoice = {
         "supplier": supplier,
         "reference": (references.get("009", {}).get("BELNR")
@@ -359,7 +397,12 @@ def _apply_invoice(ctx, body: bytes, docnum: str = "") -> List[dict]:
             "quantity": item.get("MENGE") or 0,
             "unit": item.get("MENEE", ""),
             "text": item.get("KTEXT", ""),
-        } for item in items],
+            # Blank unless the item quoted a delivery note that found a
+            # receipt, which is why the refusal above runs first.
+            "reference_document": receipts.get(position, {}).get("document", ""),
+            "reference_year": receipts.get(position, {}).get("year", ""),
+            "reference_item": receipts.get(position, {}).get("item", ""),
+        } for position, item in enumerate(items, start=1)],
     }
     try:
         posted = documents.post_supplier_invoice(ctx, invoice)
