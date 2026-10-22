@@ -13,6 +13,93 @@ Entries waiting for a release are one file each in
 cannot conflict. `tools/check_changelog.py --release X.Y.Z` assembles them
 into a dated section here.
 
+## [0.22.0] - 2026-10-22
+
+| Consumer | How it takes a release | Run against this release |
+| --- | --- | --- |
+| mock-acme | `test` extra floors on a minor, and a nightly job installs `main` | yes - green every night since 2026-10-11, 12 runs |
+| mock-films | pins an exact version, compares captured wire output byte for byte | no - it pins 0.21.0 in `requirements-capture.txt` |
+
+This release gives an invoice something to point at. Until now a supplier's
+invoice could name the purchase order it billed and nothing else, so the
+question a middleware actually has to answer - *has this shipment already
+been invoiced?* - had no answer here, and the one project that asked kept its
+own count in process memory and lost it on every restart. A goods receipt now
+posts a material document, the supplier's delivery note is kept on its header
+where a real system keeps it, and an inbound `INVOIC` quoting that note in
+`E1EDP02` `QUALF` `016` is resolved onto the invoice item. So what one
+shipment was billed is a `$filter`, and it survives a restart because SAP is
+holding it rather than the caller.
+
+The rest is a `500` that should never have been one, in the route that posts
+a supplier invoice over OData.
+
+**Two things answer differently than they did in 0.21.0:**
+
+- **An `INVOIC` whose item quotes `E1EDP02` `QUALF` `016` is resolved**
+  ([#193]). The item's own `E1EDP02` was not read at all before and the
+  qualifier was dropped, so an invoice naming a delivery note nobody had
+  received posted a payable anyway. It is now status `51`, naming the note
+  and the purchase order line, and posts nothing - neither invoice nor
+  payable. An `INVOIC` that quotes no delivery note is unchanged, and its
+  reference reads back blank, which is an invoice that named no receipt
+  rather than one whose receipt is unknown.
+- **A POST to `A_SupplierInvoice` carrying a date posts the invoice**
+  ([#200]). `PostingDate`, `DocumentDate` and `DueCalculationBaseDate` each
+  answered `500` saying a valid date was not a date. Sent as ISO or as V2's
+  `/Date(ms)/`, the invoice now posts on the day it names.
+
+Nothing else moves. No existing entity loses a property, the seeded data is
+untouched, and a goods receipt posts no accounting document - a real one
+debits stock and credits GR/IR clearing, and this mock has neither.
+
+### Added
+
+- **A goods receipt, and an invoice that can say which one it billed**
+  ([#193]). Under goods-receipt-based invoice verification a supplier's
+  invoice does not point at the purchase order alone: it names the delivery
+  note of the shipment it bills, and SAP uses that to find the goods receipt.
+  `API_MATERIAL_DOCUMENT_SRV` now serves `A_MaterialDocumentHeader` and
+  `A_MaterialDocumentItem`, a POST to the header posts a real material
+  document - its number from a `MATERIALDOCUMENT` range, its items numbered in
+  the order they arrive, movement type `101` - and the supplier's delivery
+  note is kept on the header as `ReferenceDocument`, which is the only place a
+  real system keeps it. An inbound `INVOIC` item quoting `E1EDP02` `QUALF`
+  `016`, SAP's delivery-note qualifier, is resolved to one material document
+  item and the invoice item keeps it as `ReferenceDocument`,
+  `ReferenceDocumentFiscalYear` and `ReferenceDocumentItem` - `RSEG-LFBNR`,
+  `LFGJA` and `LFPOS` - so **what has been billed against one goods receipt is
+  a `$filter` away**, which is what a middleware needs to stop a shipment
+  being invoiced twice under two numbers and to still know it after a restart.
+  **An `INVOIC` quoting a delivery note no goods receipt carries is status
+  `51`** naming the note and the line, and posts neither invoice nor payable.
+  An invoice quoting only a purchase order is unchanged and its reference is
+  blank.
+
+  Two things it deliberately does not do. **A goods receipt posts no
+  accounting document**: a real one debits stock and credits GR/IR clearing,
+  and this mock has neither a stock concept nor those accounts, so it records
+  that a shipment arrived and stops. And **nothing is judged** - no quantity is
+  compared with what was ordered or received, and the invoice is still not
+  checked against the purchase order, which is the payer's job and stays with
+  the payer.
+
+### Fixed
+
+- **A POST to `A_SupplierInvoice` carrying a date posts the invoice on it,
+  rather than answering `500`** ([#200]). Every value this route takes was
+  converted on to its V2 wire form before being handed to
+  `documents.post_supplier_invoice`, so an `Edm.DateTime` arrived as
+  `/Date(1790380800000)/` whatever the client sent - and the first ten
+  characters of that, which is how a date-time is trimmed to a date, are
+  `'/Date(1790'`. The invoice was refused as having a malformed date, in a
+  message naming the format the client had used, with a `500` because the
+  refusal was a `ValueError` rather than an answer. `PostingDate`,
+  `DocumentDate` and `DueCalculationBaseDate` now all post the day they name,
+  sent as ISO or as V2's `/Date(ms)/`. An invoice that sets no date still
+  posts today, and an inbound `INVOIC` was never affected: it reads its dates
+  from the IDoc.
+
 ## [0.21.0] - 2026-10-07
 
 This release is the other half of the ledger. Until now a bank statement
@@ -1545,7 +1632,10 @@ First release.
 [#181]: https://github.com/rseufert/mock-sap/issues/181
 [#182]: https://github.com/rseufert/mock-sap/issues/182
 [#185]: https://github.com/rseufert/mock-sap/issues/185
-[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.21.0...HEAD
+[#193]: https://github.com/rseufert/mock-sap/issues/193
+[#200]: https://github.com/rseufert/mock-sap/issues/200
+[Unreleased]: https://github.com/rseufert/mock-sap/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/rseufert/mock-sap/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/rseufert/mock-sap/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/rseufert/mock-sap/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rseufert/mock-sap/compare/v0.18.0...v0.19.0
