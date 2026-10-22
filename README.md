@@ -1221,6 +1221,23 @@ The clock holds an **offset, not an instant**, so it keeps ticking between
 advances. A frozen clock would stamp every row in a run identically, which in
 a log is indistinguishable from a bug.
 
+It moves in **whole days**. `days` takes a count of them and `to` a date,
+landing at 00:00; a time is refused rather than quietly truncated:
+
+```
+to=2026-11-01        ->  2026-11-01T00:00:00Z
+to=2026-11-01T14:30  ->  400  to '2026-11-01T14:30' is not a date;
+                                   write it as YYYY-MM-DD
+```
+
+That is the unit this mock has. A posting date, a document date and a due
+date are days, and nothing served here answers differently because time moved
+by four hours - so `advance` offers a precision it could not honour if it
+pretended to. A run that needs to *start* at a particular moment pins one with
+`--clock`, which takes a time. mock-bank moves in days too; mock-edi and
+mock-einvoice move in seconds, because a message has an hour between promise
+and delivery and a ledger does not.
+
 It is UTC and knows nothing about business days - no cutoff, no weekend, no
 holidays. Those are a bank's questions, and mock-bank has them; SAP here has a
 posting date and a due date. So a mock-sap date that lands on a Saturday is
